@@ -63,8 +63,27 @@ def _load_items(arm_dir: str) -> Dict[str, Dict]:
         return {row["id"]: row for row in (json.loads(line) for line in f if line.strip())}
 
 
+def position_bias_index(preds: List[int], k_options: int = 3) -> float:
+    """Computes Position Bias Index (PBI) across option choices.
+
+    PBI = 1/K * sum_{k=0}^{K-1} | P(pred == k) - 1/K |
+
+    Attribution:
+        Position Bias Index formulation inspired by SOTA zero-shot decision engines
+        (SemIf / decider). Measures deviation from uniform distribution across option positions.
+    """
+    if not preds or k_options <= 1:
+        return 0.0
+    n = len(preds)
+    expected_prob = 1.0 / k_options
+    counts = [sum(1 for p in preds if p == k) for k in range(k_options)]
+    pbi = sum(abs(c / n - expected_prob) for c in counts) / k_options
+    return float(pbi)
+
+
 def evaluate_gate(arm_a_dir: str, arm_b_dir: str, alpha: float = 0.05,
-                  ece_tolerance: float = 0.01, expected_test_sha: Optional[str] = None) -> Dict:
+                  ece_tolerance: float = 0.01, pbi_tolerance: float = 0.02,
+                  expected_test_sha: Optional[str] = None) -> Dict:
     items_a = _load_items(arm_a_dir)
     items_b = _load_items(arm_b_dir)
     if expected_test_sha:
@@ -85,16 +104,31 @@ def evaluate_gate(arm_a_dir: str, arm_b_dir: str, alpha: float = 0.05,
     ece_b = ece_from_items([items_b[i] for i in shared])
     p_value = mcnemar_p(b, c)
 
-    passed = bool(acc_b > acc_a and p_value < alpha and ece_b <= ece_a + ece_tolerance)
+    # Position bias check across predicted choices (if present in test items)
+    preds_a = [items_a[i]["pred"] for i in shared if "pred" in items_a[i]]
+    preds_b = [items_b[i]["pred"] for i in shared if "pred" in items_b[i]]
+    if len(preds_a) == len(shared) and len(preds_b) == len(shared):
+        pbi_a = position_bias_index(preds_a, k_options=3)
+        pbi_b = position_bias_index(preds_b, k_options=3)
+        pbi_passed = bool(pbi_b <= pbi_a + pbi_tolerance)
+    else:
+        pbi_a = 0.0
+        pbi_b = 0.0
+        pbi_passed = True
+
+    passed = bool(acc_b > acc_a and p_value < alpha and ece_b <= ece_a + ece_tolerance and pbi_passed)
     return {
         "gate": "synthetic_data_inclusion",
-        "decision_rule": "acc_B > acc_A AND McNemar p < 0.05 AND ece_B <= ece_A + 0.01",
+        "decision_rule": "acc_B > acc_A AND McNemar p < 0.05 AND ece_B <= ece_A + 0.01 AND pbi_B <= pbi_A + 0.02",
         "passed": passed,
         "n_paired": len(shared),
         "acc_armA_clean": round(acc_a, 4),
         "acc_armB_synthetic": round(acc_b, 4),
         "ece_armA": round(ece_a, 4),
         "ece_armB": round(ece_b, 4),
+        "pbi_armA": round(pbi_a, 4),
+        "pbi_armB": round(pbi_b, 4),
+        "pbi_passed": pbi_passed,
         "discordant_aRight_bWrong": b,
         "discordant_aWrong_bRight": c,
         "mcnemar_p": round(p_value, 6),

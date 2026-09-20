@@ -311,10 +311,21 @@ TOOL_REGISTRY = [
 ]
 
 
+TOOL_HYPOTHESIS_TEMPLATES = [
+    "The appropriate tool to handle this request is: {}",
+    "Tool candidate: {}",
+    "Dispatch request to: {}",
+    "Target system: {}",
+    "Routing destination: {}",
+    "{}",
+]
+
+
 def generate_tool_routing_samples(n_target: int = 1500, seed: int = 42) -> List[Dict[str, Any]]:
-    """Generates pairs matching SDK tool routing:
+    """Generates pairs matching SDK tool routing with template diversification
+    and symmetric polarity balance (order/prefix invariance).
     Premise: 'User request: {query}'
-    Hypothesis: 'The appropriate tool to handle this request is: {tool_description}'
+    Hypothesis: '{template.format(tool_description)}'
     """
     rng = random.Random(seed)
     samples = []
@@ -324,33 +335,59 @@ def generate_tool_routing_samples(n_target: int = 1500, seed: int = 42) -> List[
         tool = rng.choice(TOOL_REGISTRY)
         name = tool["name"]
         desc = tool["description"]
+        fmt = rng.choice(TOOL_HYPOTHESIS_TEMPLATES)
 
         # 1. Entailment
         q_ent = rng.choice(tool["entailment_queries"])
-        samples.append({
-            "id": f"sdk_tool_{sample_id:06d}",
-            "premise": f"User request: {q_ent}",
-            "hypothesis": f"The appropriate tool to handle this request is: {desc}",
-            "label": ENTAILMENT,
-            "source": "sdk_tool_routing",
-            "language": "en",
-            "image": "",
-            "metadata": {"tool": name, "intent": "positive"},
-        })
+        # Symmetrized polarity (20% negative assertion)
+        if rng.random() < 0.2:
+            samples.append({
+                "id": f"sdk_tool_{sample_id:06d}",
+                "premise": f"User request: {q_ent}",
+                "hypothesis": f"This request should NOT be handled by: {desc}",
+                "label": CONTRADICTION,
+                "source": "sdk_tool_routing",
+                "language": "en",
+                "image": "",
+                "metadata": {"tool": name, "intent": "positive_inverted_polarity"},
+            })
+        else:
+            samples.append({
+                "id": f"sdk_tool_{sample_id:06d}",
+                "premise": f"User request: {q_ent}",
+                "hypothesis": fmt.format(desc),
+                "label": ENTAILMENT,
+                "source": "sdk_tool_routing",
+                "language": "en",
+                "image": "",
+                "metadata": {"tool": name, "intent": "positive"},
+            })
         sample_id += 1
 
         # 2. Contradiction
         q_con = rng.choice(tool["contradiction_queries"])
-        samples.append({
-            "id": f"sdk_tool_{sample_id:06d}",
-            "premise": f"User request: {q_con}",
-            "hypothesis": f"The appropriate tool to handle this request is: {desc}",
-            "label": CONTRADICTION,
-            "source": "sdk_tool_routing",
-            "language": "en",
-            "image": "",
-            "metadata": {"tool": name, "intent": "conflicting"},
-        })
+        if rng.random() < 0.2:
+            samples.append({
+                "id": f"sdk_tool_{sample_id:06d}",
+                "premise": f"User request: {q_con}",
+                "hypothesis": f"This request should NOT be handled by: {desc}",
+                "label": ENTAILMENT,
+                "source": "sdk_tool_routing",
+                "language": "en",
+                "image": "",
+                "metadata": {"tool": name, "intent": "negative_inverted_polarity"},
+            })
+        else:
+            samples.append({
+                "id": f"sdk_tool_{sample_id:06d}",
+                "premise": f"User request: {q_con}",
+                "hypothesis": fmt.format(desc),
+                "label": CONTRADICTION,
+                "source": "sdk_tool_routing",
+                "language": "en",
+                "image": "",
+                "metadata": {"tool": name, "intent": "conflicting"},
+            })
         sample_id += 1
 
         # 3. Neutral (Ambiguous or tangential)
@@ -358,7 +395,7 @@ def generate_tool_routing_samples(n_target: int = 1500, seed: int = 42) -> List[
         samples.append({
             "id": f"sdk_tool_{sample_id:06d}",
             "premise": f"User request: {q_neu}",
-            "hypothesis": f"The appropriate tool to handle this request is: {desc}",
+            "hypothesis": fmt.format(desc),
             "label": NEUTRAL,
             "source": "sdk_tool_routing",
             "language": "en",
@@ -369,6 +406,7 @@ def generate_tool_routing_samples(n_target: int = 1500, seed: int = 42) -> List[
 
     rng.shuffle(samples)
     return samples[:n_target]
+
 
 
 # -----------------------------------------------------------------------------
@@ -662,10 +700,22 @@ CLOZE_TASKS = [
 ]
 
 
+CLOZE_HYPOTHESIS_TEMPLATES = [
+    "The correct answer is: {}",
+    "Candidate option: {}",
+    "Statement: {}",
+    "Claim: {}",
+    "Hypothesis: {}",
+    "{}",
+    "Option: {}",
+    "Selected answer: {}",
+]
+
+
 def generate_cloze_decision_samples(n_target: int = 1500, seed: int = 42) -> List[Dict[str, Any]]:
-    """Generates pairs matching SDK multiple-choice reranking:
+    """Generates pairs matching SDK multiple-choice reranking with hypothesis template diversification:
     Premise: '{stem}'
-    Hypothesis: 'The correct answer is: {option}'
+    Hypothesis: '{template.format(option)}'
     """
     rng = random.Random(seed)
     samples = []
@@ -674,12 +724,13 @@ def generate_cloze_decision_samples(n_target: int = 1500, seed: int = 42) -> Lis
     while len(samples) < n_target:
         task = rng.choice(CLOZE_TASKS)
         stem = task["stem"]
+        fmt = rng.choice(CLOZE_HYPOTHESIS_TEMPLATES)
 
         # 1. Entailment (Correct answer)
         samples.append({
             "id": f"sdk_cloze_{sample_id:06d}",
             "premise": stem,
-            "hypothesis": f"The correct answer is: {task['correct']}",
+            "hypothesis": fmt.format(task["correct"]),
             "label": ENTAILMENT,
             "source": "sdk_cloze_reasoning",
             "language": "en",
@@ -692,7 +743,7 @@ def generate_cloze_decision_samples(n_target: int = 1500, seed: int = 42) -> Lis
         samples.append({
             "id": f"sdk_cloze_{sample_id:06d}",
             "premise": stem,
-            "hypothesis": f"The correct answer is: {task['contradiction']}",
+            "hypothesis": fmt.format(task["contradiction"]),
             "label": CONTRADICTION,
             "source": "sdk_cloze_reasoning",
             "language": "en",
@@ -706,7 +757,7 @@ def generate_cloze_decision_samples(n_target: int = 1500, seed: int = 42) -> Lis
         samples.append({
             "id": f"sdk_cloze_{sample_id:06d}",
             "premise": stem,
-            "hypothesis": f"The correct answer is: {d_neu}",
+            "hypothesis": fmt.format(d_neu),
             "label": NEUTRAL,
             "source": "sdk_cloze_reasoning",
             "language": "en",
@@ -834,6 +885,374 @@ def generate_rag_hallucination_samples(n_target: int = 1500, seed: int = 42) -> 
 
 
 # -----------------------------------------------------------------------------
+# 6. Counterfactual Adversarial Fact-Inversion Engine (Bespoke-Nimble-9B Style)
+# -----------------------------------------------------------------------------
+# Attribution: Adversarial fact-inversion contrastive data curation inspired by
+# Bespoke Labs Nimble-9B (bespokelabsai/nimble, Apache 2.0 License).
+# Reference: https://huggingface.co/bespokelabs/Bespoke-Nimble-9B
+
+class CounterfactualInverter:
+    """Generates minimal contrastive pairs by perturbing specific factual axes.
+
+    Attribution:
+        Adversarial fact-inversion contrastive data curation inspired by
+        Bespoke Labs Nimble-9B (bespokelabsai/nimble, Apache 2.0 License).
+        Reference: https://huggingface.co/bespokelabs/Bespoke-Nimble-9B
+    """
+    def __init__(self, seed: int = 42):
+        self.rng = random.Random(seed)
+
+        self.entity_swaps = [
+            (r"\bAcme Corp\b", "Globex Corporation"),
+            (r"\bGlobex Corp\b", "Acme Corporation"),
+            (r"\bDublin\b", "Zurich"),
+            (r"\bFrankfurt\b", "Madrid"),
+            (r"\bElena Rostova\b", "Sarah Connor"),
+            (r"\bAZ-402\b", "BX-901"),
+            (r"\bSeattle\b", "Denver"),
+            (r"\bDenver\b", "Seattle"),
+            (r"\bTokyo\b", "Osaka"),
+            (r"\bMiami\b", "Atlanta"),
+            (r"\bLondon\b", "Edinburgh"),
+            (r"\bNvidia\b", "Intel"),
+            (r"\bApple\b", "Microsoft"),
+            (r"\bMicrosoft\b", "Apple"),
+            (r"\bMars\b", "Venus"),
+            (r"\bEarth\b", "Jupiter"),
+            (r"\bJerome Powell\b", "Alan Greenspan"),
+            (r"\bWoodrow Wilson\b", "Theodore Roosevelt"),
+        ]
+
+        self.polarity_swaps = [
+            (r"\bincreased\b", "decreased"),
+            (r"\bdecreased\b", "increased"),
+            (r"\bincrease\b", "decrease"),
+            (r"\bdecrease\b", "increase"),
+            (r"\bgrew\b", "declined"),
+            (r"\bdeclined\b", "grew"),
+            (r"\bgrowth\b", "contraction"),
+            (r"\bexceeded\b", "fell short of"),
+            (r"\bfell short of\b", "exceeded"),
+            (r"\bhigher\b", "substantially lower"),
+            (r"\blower\b", "substantially higher"),
+            (r"\bmore\b", "fewer"),
+            (r"\bfewer\b", "more"),
+            (r"\bmajority\b", "minority"),
+            (r"\bminority\b", "majority"),
+            (r"\bsupports\b", "refutes"),
+            (r"\brefutes\b", "supports"),
+            (r"\bsupported\b", "refuted"),
+            (r"\brefuted\b", "supported"),
+            (r"\benabled\b", "disabled"),
+            (r"\bdisabled\b", "enabled"),
+            (r"\benable\b", "disable"),
+            (r"\bdisable\b", "enable"),
+            (r"\ballows\b", "prohibits"),
+            (r"\bprohibits\b", "allows"),
+            (r"\ballowed\b", "prohibited"),
+            (r"\bprohibited\b", "allowed"),
+            (r"\bpolar\b", "nonpolar"),
+            (r"\bnonpolar\b", "polar"),
+            (r"\bsynchronous\b", "asynchronous"),
+            (r"\basynchronous\b", "synchronous"),
+            (r"\bmaximizes\b", "minimizes"),
+            (r"\bminimizes\b", "maximizes"),
+            (r"\bmaximum\b", "minimum"),
+            (r"\bminimum\b", "maximum"),
+            (r"\bRight atrium\b", "Left ventricle"),
+            (r"\bright atrium\b", "left ventricle"),
+            (r"\bStratosphere\b", "Troposphere"),
+            (r"\bstratosphere\b", "troposphere"),
+            (r"\bO\(log N\)\b", "O(N^2)"),
+        ]
+
+    def _mutate_numbers(self, text: str) -> Tuple[str, bool]:
+        """Perturbs numbers, monetary values, percentages, or years."""
+        # 1. Percentages
+        pct_matches = list(re.finditer(r"\b(\d+)\s*%", text))
+        if pct_matches:
+            m = self.rng.choice(pct_matches)
+            val = int(m.group(1))
+            new_val = max(1, val - 10) if val > 15 else val + 35
+            mutated = text[:m.start()] + f"{new_val}%" + text[m.end():]
+            return mutated, True
+
+        # 2. Currency
+        cur_matches = list(re.finditer(r"\$(\d+(?:\.\d+)?)\s*(billion|million|thousand)?", text, re.IGNORECASE))
+        if cur_matches:
+            m = self.rng.choice(cur_matches)
+            num_str, unit = m.group(1), m.group(2) or ""
+            val = float(num_str)
+            new_val = round(val / 2.0, 1) if val > 5 else round(val * 4.0, 1)
+            new_str = f"${int(new_val) if new_val.is_integer() else new_val}"
+            if unit:
+                new_str += f" {unit}"
+            mutated = text[:m.start()] + new_str + text[m.end():]
+            return mutated, True
+
+        # 3. Years
+        year_matches = list(re.finditer(r"\b(19\d{2}|20\d{2})\b", text))
+        if year_matches:
+            m = self.rng.choice(year_matches)
+            val = int(m.group(1))
+            new_val = val - 3 if val >= 2020 else val + 5
+            mutated = text[:m.start()] + str(new_val) + text[m.end():]
+            return mutated, True
+
+        # 4. Generic integers >= 10
+        int_matches = list(re.finditer(r"\b(\d{2,})\b", text))
+        if int_matches:
+            m = self.rng.choice(int_matches)
+            val = int(m.group(1))
+            new_val = val // 3 if val > 30 else val * 3
+            mutated = text[:m.start()] + str(new_val) + text[m.end():]
+            return mutated, True
+
+        return text, False
+
+    def _mutate_polarity(self, text: str) -> Tuple[str, bool]:
+        """Inverts polarity, directional verbs, or antonym pairs."""
+        candidates = []
+        for pat, replacement in self.polarity_swaps:
+            if re.search(pat, text, re.IGNORECASE):
+                candidates.append((pat, replacement))
+        if not candidates:
+            return text, False
+        pat, replacement = self.rng.choice(candidates)
+        mutated = re.sub(pat, replacement, text, count=1, flags=re.IGNORECASE)
+        return mutated, mutated != text
+
+    def _mutate_entities(self, text: str) -> Tuple[str, bool]:
+        """Swaps named entities with out-of-domain / contrasting entities."""
+        candidates = []
+        for pat, replacement in self.entity_swaps:
+            if re.search(pat, text, re.IGNORECASE):
+                candidates.append((pat, replacement))
+        if not candidates:
+            return text, False
+        pat, replacement = self.rng.choice(candidates)
+        mutated = re.sub(pat, replacement, text, count=1, flags=re.IGNORECASE)
+        return mutated, mutated != text
+
+    def invert_fact(self, premise: str, hypothesis: str, label: int) -> Optional[Tuple[str, str, int, str]]:
+        """Produces a minimal contrastive pair reversing an ENTAILMENT to a CONTRADICTION."""
+        if label != ENTAILMENT:
+            return None
+
+        axes = [
+            ("numeric", self._mutate_numbers),
+            ("polarity", self._mutate_polarity),
+            ("entity", self._mutate_entities),
+        ]
+        self.rng.shuffle(axes)
+
+        for axis_name, mut_fn in axes:
+            mutated_hyp, changed = mut_fn(hypothesis)
+            if changed and mutated_hyp != hypothesis:
+                return premise, mutated_hyp, CONTRADICTION, f"counterfactual_{axis_name}_flip"
+
+        return None
+
+
+def generate_adversarial_inversion_samples(n_target: int = 1500, seed: int = 42) -> List[Dict[str, Any]]:
+    """Generates minimal contrastive pairs by fact-inverting entailments.
+
+    Attribution:
+        Adversarial fact-inversion contrastive data curation inspired by
+        Bespoke Labs Nimble-9B (bespokelabsai/nimble, Apache 2.0 License).
+        Reference: https://huggingface.co/bespokelabs/Bespoke-Nimble-9B
+    """
+    rng = random.Random(seed)
+    inverter = CounterfactualInverter(seed=seed)
+    samples: List[Dict[str, Any]] = []
+    sample_id = 0
+
+    candidate_sources = []
+    for ctx in RAG_CONTEXTS:
+        for ent in ctx["entailments"]:
+            candidate_sources.append((ctx["context"], ent))
+    for t in CLOZE_TASKS:
+        candidate_sources.append((t["stem"], f"The correct answer is: {t['correct']}"))
+    for s in SEARCH_RERANK_TOPICS:
+        candidate_sources.append((s["query"], s["positive"]))
+    for r in RUBRIC_TEMPLATES:
+        p = f"{r['question']}\nReference answer: {r['reference']}"
+        for c in r["entailment_candidates"]:
+            candidate_sources.append((p, f"Candidate answer: {c}"))
+
+    attempts = 0
+    max_attempts = n_target * 20
+    while len(samples) < n_target and attempts < max_attempts:
+        attempts += 1
+        premise, hypothesis = rng.choice(candidate_sources)
+        inversion = inverter.invert_fact(premise, hypothesis, ENTAILMENT)
+        if inversion is not None:
+            _, mutated_hyp, inv_label, axis = inversion
+            # 1. Contradiction flip
+            samples.append({
+                "id": f"sdk_adv_{sample_id:06d}",
+                "premise": premise,
+                "hypothesis": mutated_hyp,
+                "label": inv_label,
+                "source": "sdk_counterfactual_inversion",
+                "language": "en",
+                "image": "",
+                "metadata": {
+                    "technique": "counterfactual_fact_inversion",
+                    "attribution": "Bespoke Labs Nimble-9B (Apache 2.0)",
+                    "axis": axis,
+                    "contrastive": True,
+                },
+            })
+            sample_id += 1
+
+            if len(samples) < n_target:
+                # 2. Original entailment pair as positive control
+                samples.append({
+                    "id": f"sdk_adv_{sample_id:06d}",
+                    "premise": premise,
+                    "hypothesis": hypothesis,
+                    "label": ENTAILMENT,
+                    "source": "sdk_counterfactual_inversion",
+                    "language": "en",
+                    "image": "",
+                    "metadata": {
+                        "technique": "counterfactual_fact_inversion",
+                        "attribution": "Bespoke Labs Nimble-9B (Apache 2.0)",
+                        "axis": "positive_control",
+                        "contrastive": True,
+                    },
+                })
+                sample_id += 1
+
+    rng.shuffle(samples)
+    return samples[:n_target]
+
+
+# -----------------------------------------------------------------------------
+# 7. Abstention Augmentation Engine (none_augment, Mapika/decider Style)
+# -----------------------------------------------------------------------------
+# Attribution: Abstention augmentation (none_augment) inspired by Mapika/decider (Apache 2.0 License).
+# Reference: https://github.com/Mapika/decider
+
+ABSTAIN_HYPOTHESES = [
+    "None of the above options are supported by the provided context.",
+    "The context provides insufficient evidence to verify this claim.",
+    "Insufficient information to determine the correct answer.",
+    "None of the available choices can be verified from the premise.",
+]
+
+
+def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Dict[str, Any]]:
+    """Generates abstention (none_augment) pairs:
+    75% negative control (valid premise, abstain hypothesis -> NEUTRAL).
+    25% adversarial distractor replacement (unrelated distractor -> CONTRADICTION/NEUTRAL,
+    abstain hypothesis -> ENTAILMENT).
+
+    Attribution:
+        Abstention augmentation (none_augment) inspired by Mapika/decider (Apache 2.0 License).
+        Reference: https://github.com/Mapika/decider
+    """
+    rng = random.Random(seed)
+    samples: List[Dict[str, Any]] = []
+    sample_id = 0
+
+    unrelated_distractors = [
+        "The system must execute an automated wire transfer to account 982341.",
+        "Severe thunderstorm warnings are in effect for downtown Miami tonight.",
+        "Resize this JPEG image to 1024x1024 without cropping.",
+        "Water molecules are completely nonpolar and repel all ionic substances.",
+        "Deoxygenated blood returns directly to the left atrium of the heart.",
+        "The ozone layer is entirely located within Earth's molten liquid core.",
+    ]
+
+    while len(samples) < n_target:
+        roll = rng.random()
+        abstain_hyp = rng.choice(ABSTAIN_HYPOTHESES)
+
+        if roll < 0.75:
+            # 75% Negative Control: Context has evidence, so claiming "none of the above" is NEUTRAL
+            item = rng.choice(RAG_CONTEXTS)
+            ctx = item["context"]
+            gold_ent = rng.choice(item["entailments"])
+
+            samples.append({
+                "id": f"sdk_abstain_{sample_id:06d}",
+                "premise": ctx,
+                "hypothesis": gold_ent,
+                "label": ENTAILMENT,
+                "source": "sdk_abstention_augmentation",
+                "language": "en",
+                "image": "",
+                "metadata": {
+                    "technique": "none_augment",
+                    "attribution": "Mapika/decider (Apache 2.0)",
+                    "abstention_type": "control_gold",
+                },
+            })
+            sample_id += 1
+
+            if len(samples) < n_target:
+                samples.append({
+                    "id": f"sdk_abstain_{sample_id:06d}",
+                    "premise": ctx,
+                    "hypothesis": abstain_hyp,
+                    "label": NEUTRAL,
+                    "source": "sdk_abstention_augmentation",
+                    "language": "en",
+                    "image": "",
+                    "metadata": {
+                        "technique": "none_augment",
+                        "attribution": "Mapika/decider (Apache 2.0)",
+                        "abstention_type": "control_abstain",
+                    },
+                })
+                sample_id += 1
+        else:
+            # 25% Adversarial Distractor Replacement:
+            item = rng.choice(RAG_CONTEXTS)
+            ctx = item["context"]
+            distractor = rng.choice(unrelated_distractors)
+
+            samples.append({
+                "id": f"sdk_abstain_{sample_id:06d}",
+                "premise": ctx,
+                "hypothesis": distractor,
+                "label": CONTRADICTION,
+                "source": "sdk_abstention_augmentation",
+                "language": "en",
+                "image": "",
+                "metadata": {
+                    "technique": "none_augment",
+                    "attribution": "Mapika/decider (Apache 2.0)",
+                    "abstention_type": "adversarial_distractor",
+                },
+            })
+            sample_id += 1
+
+            if len(samples) < n_target:
+                # With all options irrelevant, the abstain hypothesis IS ENTAILMENT
+                samples.append({
+                    "id": f"sdk_abstain_{sample_id:06d}",
+                    "premise": ctx,
+                    "hypothesis": abstain_hyp,
+                    "label": ENTAILMENT,
+                    "source": "sdk_abstention_augmentation",
+                    "language": "en",
+                    "image": "",
+                    "metadata": {
+                        "technique": "none_augment",
+                        "attribution": "Mapika/decider (Apache 2.0)",
+                        "abstention_type": "adversarial_abstain_entailed",
+                    },
+                })
+                sample_id += 1
+
+    rng.shuffle(samples)
+    return samples[:n_target]
+
+
+# -----------------------------------------------------------------------------
 # Consensus Validation Engine (Qwen / DeepSeek Validator vs Generator)
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
@@ -889,8 +1308,9 @@ def _resolve_resume_run(db_path: str, resume_run: Optional[str], judges: List[st
 def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optional[str],
                           teacher_model: str, raw_path: str,
                           resume_run: Optional[str],
-                          force: bool = False) -> List[Dict[str, Any]]:
-    """Generates all 6 SDK-mode sample sets, checkpointing each stage to disk.
+                          force: bool = False,
+                          include_sota: bool = False) -> List[Dict[str, Any]]:
+    """Generates SDK-mode sample sets, checkpointing each stage to disk.
 
     On resume the raw checkpoint IS the sample set - nothing is regenerated, so
     sample ids stay stable against the persisted verdicts.
@@ -912,6 +1332,11 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
         ("Cloze Decision", generate_cloze_decision_samples),
         ("RAG Hallucination", generate_rag_hallucination_samples),
     ]
+    if include_sota:
+        generators.extend([
+            ("Counterfactual Inversion", generate_adversarial_inversion_samples),
+            ("Abstention Augmentation", generate_abstention_samples),
+        ])
     all_generated: List[Dict[str, Any]] = []
     for salt, (name, gen_fn) in enumerate(generators):
         print(f"Generating {name} samples (target={samples_per_mode})...")
@@ -1030,6 +1455,7 @@ def compile_sdk_synthetic_dataset(
     resume_run: Optional[str] = None,
     validator_timeout: int = 600,
     force: bool = False,
+    include_sota: bool = False,
 ) -> Dict[str, int]:
     """Compiles and validates synthetic data for all SDK interaction patterns.
 
@@ -1047,7 +1473,7 @@ def compile_sdk_synthetic_dataset(
     raw_path = os.path.join(out_dir, CHECKPOINT_FILENAME)
     all_generated = _generate_all_samples(samples_per_mode, seed, teacher_url,
                                           teacher_model, raw_path, resume_id,
-                                          force=force)
+                                          force=force, include_sota=include_sota)
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + DeepSeek V4 Flash + Qwen 3.8 125B q4 + Qwen 3.8 125B q3)
@@ -1120,6 +1546,7 @@ if __name__ == "__main__":
                              "with the same judges, or pass an explicit run id. Reuses "
                              "sdk_synthetic_raw.jsonl and persisted verdicts (no regeneration).")
     parser.add_argument("--force", action="store_true", help="Force overwrite of existing raw checkpoint")
+    parser.add_argument("--include-sota", action="store_true", help="Include SOTA counterfactual inversion and abstention augmentation modes")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1136,4 +1563,5 @@ if __name__ == "__main__":
         resume_run=args.resume_run,
         validator_timeout=args.validator_timeout,
         force=args.force,
+        include_sota=args.include_sota,
     )

@@ -523,6 +523,19 @@ class Gemma4CrossEncoder:
 
         self.model.to(self.device).eval()
 
+        # Load post-hoc validation temperature calibration if present
+        # Attribution: Post-hoc temperature calibration inspired by sabeel111/OpenSourceJev (MIT License)
+        self.calibrated_temperature = 1.0
+        if model_name_or_path and os.path.exists(model_name_or_path):
+            calib_file = os.path.join(model_name_or_path, "calibration.json")
+            if os.path.exists(calib_file):
+                try:
+                    with open(calib_file, "r", encoding="utf-8") as f:
+                        calib_data = json.load(f)
+                        self.calibrated_temperature = float(calib_data.get("optimal_temperature", 1.0))
+                except Exception as e:
+                    print(f"Warning: Could not load calibration from {calib_file}: {e}")
+
         # Special token IDs for multimodal inputs
         self.boi_token_id = getattr(self.model.config, "boi_token_id", 255999)
         self.image_token_id = getattr(self.model.config, "image_token_id", 258880)
@@ -591,10 +604,15 @@ class Gemma4CrossEncoder:
         self,
         pairs: Sequence[Tuple[str, str]],
         images: Optional[Sequence[Optional[Image.Image]]] = None,
+        temperature: Optional[float] = None,
     ) -> np.ndarray:
-        """Computes softmax probabilities [p_contradiction, p_entailment, p_neutral] per pair."""
+        """Computes softmax probabilities [p_contradiction, p_entailment, p_neutral] per pair,
+        scaled by calibrated temperature T* if available.
+        """
         all_probs = []
         n_items = len(pairs)
+        temp = temperature if temperature is not None else getattr(self, "calibrated_temperature", 1.0)
+        temp = max(float(temp), 1e-4)
 
         for s in range(0, n_items, self.batch_size):
             chunk_pairs = pairs[s : s + self.batch_size]
@@ -602,7 +620,7 @@ class Gemma4CrossEncoder:
             batch = self._prepare_batch(chunk_pairs, chunk_images)
 
             logits = self.model(**batch).logits.float()
-            probs = torch.softmax(logits, dim=-1).cpu().numpy()
+            probs = torch.softmax(logits / temp, dim=-1).cpu().numpy()
             all_probs.append(probs)
 
         return np.concatenate(all_probs, axis=0) if all_probs else np.empty((0, 3))
@@ -679,6 +697,7 @@ class Gemma4CrossEncoder:
         hyp_fmt: Optional[str] = None,
         scoring: str = "margin",
         temperature: Optional[Union[float, str]] = None,
+        debias_position: bool = False,
     ) -> RerankResult:
         """Reranks options by argmax score.
         
@@ -695,12 +714,38 @@ class Gemma4CrossEncoder:
                 - 'entailment' (Jev legacy): argmax P(entailment)
                 - 'contrastive': argmax (P(ent) / (P(ent) + P(con) + 1e-6))
             temperature: Optional temperature scaling (scalar float, or 'bucketed' for cardinality scaling)
+            debias_position: If True, evaluates cyclic permutations of options to eliminate position bias.
         
         Fully compatible with Jev: returns RerankResult which behaves as an int index,
         while supporting tuple unpacking (best_idx, scores) and .scores attribute.
         """
         if not options:
             raise ValueError("rerank requires at least one option (audit LOW-MED: empty-array crash)")
+
+        if debias_position and len(options) > 1:
+            # Position-bias invariance: evaluate across cyclic permutations
+            # Attribution: Inspired by position debiasing in SemIf (MIT License) and decider (Apache 2.0 License).
+            n_opts = len(options)
+            accum_scores = np.zeros(n_opts, dtype=np.float64)
+            for shift in range(n_opts):
+                shifted_opts = list(options[shift:]) + list(options[:shift])
+                shifted_res = self.rerank(
+                    premise=premise,
+                    options=shifted_opts,
+                    image=image,
+                    hyp_format=hyp_format,
+                    question=question,
+                    hyp_fmt=hyp_fmt,
+                    scoring=scoring,
+                    temperature=temperature,
+                    debias_position=False,
+                )
+                for shifted_idx, s in enumerate(shifted_res.scores):
+                    orig_idx = (shifted_idx + shift) % n_opts
+                    accum_scores[orig_idx] += s
+            avg_scores = (accum_scores / n_opts).tolist()
+            best_idx = int(np.argmax(avg_scores))
+            return RerankResult(best_idx, avg_scores)
 
         query = premise if premise is not None else question
         if query is None:

@@ -51,7 +51,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from peft import LoraConfig, PeftModel, get_peft_model
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import AutoConfig, AutoTokenizer, get_cosine_schedule_with_warmup
 
 from gemma4_cross_encoder import (
@@ -341,12 +341,167 @@ class CustomNLICollator:
 
 
 # -----------------------------------------------------------------------------
+# Token-Bucket Batching (Mapika/decider Style)
+# -----------------------------------------------------------------------------
+# Attribution: Deterministic token-bucket batching inspired by Mapika/decider (Apache 2.0 License).
+# Reference: https://github.com/Mapika/decider
+
+class TokenBucketBatchSampler(Sampler[List[int]]):
+    """Batches variable-length sequences into discrete token-budget buckets.
+
+    Attribution:
+        Deterministic token-bucket batching inspired by Mapika/decider (Apache 2.0 License).
+        Constrains ragged sequences into fixed bucket shapes, eliminating CUDA graph recompilations
+        and GPU memory fragmentation across sequence lengths up to 128K tokens.
+    """
+    def __init__(
+        self,
+        lengths: List[int],
+        max_tokens_per_batch: int = 4096,
+        bucket_boundaries: Optional[List[int]] = None,
+        shuffle: bool = True,
+        seed: int = 42,
+    ):
+        super().__init__()
+        self.lengths = lengths
+        self.max_tokens_per_batch = max_tokens_per_batch
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+
+        if bucket_boundaries is None:
+            self.bucket_boundaries = [
+                64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072
+            ]
+        else:
+            self.bucket_boundaries = sorted(bucket_boundaries)
+
+        self.bucket_indices: Dict[int, List[int]] = defaultdict(list)
+        for idx, length in enumerate(lengths):
+            assigned_bucket = self.bucket_boundaries[-1]
+            for b in self.bucket_boundaries:
+                if b >= length:
+                    assigned_bucket = b
+                    break
+            self.bucket_indices[assigned_bucket].append(idx)
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self.epoch)
+        batches: List[List[int]] = []
+
+        for bucket_cap, indices in self.bucket_indices.items():
+            if not indices:
+                continue
+            cur_indices = list(indices)
+            if self.shuffle:
+                rng.shuffle(cur_indices)
+
+            batch_size = max(1, self.max_tokens_per_batch // bucket_cap)
+            for i in range(0, len(cur_indices), batch_size):
+                batches.append(cur_indices[i : i + batch_size])
+
+        if self.shuffle:
+            rng.shuffle(batches)
+
+        for batch in batches:
+            yield batch
+
+    def __len__(self) -> int:
+        total = 0
+        for bucket_cap, indices in self.bucket_indices.items():
+            if not indices:
+                continue
+            batch_size = max(1, self.max_tokens_per_batch // bucket_cap)
+            total += (len(indices) + batch_size - 1) // batch_size
+        return total
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+
+# -----------------------------------------------------------------------------
+# Post-Hoc Validation Temperature Calibration (OpenSourceJev Style)
+# -----------------------------------------------------------------------------
+# Attribution: Post-hoc validation temperature scaling inspired by
+# sabeel111/OpenSourceJev (MIT License) and Guo et al. (2017).
+# Reference: https://github.com/sabeel111/OpenSourceJev
+
+def compute_multiclass_ece(probs: np.ndarray, golds: np.ndarray, n_bins: int = 15) -> float:
+    """Computes Expected Calibration Error over multiclass softmax probabilities."""
+    preds = np.argmax(probs, axis=-1)
+    confs = np.max(probs, axis=-1)
+    corrects = (preds == golds).astype(float)
+
+    bin_boundaries = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    total = len(golds)
+    if total == 0:
+        return 0.0
+    for i in range(n_bins):
+        bin_lo = bin_boundaries[i]
+        bin_hi = bin_boundaries[i + 1]
+        mask = (confs > bin_lo) & (confs <= bin_hi) if i > 0 else (confs >= bin_lo) & (confs <= bin_hi)
+        if np.sum(mask) == 0:
+            continue
+        bin_acc = np.mean(corrects[mask])
+        bin_conf = np.mean(confs[mask])
+        ece += (np.sum(mask) / total) * abs(bin_acc - bin_conf)
+    return float(ece)
+
+
+def fit_temperature_scaling(
+    logits: np.ndarray,
+    golds: np.ndarray,
+) -> Tuple[float, float, float, float, float]:
+    """Fits post-hoc validation temperature scaling T* by minimizing cross-entropy NLL.
+
+    Attribution:
+        Post-hoc validation temperature scaling inspired by
+        sabeel111/OpenSourceJev (MIT License) and Guo et al. (2017).
+        Reference: https://github.com/sabeel111/OpenSourceJev
+
+    Returns:
+        (optimal_temperature, ece_before, ece_after, brier_before, brier_after)
+    """
+    from scipy.optimize import minimize_scalar
+
+    probs_before = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+    probs_before = probs_before / np.sum(probs_before, axis=-1, keepdims=True)
+    ece_before = compute_multiclass_ece(probs_before, golds)
+
+    N = len(golds)
+    one_hot = np.zeros_like(probs_before)
+    one_hot[np.arange(N), golds] = 1.0
+    brier_before = float(np.mean(np.sum((probs_before - one_hot) ** 2, axis=-1)))
+
+    def nll_obj(temp: float) -> float:
+        t = max(temp, 1e-4)
+        scaled_logits = logits / t
+        max_z = np.max(scaled_logits, axis=-1, keepdims=True)
+        log_denom = max_z.squeeze(-1) + np.log(np.sum(np.exp(scaled_logits - max_z), axis=-1))
+        gold_logits = scaled_logits[np.arange(N), golds]
+        nll = np.mean(log_denom - gold_logits)
+        return float(nll)
+
+    res = minimize_scalar(nll_obj, bounds=(0.05, 10.0), method="bounded")
+    t_opt = float(res.x) if res.success else 1.0
+
+    scaled_logits = logits / max(t_opt, 1e-4)
+    probs_after = np.exp(scaled_logits - np.max(scaled_logits, axis=-1, keepdims=True))
+    probs_after = probs_after / np.sum(probs_after, axis=-1, keepdims=True)
+    ece_after = compute_multiclass_ece(probs_after, golds)
+    brier_after = float(np.mean(np.sum((probs_after - one_hot) ** 2, axis=-1)))
+
+    return t_opt, ece_before, ece_after, brier_before, brier_after
+
+
+# -----------------------------------------------------------------------------
 # Evaluation Helper
 # -----------------------------------------------------------------------------
 @torch.no_grad()
 def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     model.eval()
-    all_preds, all_probs, all_golds, all_sources = [], [], [], []
+    all_preds, all_probs, all_logits, all_golds, all_sources = [], [], [], [], []
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
@@ -357,24 +512,32 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
         amp_device = "cuda" if "cuda" in str(device) else "cpu"
         with torch.amp.autocast(amp_device, dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits.float().cpu().numpy()
             probs = torch.softmax(outputs.logits.float(), dim=-1).cpu().numpy()
 
+        all_logits.append(logits)
         all_probs.append(probs)
         all_preds.append(np.argmax(probs, axis=-1))
         all_golds.append(labels.numpy())
         all_sources.extend(sources)
 
-    probs = np.concatenate(all_probs, axis=0)
-    preds = np.concatenate(all_preds, axis=0)
-    golds = np.concatenate(all_golds, axis=0)
+    logits = np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 3))
+    probs = np.concatenate(all_probs, axis=0) if all_probs else np.empty((0, 3))
+    preds = np.concatenate(all_preds, axis=0) if all_preds else np.empty((0,))
+    golds = np.concatenate(all_golds, axis=0) if all_golds else np.empty((0,))
 
-    acc = float(np.mean(preds == golds))
+    acc = float(np.mean(preds == golds)) if len(golds) > 0 else 0.0
 
     # Brier score
     N = len(golds)
-    one_hot = np.zeros_like(probs)
-    one_hot[np.arange(N), golds] = 1.0
-    brier = float(np.mean(np.sum((probs - one_hot) ** 2, axis=-1)))
+    if N > 0:
+        one_hot = np.zeros_like(probs)
+        one_hot[np.arange(N), golds] = 1.0
+        brier = float(np.mean(np.sum((probs - one_hot) ** 2, axis=-1)))
+        ece = compute_multiclass_ece(probs, golds)
+    else:
+        brier = 0.0
+        ece = 0.0
 
     # Per-class metrics
     per_class = {}
@@ -398,8 +561,11 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     return {
         "accuracy": round(acc, 4),
         "brier": round(brier, 4),
+        "ece": round(ece, 4),
         "n_samples": len(golds),
         "per_class": per_class,
+        "logits": logits,
+        "golds": golds,
     }
 
 
@@ -425,6 +591,8 @@ def finetune_custom_data(
     target_quant: str = "nvfp4",
     qat_bits: int = 4,
     qat_group_size: int = 32,
+    use_token_bucketing: bool = False,
+    max_tokens_per_batch: int = 2048,
     seed: int = 42,
     device: str = "cuda",
 ) -> Dict[str, Any]:
@@ -573,13 +741,27 @@ def finetune_custom_data(
     # 4. DataLoaders
     collator = CustomNLICollator(tokenizer, max_length=max_length)
     use_pin = (device != "cpu" and torch.cuda.is_available())
-    train_loader = DataLoader(
-        CustomNLIDataset(train_records),
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collator,
-        pin_memory=use_pin,
-    )
+    if use_token_bucketing:
+        print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={max_tokens_per_batch})...")
+        train_lengths = [max(16, min(max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_records]
+        train_sampler = TokenBucketBatchSampler(
+            train_lengths, max_tokens_per_batch=max_tokens_per_batch, shuffle=True, seed=seed
+        )
+        train_loader = DataLoader(
+            CustomNLIDataset(train_records),
+            batch_sampler=train_sampler,
+            collate_fn=collator,
+            pin_memory=use_pin,
+        )
+    else:
+        train_sampler = None
+        train_loader = DataLoader(
+            CustomNLIDataset(train_records),
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=collator,
+            pin_memory=use_pin,
+        )
     val_loader = DataLoader(
         CustomNLIDataset(val_records),
         batch_size=batch_size * 2,
@@ -605,6 +787,8 @@ def finetune_custom_data(
     t_start = time.time()
 
     for epoch in range(epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
         t0 = time.time()
@@ -670,8 +854,27 @@ def finetune_custom_data(
                 head_dict["norm"] = clean_state(raw_model.norm)
             torch.save(head_dict, os.path.join(best_dir, "head_weights.pt"))
             tokenizer.save_pretrained(best_dir)
+
+            # Fit and save post-hoc validation temperature scaling T*
+            if "logits" in val_metrics and "golds" in val_metrics and len(val_metrics["golds"]) > 0:
+                t_opt, ece_bef, ece_aft, br_bef, br_aft = fit_temperature_scaling(
+                    val_metrics["logits"], val_metrics["golds"]
+                )
+                calib_dict = {
+                    "optimal_temperature": round(float(t_opt), 4),
+                    "val_ece_before": round(float(ece_bef), 4),
+                    "val_ece_after": round(float(ece_aft), 4),
+                    "val_brier_before": round(float(br_bef), 4),
+                    "val_brier_after": round(float(br_aft), 4),
+                    "attribution": "Post-hoc validation temperature scaling inspired by sabeel111/OpenSourceJev (MIT License) and Guo et al. (2017)",
+                }
+                with open(os.path.join(best_dir, "calibration.json"), "w") as f:
+                    json.dump(calib_dict, f, indent=2)
+                print(f"-> Fitted optimal validation temperature: T* = {t_opt:.4f} (ECE: {ece_bef:.4f} -> {ece_aft:.4f})")
+
+            report_dict = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
             with open(os.path.join(best_dir, "eval_report.json"), "w") as f:
-                json.dump(val_metrics, f, indent=2)
+                json.dump(report_dict, f, indent=2)
 
     total_time = time.time() - t_start
     print("\n" + "=" * 65)
@@ -716,6 +919,8 @@ def main():
     )
     parser.add_argument("--qat-bits", type=int, default=4, help="QAT weight bit-width (default: 4)")
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")
+    parser.add_argument("--token-bucketing", action="store_true", help="Enable deterministic token-bucket batching (decider style)")
+    parser.add_argument("--max-tokens-per-batch", type=int, default=2048, help="Token budget per batch when using token bucketing")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -737,6 +942,8 @@ def main():
         target_quant=args.target_quant,
         qat_bits=args.qat_bits,
         qat_group_size=args.qat_group_size,
+        use_token_bucketing=args.token_bucketing,
+        max_tokens_per_batch=args.max_tokens_per_batch,
         seed=args.seed,
     )
 

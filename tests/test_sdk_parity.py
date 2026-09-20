@@ -212,6 +212,126 @@ def test_pack_weights_w4a16_nan_inf_sanitization():
     assert not torch.isinf(reconstructed).any()
 
 
+def test_counterfactual_inverter_reverses_entailment_to_contradiction():
+    """CounterfactualInverter produces high-lexical-overlap contradictions from entailments."""
+    from generate_sdk_synthetic_data import CounterfactualInverter, CONTRADICTION, ENTAILMENT
+    inverter = CounterfactualInverter(seed=42)
+
+    p1 = "Acme Corp reported $14.2 billion in total revenue for Q4 2025."
+    h1 = "Acme Corp reported $14.2 billion in total revenue for Q4 2025."
+    res1 = inverter.invert_fact(p1, h1, ENTAILMENT)
+    assert res1 is not None
+    _, inv_h1, label1, axis1 = res1
+    assert label1 == CONTRADICTION
+    assert "counterfactual" in axis1
+    assert inv_h1 != h1
+
+    p2 = "The Fed increased benchmark interest rates to combat inflation."
+    h2 = "The Fed increased benchmark interest rates."
+    res2 = inverter.invert_fact(p2, h2, ENTAILMENT)
+    assert res2 is not None
+    _, inv_h2, label2, axis2 = res2
+    assert label2 == CONTRADICTION
+    assert inv_h2 != h2
+
+    p3 = "Elena Rostova announced plans to build two new data centers in Dublin."
+    h3 = "Elena Rostova announced plans to build data centers in Dublin."
+    res3 = inverter.invert_fact(p3, h3, ENTAILMENT)
+    assert res3 is not None
+    _, inv_h3, label3, axis3 = res3
+    assert label3 == CONTRADICTION
+    assert inv_h3 != h3
+
+
+def test_none_augment_abstention_samples():
+    """none_augment generates calibrated neutral control and abstention entailment."""
+    from generate_sdk_synthetic_data import generate_abstention_samples, ENTAILMENT, NEUTRAL
+    samples = generate_abstention_samples(n_target=50, seed=42)
+    assert len(samples) == 50
+    labels = {s["label"] for s in samples}
+    assert ENTAILMENT in labels
+    assert NEUTRAL in labels
+    types = {s["metadata"]["abstention_type"] for s in samples}
+    assert "control_gold" in types or "control_abstain" in types
+
+
+def test_position_bias_template_diversification():
+    """Cloze and routing sample generation diversify hypothesis templates."""
+    from generate_sdk_synthetic_data import generate_cloze_decision_samples
+    cloze_samples = generate_cloze_decision_samples(n_target=30, seed=42)
+    prefixes = set()
+    for s in cloze_samples:
+        hyp = s["hypothesis"]
+        colon_pos = hyp.find(":")
+        if colon_pos != -1:
+            prefixes.add(hyp[:colon_pos])
+    assert len(prefixes) > 1, f"Cloze hypotheses must use diverse templates, got: {prefixes}"
+
+
+def test_cyclic_permutation_debiasing_in_rerank():
+    """Rerank with debias_position=True returns valid RerankResult across cyclic permutations."""
+    from gemma4_cross_encoder import Gemma4CrossEncoder, RerankResult
+    ce = Gemma4CrossEncoder.__new__(Gemma4CrossEncoder)
+
+    class MockPredictor:
+        def predict(self, pairs, images=None, temperature=None):
+            import numpy as np
+            scores = []
+            for p, h in pairs:
+                score = (abs(hash(h)) % 100) / 100.0
+                scores.append([0.1, score, max(0.0, 0.9 - score)])
+            return np.array(scores)
+
+        def predict_logits(self, pairs, images=None):
+            import numpy as np
+            return np.array([[0.0, 1.0, 0.0] for _ in pairs])
+
+    ce.predict = MockPredictor().predict
+    ce.predict_logits = MockPredictor().predict_logits
+
+    res = ce.rerank(
+        premise="Where is the file located?",
+        options=["/usr/bin/python", "/home/dave/app.py", "/etc/hosts"],
+        debias_position=True,
+    )
+    assert isinstance(res, RerankResult)
+    assert 0 <= int(res) <= 2
+    assert len(res.scores) == 3
+
+
+def test_token_bucket_batching_bounds_total_tokens_per_batch():
+    """TokenBucketBatchSampler groups sequences into discrete buckets and bounds batch tokens."""
+    from finetune import TokenBucketBatchSampler
+    lengths = [40, 50, 60, 120, 150, 240, 480, 500, 750, 800]
+    max_tokens = 512
+    sampler = TokenBucketBatchSampler(lengths, max_tokens_per_batch=max_tokens, shuffle=False)
+    batches = list(sampler)
+    assert len(batches) > 0
+    for batch in batches:
+        assert len(batch) >= 1
+
+
+def test_temperature_scaling_minimizes_validation_ece():
+    """fit_temperature_scaling optimizes T* via NLL, preserving argmax predictions."""
+    import numpy as np
+    from finetune import fit_temperature_scaling
+    logits = np.array([
+        [10.0, 1.0, 0.0],
+        [0.5, 9.0, 1.0],
+        [1.0, 0.5, 8.5],
+        [2.0, 7.0, 1.0],
+    ])
+    golds = np.array([0, 1, 2, 1])
+    preds_before = np.argmax(logits, axis=-1)
+
+    t_opt, ece_before, ece_after, brier_before, brier_after = fit_temperature_scaling(logits, golds)
+    preds_after = np.argmax(logits / t_opt, axis=-1)
+
+    assert np.array_equal(preds_before, preds_after), "temperature scaling must preserve predictions"
+    assert t_opt > 0.1, f"T* must be positive and bounded, got {t_opt}"
+    assert ece_after <= ece_before + 1e-4, f"ECE must not regress: {ece_before} -> {ece_after}"
+
+
 TESTS = [test_rerank_returns_sdk_rerankresult_with_entailment_scoring,
          test_rerank_margin_scoring_matches_sdk_rule,
          test_grade_returns_sdk_graderesult_with_probabilities,
@@ -223,7 +343,13 @@ TESTS = [test_rerank_returns_sdk_rerankresult_with_entailment_scoring,
          test_delimiter_sanitization_in_grade_and_rerank,
          test_tokenize_nli_pair_safe_budget_and_sanitization,
          test_llm_client_url_scheme_validation,
-         test_pack_weights_w4a16_nan_inf_sanitization]
+         test_pack_weights_w4a16_nan_inf_sanitization,
+         test_counterfactual_inverter_reverses_entailment_to_contradiction,
+         test_none_augment_abstention_samples,
+         test_position_bias_template_diversification,
+         test_cyclic_permutation_debiasing_in_rerank,
+         test_token_bucket_batching_bounds_total_tokens_per_batch,
+         test_temperature_scaling_minimizes_validation_ece]
 
 
 def main() -> int:

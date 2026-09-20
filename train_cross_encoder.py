@@ -52,6 +52,7 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
     tokenize_nli_pair_safe,
 )
+from finetune import TokenBucketBatchSampler, fit_temperature_scaling
 
 # -----------------------------------------------------------------------------
 # Calibration Metrics
@@ -282,14 +283,29 @@ def train_cross_encoder(args):
     val_ds = NLIDataset(val_path, max_samples=args.max_val_samples)
 
     collator = DataCollatorNLI(tokenizer, max_length=args.max_length)
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=collator,
-        num_workers=2,
-        pin_memory=True,
-    )
+    if getattr(args, "token_bucketing", False):
+        print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={getattr(args, 'max_tokens_per_batch', 2048)})...")
+        train_lengths = [max(16, min(args.max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_ds.rows]
+        train_sampler = TokenBucketBatchSampler(
+            train_lengths, max_tokens_per_batch=getattr(args, "max_tokens_per_batch", 2048), shuffle=True, seed=args.seed
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=train_sampler,
+            collate_fn=collator,
+            num_workers=2,
+            pin_memory=True,
+        )
+    else:
+        train_sampler = None
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=collator,
+            num_workers=2,
+            pin_memory=True,
+        )
     val_loader = DataLoader(
         val_ds,
         batch_size=args.batch_size * 2,
@@ -314,6 +330,8 @@ def train_cross_encoder(args):
     global_step = 0
 
     for epoch in range(args.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
         t0 = time.time()
@@ -378,8 +396,26 @@ def train_cross_encoder(args):
                 head_dict["norm"] = clean_state(raw_model.norm)
             torch.save(head_dict, os.path.join(save_dir, "head_weights.pt"))
             tokenizer.save_pretrained(save_dir)
+
+            if "logits" in val_metrics and "golds" in val_metrics and len(val_metrics["golds"]) > 0:
+                t_opt, ece_bef, ece_aft, br_bef, br_aft = fit_temperature_scaling(
+                    val_metrics["logits"], val_metrics["golds"]
+                )
+                calib_dict = {
+                    "optimal_temperature": round(float(t_opt), 4),
+                    "val_ece_before": round(float(ece_bef), 4),
+                    "val_ece_after": round(float(ece_aft), 4),
+                    "val_brier_before": round(float(br_bef), 4),
+                    "val_brier_after": round(float(br_aft), 4),
+                    "attribution": "Post-hoc validation temperature scaling inspired by sabeel111/OpenSourceJev (MIT License) and Guo et al. (2017)",
+                }
+                with open(os.path.join(save_dir, "calibration.json"), "w") as f:
+                    json.dump(calib_dict, f, indent=2)
+                print(f"-> Fitted optimal validation temperature: T* = {t_opt:.4f} (ECE: {ece_bef:.4f} -> {ece_aft:.4f})")
+
+            clean_val_metrics = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
             with open(os.path.join(save_dir, "eval_metrics.json"), "w") as f:
-                json.dump(val_metrics, f, indent=2)
+                json.dump(clean_val_metrics, f, indent=2)
 
     print("\n" + "=" * 60)
     print(f"Training Complete! Best Validation Accuracy: {best_val_acc:.4f}")
@@ -488,7 +524,7 @@ def _reload_best_for_eval(args, tokenizer, save_dir):
 @torch.no_grad()
 def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str, Any]:
     model.eval()
-    all_preds, all_probs, all_golds, all_sources, all_ids = [], [], [], [], []
+    all_preds, all_probs, all_logits, all_golds, all_sources, all_ids = [], [], [], [], [], []
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
@@ -499,18 +535,21 @@ def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str,
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits.float().cpu().numpy()
             probs = torch.softmax(outputs.logits.float(), dim=-1).cpu().numpy()
 
+        all_logits.append(logits)
         all_probs.append(probs)
         all_preds.append(np.argmax(probs, axis=-1))
         all_golds.append(labels.numpy())
         all_sources.extend(sources)
 
-    probs = np.concatenate(all_probs, axis=0)
-    preds = np.concatenate(all_preds, axis=0)
-    golds = np.concatenate(all_golds, axis=0)
+    logits = np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 3))
+    probs = np.concatenate(all_probs, axis=0) if all_probs else np.empty((0, 3))
+    preds = np.concatenate(all_preds, axis=0) if all_preds else np.empty((0,))
+    golds = np.concatenate(all_golds, axis=0) if all_golds else np.empty((0,))
 
-    acc = float(np.mean(preds == golds))
+    acc = float(np.mean(preds == golds)) if len(golds) > 0 else 0.0
     calib = compute_calibration_metrics(probs, golds)
 
     # Breakdown by source
@@ -526,6 +565,8 @@ def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str,
         "by_source": by_source_acc,
         "n_samples": len(golds),
         "label_dist": dict(Counter(preds.tolist())),
+        "logits": logits,
+        "golds": golds,
         **({"items": [
             {"id": i, "source": s, "gold": int(g), "pred": int(p),
              "confidence": float(max(pr)), "correct": bool(p == g)}
@@ -553,6 +594,8 @@ if __name__ == "__main__":
     parser.add_argument("--lora-r", type=int, default=64, help="LoRA rank (default: 64)")
     parser.add_argument("--lora-alpha", type=int, default=128, help="LoRA alpha scaling (default: 128)")
     parser.add_argument("--lora-all-projections", action="store_true", default=True, help="Target all 7 linear projections")
+    parser.add_argument("--token-bucketing", action="store_true", help="Enable deterministic token-bucket batching (decider style)")
+    parser.add_argument("--max-tokens-per-batch", type=int, default=2048, help="Token budget per batch when using token bucketing")
     parser.add_argument("--qat", action="store_true", default=False, help="Enable Quantization-Aware Training (QAT)")
     parser.add_argument(
         "--target-quant",

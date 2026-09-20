@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from gate_decision import ece_from_items, evaluate_gate, mcnemar_p  # noqa: E402
+from gate_decision import ece_from_items, evaluate_gate, mcnemar_p, position_bias_index  # noqa: E402
 
 
 def test_mcnemar_balanced_discordance_is_not_significant():
@@ -107,6 +107,42 @@ def test_mcnemar_large_count_equal_discordance():
     assert abs(p - 1.0) < 1e-6, f"expected p=1.0 when b=c >= 25, got {p}"
 
 
+def test_position_bias_index_uniform_is_zero():
+    # Perfectly uniform 3-way distribution
+    preds = [0, 1, 2] * 100
+    pbi = position_bias_index(preds, k_options=3)
+    assert abs(pbi) < 1e-6, f"Uniform preds should have PBI 0, got {pbi}"
+
+
+def test_position_bias_index_skewed_is_large():
+    # Heavily skewed towards option 0
+    preds = [0] * 300
+    pbi = position_bias_index(preds, k_options=3)
+    expected = 4.0 / 9.0  # 1/3 * (|1 - 1/3| + |0 - 1/3| + |0 - 1/3|) = 4/9 ~ 0.4444
+    assert abs(pbi - expected) < 1e-5, f"Expected {expected}, got {pbi}"
+
+
+def test_evaluate_gate_rejects_position_bias_regression():
+    import json as _json
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        # Arm A: Balanced predictions across choices (pred: 0, 1, 2)
+        a = [{"id": f"i{i}", "correct": i >= 30, "confidence": 0.85, "pred": i % 3} for i in range(200)]
+        # Arm B: Higher accuracy, but heavily position-biased to option 0
+        b = [{"id": f"i{i}", "correct": i >= 5, "confidence": 0.975, "pred": 0} for i in range(200)]
+        for arm, rows in (("A", a), ("B", b)):
+            d = os.path.join(tmp, arm)
+            os.makedirs(d)
+            with open(os.path.join(d, "test_items.jsonl"), "w") as f:
+                for r in rows:
+                    f.write(_json.dumps(r) + "\n")
+        verdict = evaluate_gate(os.path.join(tmp, "A"), os.path.join(tmp, "B"))
+        assert verdict["passed"] is False, "gate must fail when position bias regresses beyond tolerance"
+        assert verdict["pbi_passed"] is False, "pbi_passed must be False"
+        assert verdict["pbi_armB"] > verdict["pbi_armA"] + 0.02
+
+
 TESTS = [test_mcnemar_balanced_discordance_is_not_significant,
          test_mcnemar_large_count_equal_discordance,
          test_mcnemar_extreme_imbalance_is_significant,
@@ -114,7 +150,10 @@ TESTS = [test_mcnemar_balanced_discordance_is_not_significant,
          test_ece_perfectly_calibrated_is_near_zero,
          test_ece_overconfident_is_large,
          test_evaluate_gate_passes_only_on_rule,
-         test_export_validated_synthetic_excludes_failures]
+         test_export_validated_synthetic_excludes_failures,
+         test_position_bias_index_uniform_is_zero,
+         test_position_bias_index_skewed_is_large,
+         test_evaluate_gate_rejects_position_bias_regression]
 
 
 def main() -> int:

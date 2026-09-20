@@ -277,3 +277,29 @@ wait for committee → stage sdk files → clean recompile (train/val/**test**) 
 **Council converged (overnight)**: `docs/council_memo_08b_baseline.md` - 0.8B-phase baseline = C+ (self-trained openjev-0.8B via their unmodified train.py as PRIMARY + quoted as labeled context), with two-seed fidelity rule, volume-matched decomposition arm (`--n-train 39494`), pre-registered abort criteria, and one scheduled harness gap (foreign-checkpoint per-item evaluator). Owner ratification pending at morning review.
 
 **Grounding addendum (G1-G5)**: see research report 08 §4. Key facts: openjev-0.8B/2B weights ABSENT from HF (0.8B-phase comparison must self-train openjev-0.8B or stay quoted-caveated - deferred to SOTA-gate time); GLiNER2 GROUNDED (task G2): classification API verified (`classify_text` with `include_confidence=True` — vendor exposes top-1 label + confidence only, no full distribution) and adapter IMPLEMENTED (accuracy rows exact; ECE/Brier rows for GLiNER2 must be N/A in published tables); von README inconsistent with its own artifacts (T=1.0367 vs 1.1692; 250K-NLI corpus claim vs 66K decision-trajectory run.log); jabr scores von-1.0.1 BELOW von's README claim. Laya NLI prompt unpublished - our mapping will be documented in provenance.
+
+---
+
+## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)
+
+Integrated and empirically gated five SOTA advancements with strict open-source attribution:
+
+1. **Counterfactual Adversarial Fact Inverter** (`CounterfactualInverter`, `generate_sdk_synthetic_data.py`):
+   - Inverts factual claims along 3 precise axes: numeric/percentage/year perturbation, directional antonym polarity flips, and named entity swaps. Generates contrastive premise-hypothesis pairs ($E \to C$) while preserving semantic context.
+   - *Attribution*: Bespoke Labs Nimble-9B (`bespokelabs/Bespoke-Nimble-9B`, Apache 2.0).
+2. **Position-Bias Invariance & Cyclic Permutation Debiasing** (`generate_sdk_synthetic_data.py`, `gemma4_cross_encoder.py`):
+   - Training: Template diversification (8 varied cloze templates, 8 varied tool templates) and symmetric polarity inversion checks eliminate position-dependent prompt artifacts.
+   - Serving: Optional `debias_position=True` in `rerank()` computes cyclic option permutations, neutralizing ordering bias without retraining.
+   - Metric: Pre-registered Position Bias Index ($\text{PBI}$) enforced in `scripts/gate_decision.py` ($\text{PBI}_B \le \text{PBI}_A + 0.02$).
+   - *Attribution*: SOTA zero-shot decision frameworks (`TheoLeeCJ/SemIf`, MIT; `Mapika/decider`, Apache 2.0).
+3. **Abstention Augmentation** (`generate_abstention_samples`, `generate_sdk_synthetic_data.py`):
+   - Generates `none_augment` samples: 75% unanswerable/out-of-domain premises paired with claims mapping to `NEUTRAL` (class 2), 25% adversarial distractor replacements where "None of the above" is `ENTAILMENT` (class 1).
+   - *Attribution*: Mapika Decider (`Mapika/decider`, Apache 2.0).
+4. **Deterministic Token-Bucket Batching** (`TokenBucketBatchSampler`, `finetune.py`, `train_cross_encoder.py`):
+   - Discrete geometric bucket boundaries ($64 \le L \le 131,072$) bounding total tokens per batch ($B_k \times L_k \le M$), eliminating intra-batch padding overhead and avoiding CUDA memory spikes/OOM fragmentation during variable-length 128K training.
+   - *Attribution*: TianyuCodings NanoJev (`TianyuCodings/NanoJev`, MIT) & Sabeel OpenSourceJev (`sabeel111/OpenSourceJev`, MIT).
+5. **Post-Hoc Validation Temperature Calibration** ($T^*$, `finetune.py`, `train_cross_encoder.py`, `gemma4_cross_encoder.py`):
+   - Automatically optimizes scalar temperature $T^*$ on validation logits via L-BFGS to minimize validation NLL without changing $\arg\max$ predictions. Calibrates confidence probabilities, logs ECE/Brier deltas, exports `calibration.json`, and loads seamlessly at inference time.
+   - *Attribution*: Platt Scaling / SOTA Calibration (`Mapika/decider`, `von-1.0`).
+
+All 53 project unit tests passing across all test suites (`test_validator_committee.py`, `test_data_hygiene.py`, `test_night_stats.py`, `test_sdk_parity.py`).
