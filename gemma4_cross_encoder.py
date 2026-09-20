@@ -646,6 +646,9 @@ class Gemma4CrossEncoder:
     ) -> RerankResult:
         """Reranks options by argmax score.
         
+        if not options:
+            raise ValueError("rerank requires at least one option (audit LOW-MED: empty-array crash)")
+        
         Args:
             premise: Context or question string
             options: List of candidate answers or continuations

@@ -62,6 +62,10 @@ class ValidationMetricsDB:
             self.conn = sqlite3.connect(db_path)
         # WHY: name-addressable rows (sqlite3.Row) so analysis queries read r["judge_model"].
         self.conn.row_factory = sqlite3.Row
+        # WHY: WAL + busy timeout - the committee writes batches while the watchdog,
+        # chain polls, and analysis sessions read concurrently (audit MEDIUM: locked DB).
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.executescript(DB_SCHEMA)
         self.conn.commit()
 
@@ -112,6 +116,34 @@ class ValidationMetricsDB:
             row = self.conn.execute(
                 "SELECT COUNT(*) AS n FROM sample_verdicts WHERE run_id = ? AND judge_model = ?",
                 (run_id, judge_model)).fetchone()
+        return int(row["n"])
+
+    def purge_non_ok(self, judge_model: Optional[str] = None, run_id: Optional[str] = None) -> int:
+        """Deletes failed verdict rows (offline/parse_error/missing/invalid) so resume
+        regenerates them instead of baking them as done (audit MEDIUM).
+
+        Scoped to one judge (typical: at judge start) or a whole run (at chain pause).
+
+        Example:
+            n = db.purge_non_ok(run_id="run_20260919_223701")
+        """
+        if judge_model is not None:
+            cur = self.conn.execute(
+                "DELETE FROM sample_verdicts WHERE judge_model = ? AND status != 'ok'",
+                (judge_model,))
+        elif run_id is not None:
+            cur = self.conn.execute(
+                "DELETE FROM sample_verdicts WHERE run_id = ? AND status != 'ok'", (run_id,))
+        else:
+            raise ValueError("purge_non_ok requires judge_model or run_id")
+        self.conn.commit()
+        return cur.rowcount
+
+    def persisted_ok_count(self, run_id: str, judge_model: str) -> int:
+        """Count of OK verdicts for one judge in one run (liveness/progress polling)."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM sample_verdicts WHERE run_id = ? AND judge_model = ?"
+            " AND status = 'ok'", (run_id, judge_model)).fetchone()
         return int(row["n"])
 
     def persisted_verdicts(self, run_id: str, judge_model: str,

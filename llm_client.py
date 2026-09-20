@@ -98,7 +98,7 @@ class LLMEndpointClient:
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8")
         except Exception as e:
             self.last_latency_ms = (time.monotonic() - started) * 1000.0
             self.last_usage = None
@@ -106,8 +106,15 @@ class LLMEndpointClient:
             return None
 
         self.last_latency_ms = (time.monotonic() - started) * 1000.0
-        self.last_usage = data.get("usage")
-        msg = data["choices"][0]["message"]
+        try:
+            # WHY: a 200 response with a non-OpenAI body (proxy error page, HTML) must
+            # degrade to None, never crash the committee (audit HIGH: parse outside try).
+            data = json.loads(raw)
+            self.last_usage = data.get("usage")
+            msg = data["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            print(f"  [LLMEndpointClient Error ({self.model})] malformed response body: {e}")
+            return None
         content = msg.get("content", "")
         # WHY: DeepSeek-style reasoning models emit analysis in `reasoning_content`
         # while the GBNF-constrained answer lands in `content`; only fall back when

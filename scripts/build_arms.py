@@ -77,40 +77,54 @@ def build_arms(data_dir: str, synthetic_frac: float, seed: int) -> Dict:
     return manifest
 
 
-def export_validated_synthetic(raw_path: str, db_path: str, out_path: str,
-                               judge_model: str, min_label: int = 0) -> Dict:
-    """Exports judge-validated synthetic rows (status=ok only) to a staged training file.
+def export_validated_synthetic(raw_path: str, db_path: str, out_train_path: str,
+                               out_val_path: str, run_id: str, judge_model: str,
+                               val_frac: float = 0.1, seed: int = 42) -> Dict:
+    """Exports judge-validated synthetic rows (status=ok only, run-scoped) with a
+    seeded validation holdback.
 
-    Rows whose validation failed (offline/parse_error/missing) are excluded - they are
-    review-queue material, not training data. Returns counts for the manifest.
+    WHY the holdback (audit CRITICAL): training arms must never see rows that a later
+    compile will place in sdk_synthetic_val (selection/test pools) - otherwise the
+    forward dataset is contaminated by the ablation. Train rows -> out_train_path;
+    holdback rows -> out_val_path (compiler val pool only).
 
     Example:
         stats = export_validated_synthetic("data/sdk_synthetic_raw.jsonl",
                                            "data/validation_metrics.db",
                                            "data/staged/sdk_synthetic_train.jsonl",
-                                           "qwen-3.6-27b-q4")
+                                           "data/staged/sdk_synthetic_val.jsonl",
+                                           run_id="run_20260919_223701", judge_model="qwen-3.6-27b-q4")
     """
     import sqlite3
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     verdicts = conn.execute(
         "SELECT sample_id, verdict_label FROM sample_verdicts"
-        " WHERE judge_model = ? AND status = 'ok'", (judge_model,)).fetchall()
+        " WHERE judge_model = ? AND status = 'ok' AND run_id = ?", (judge_model, run_id)).fetchall()
     conn.close()
     label_by_id = {r["sample_id"]: int(r["verdict_label"]) for r in verdicts}
 
     raw = _load_jsonl(raw_path) if os.path.exists(raw_path) else _load_jsonl(
-        os.path.join(os.path.dirname(out_path), "sdk_synthetic_raw.jsonl"))
-    kept, excluded = [], 0
+        os.path.join(os.path.dirname(out_train_path), "sdk_synthetic_raw.jsonl"))
+    validated, excluded = [], 0
     for row in raw:
         sid = row["id"]
         if sid not in label_by_id:
             excluded += 1
             continue
-        kept.append({**row, "label": label_by_id[sid]})
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    _write_jsonl(out_path, kept)
-    return {"validated_rows": len(kept), "excluded_rows": excluded, "judge_model": judge_model}
+        validated.append({**row, "label": label_by_id[sid]})
+
+    rng = random.Random(seed)
+    rng.shuffle(validated)
+    n_val = int(len(validated) * val_frac)
+    val_rows, train_rows = validated[:n_val], validated[n_val:]
+
+    os.makedirs(os.path.dirname(out_train_path), exist_ok=True)
+    _write_jsonl(out_train_path, train_rows)
+    _write_jsonl(out_val_path, val_rows)
+    return {"validated_rows": len(validated), "excluded_rows": excluded,
+            "train_rows": len(train_rows), "val_holdback_rows": len(val_rows),
+            "judge_model": judge_model, "run_id": run_id, "single_judge": True}
 
 
 def main() -> None:

@@ -190,7 +190,8 @@ class LatentMLPHead:
     def load(cls, path: str, device: str | None = None) -> "LatentMLPHead":
         cfg = json.load(open(os.path.join(path, "config.json")))
         head = cls(device=device, **cfg)
-        head.model.load_state_dict(torch.load(os.path.join(path, "head.pt"), map_location=head.device))
+        # HARDENED (2026-09-20 audit): weights_only blocks arbitrary pickle execution
+        head.model.load_state_dict(torch.load(os.path.join(path, "head.pt"), map_location=head.device, weights_only=True))
         z = np.load(os.path.join(path, "norm.npz"))
         head.mu, head.sd = z["mu"], z["sd"]
         head.model.eval()

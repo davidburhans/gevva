@@ -89,11 +89,15 @@ def test_export_validated_synthetic_excludes_failures():
             ("r1", "s1", "src", "qwen-j", 1, 2, "ok", "r", 0, 10.0, "now"),
             ("r1", "s2", "src", "qwen-j", 1, 1, "parse_error", "r", None, 10.0, "now"),
         ])
-        out = Path(tmp) / "staged" / "syn.jsonl"
-        stats = export_validated_synthetic(str(raw), str(db.db_path), str(out), "qwen-j")
+        out_train = Path(tmp) / "staged" / "syn_train.jsonl"
+        out_val = Path(tmp) / "staged" / "syn_val.jsonl"
+        stats = export_validated_synthetic(str(raw), str(db.db_path), str(out_train),
+                                           str(out_val), run_id="r1", judge_model="qwen-j")
         assert stats["validated_rows"] == 2 and stats["excluded_rows"] == 1
-        kept = [_json.loads(l) for l in open(out, encoding="utf-8")]
+        assert stats["val_holdback_rows"] == 0 and stats["train_rows"] == 2
+        kept = [_json.loads(l) for l in open(out_train, encoding="utf-8")]
         assert {(r["id"], r["label"]) for r in kept} == {("s0", 0), ("s1", 2)}
+        assert not out_val.exists() or out_val.stat().st_size == 0
         db.close()
 
 

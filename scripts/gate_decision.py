@@ -15,35 +15,44 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 
 def mcnemar_p(b: int, c: int) -> float:
-    """Two-sided McNemar p via chi2(1) with continuity correction.
+    """Two-sided McNemar p. Exact binomial when discordant counts are small (< 25),
+    continuity-corrected chi2 otherwise (audit: chi2 breaks down on small counts).
 
-    P(chi2_1 > x) = erfc(sqrt(x/2)). b/c = counts of A-right/B-wrong and A-wrong/B-right.
-
-    Example: round(mcnemar_p(1, 9), 4) == 0.0269
+    Example: round(mcnemar_p(1, 9), 4) == 0.0215  # exact binomial
     """
     if b + c == 0:
         return 1.0
+    if b + c < 25:
+        from math import comb
+        n = b + c
+        tail = sum(comb(n, k) for k in range(0, min(b, c) + 1))
+        return min(1.0, 2.0 * tail / 2 ** n)
     chi2 = (abs(b - c) - 1) ** 2 / (b + c)
     return math.erfc(math.sqrt(chi2 / 2.0))
 
 
 def ece_from_items(items: List[Dict], n_bins: int = 15) -> float:
-    """ECE over (confidence, correct) pairs with equal-width bins on [1/3, 1]."""
-    lo, width = 1.0 / 3.0, (1.0 - 1.0 / 3.0) / n_bins
+    """ECE over (confidence, correct) pairs; confidences below 1/3 are clamped into
+    the first bin (impossible for a 3-class softmax, defensive for other sources)."""
+    lo, hi = 1.0 / 3.0, 1.0
+    width = (hi - lo) / n_bins
     total = len(items)
+    if total == 0:
+        return 0.0
     ece = 0.0
     for k in range(n_bins):
-        bin_lo = lo + k * width
-        members = [i for i in items if bin_lo <= i["confidence"] < bin_lo + width
-                   or (k == n_bins - 1 and i["confidence"] <= 1.0 and i["confidence"] >= bin_lo)]
+        bin_lo, bin_hi = lo + k * width, lo + (k + 1) * width
+        members = [i for i in items if (bin_lo <= i["confidence"] < bin_hi)
+                   or (k == n_bins - 1 and bin_lo <= i["confidence"] <= hi)
+                   or (k == 0 and i["confidence"] < lo)]
         if not members:
             continue
         acc = sum(1 for i in members if i["correct"]) / len(members)
-        conf = sum(i["confidence"] for i in members) / len(members)
+        conf = sum(min(max(i["confidence"], lo), hi) for i in members) / len(members)
         ece += len(members) / total * abs(acc - conf)
     return ece
 
@@ -55,9 +64,15 @@ def _load_items(arm_dir: str) -> Dict[str, Dict]:
 
 
 def evaluate_gate(arm_a_dir: str, arm_b_dir: str, alpha: float = 0.05,
-                  ece_tolerance: float = 0.01) -> Dict:
+                  ece_tolerance: float = 0.01, expected_test_sha: Optional[str] = None) -> Dict:
     items_a = _load_items(arm_a_dir)
     items_b = _load_items(arm_b_dir)
+    if expected_test_sha:
+        for d, items in ((arm_a_dir, items_a), (arm_b_dir, items_b)):
+            got = next(iter(items.values())).get("test_sha") if items else None
+            if got and got != expected_test_sha:
+                raise ValueError(f"{d}: test_sha mismatch ({got} != {expected_test_sha}) - "
+                                 "arms were evaluated against different test files")
     shared = sorted(set(items_a) & set(items_b))
     if len(shared) < 100:
         raise ValueError(f"paired test items too few: {len(shared)}")

@@ -634,7 +634,12 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
 
         row = {
             "id": f"vision_{i:06d}",
-            "premise": "<|vision_start|>" + "<|image_pad|>" * 280 + "<|vision_end|> An image showing geometric figures.",
+            # WHY plain text (audit CRITICAL): literal <|vision_start|>/<|image_pad|>
+            # markers EXPAND to 1,698 image tokens in text-only tokenization - truncated
+            # garbage in training and an SDK assertion hazard. The marker string is
+            # preserved in metadata for the image-into-collator fix (A7).
+            "premise": "An image showing geometric figures.",
+            "premise_markers": "<|vision_start|>" + "<|image_pad|>" * 280 + "<|vision_end|>",
             "hypothesis": claim,
             "label": rel_type,
             "source": "multimodal_synth",

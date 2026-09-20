@@ -237,6 +237,13 @@ def run_validator_committee(
 
 def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
                       judge_idx: int, num_judges: int, ctx: CommitteeContext) -> None:
+    if ctx.db is not None:
+        # WHY: hygiene at judge start - failed rows (offline/parse) from a previous
+        # run must be regenerated, never baked into the done-set (audit MEDIUM).
+        purged = ctx.db.purge_non_ok(judge_model)
+        if purged:
+            log_line = f"  [{judge_model}] purged {purged} stale failed verdicts at resume"
+            print(log_line, flush=True)
     done = (ctx.db.persisted_verdicts(ctx.run_id, judge_model, [s["id"] for s in ctx.samples])
             if ctx.db else {})
     pending = [i for i, s in enumerate(ctx.samples) if s["id"] not in done]
@@ -394,26 +401,37 @@ def _resolve_sample(gen_label: int, votes: Dict[str, JudgeVerdict],
                 return CommitteeDecision(final, 1.0, soft, "unanimous_with_judge_failures",
                                          "partial_committee_failure", True, "medium")
             return CommitteeDecision(final, 1.0, soft, "unanimous_committee_consensus", None, False, "none")
-        return _override_decision(gen_label, final, soft)
+        return _override_decision(gen_label, final, soft, num_ok, len(failed))
 
     return CommitteeDecision(final, max_count / num_ok, soft,
                              f"majority_committee_vote_{max_count}_of_{num_ok}",
                              "committee_split", True, "high")
 
 
-def _override_decision(gen_label: int, final: int, soft: List[float]) -> CommitteeDecision:
-    """Unanimous validator override of the generator label (control harvesting)."""
+def _override_decision(gen_label: int, final: int, soft: List[float], n_ok: int, n_failed: int) -> CommitteeDecision:
+    """Unanimous validator override of the generator label (control harvesting).
+
+    Audit fix (CRITICAL): a 'unanimous' override from an incomplete committee is NOT
+    a low-severity control. If any judge failed, confidence reflects the reduced
+    quorum and severity escalates (remaining judges may share a systematic bias).
+    """
+    confidence = round(n_ok / (n_ok + n_failed), 3) if (n_ok + n_failed) else 0.0
+    degraded = n_failed > 0
     if gen_label == ENTAILMENT and final == CONTRADICTION:
-        return CommitteeDecision(final, 1.0, soft, "committee_adversarial_negative_control",
-                                 "unanimous_label_override", True, "low")
+        return CommitteeDecision(final, confidence, soft, "committee_adversarial_negative_control",
+                                 "unanimous_label_override", True,
+                                 "medium" if degraded else "low")
     if gen_label == ENTAILMENT and final == NEUTRAL:
-        return CommitteeDecision(final, 1.0, soft, "committee_neutral_boundary_control",
-                                 "unanimous_label_override", True, "low")
+        return CommitteeDecision(final, confidence, soft, "committee_neutral_boundary_control",
+                                 "unanimous_label_override", True,
+                                 "medium" if degraded else "low")
     if gen_label == CONTRADICTION and final == NEUTRAL:
-        return CommitteeDecision(final, 1.0, soft, "committee_relabelled_neutral",
-                                 "unanimous_label_override", True, "low")
-    return CommitteeDecision(final, 1.0, soft, "committee_unanimous_override",
-                             "unanimous_label_override", True, "medium")
+        return CommitteeDecision(final, confidence, soft, "committee_relabelled_neutral",
+                                 "unanimous_label_override", True,
+                                 "medium" if degraded else "low")
+    return CommitteeDecision(final, confidence, soft, "committee_unanimous_override",
+                             "unanimous_label_override", True,
+                             "high" if degraded else "medium")
 
 
 def _soft(tally: Counter, num_ok: int) -> List[float]:

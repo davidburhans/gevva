@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """tonight_chain.py - Sequenced single-GPU pipeline (strictly serial, no contention).
 
- 1. wait-judge1     : poll until qwen-3.6-27b-q4 has 7515 ok verdicts (committee live)
- 2. pause-committee : kill committee process group, purge non-ok rows, unload qwen
- 3. train-armA      : clean-only baseline model (the synthetic gate's baseline)
- 4. export          : qwen-validated synthetic rows -> data/staged/
- 5. arms            : build_arms (A=clean, B=clean + <=12.5% validated synthetic)
- 6. train-armB      : synthetic arm
- 7. resume-committee: judges 2-4 in owner order (q3 -> q4 -> deepseek LAST), watchdog re-armed
+ 1. ensure-committee : launch the committee if not alive (resume, explicit run id)
+ 2. wait-judge1      : poll run-scoped ok verdicts; liveness-checked, auto-relaunch <=3x
+ 3. pause            : kill committee group, purge ALL run non-ok rows, unload, GPU drain-wait
+ 4. compile          : data_pipeline --quick (sanitized vision premises, fresh train/val/test)
+ 5. train-armA       : clean-only baseline (the synthetic gate's baseline model)
+ 6. export           : qwen-validated synthetic rows, 10% val holdback (forward-contamination guard)
+ 7. arms             : build_arms (A=clean, B=clean + <=12.5% validated synthetic)
+ 8. train-armB       : synthetic arm
+ 9. gate             : gate_decision (rc 3 = legitimate FAIL, recorded)
+10. resume-committee : judges 2-4 in owner order (q3 -> q4 -> deepseek LAST), liveness-verified
 
-Every stage logs to results/tonight_chain.log; status in results/tonight_chain_status.json.
+SAFETY: any failure after pause writes results/committee_alert.json and ALWAYS resumes
+the committee in `finally` - validation never dies overnight (audit NIGHT-WASTER 3).
+The legacy run_night_queue driver must not be running (startup guard kills it).
 """
 
 import json
@@ -33,6 +38,10 @@ JUDGE1 = "qwen-3.6-27b-q4"
 TOTAL = 7515
 QUEUE_LOG = REPO / "results" / "tonight_chain.log"
 STATUS = REPO / "results" / "tonight_chain_status.json"
+ALERT = REPO / "results" / "committee_alert.json"
+PID_FILE = REPO / "results" / "sdk_synthetic_run.pid"
+COMMITTEE_LOG = REPO / "results" / "tonight_chain" / "committee_resume.log"
+MAX_COMMITTEE_RESTARTS = 3
 
 
 def log(msg: str) -> None:
@@ -51,7 +60,15 @@ def set_stage(stage: str, state: str, detail: str = "") -> None:
     log(f"[{stage}] {state} {detail}")
 
 
-def run(cmd: list, log_name: str, timeout_s: int = 10 * 3600) -> int:
+def write_alert(alert: str, detail: Dict) -> None:
+    ALERT.parent.mkdir(parents=True, exist_ok=True)
+    ALERT.write_text(json.dumps({"alert": alert, "detail": detail,
+                                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                                indent=2))
+    log(f"ALERT written: {alert}")
+
+
+def run(cmd: list, log_name: str, timeout_s: int = 12 * 3600) -> int:
     out = REPO / "results" / "tonight_chain" / log_name
     out.parent.mkdir(parents=True, exist_ok=True)
     log(f"$ {' '.join(cmd)}")
@@ -63,129 +80,251 @@ def run(cmd: list, log_name: str, timeout_s: int = 10 * 3600) -> int:
 
 
 def committee_pids() -> list:
-    out = subprocess.run(["pgrep", "-f", "python3 -u generate_sdk_syn"],
+    # WHY data\.py suffix: interpreter-agnostic (matches .venv/bin/python children too)
+    out = subprocess.run(["pgrep", "-f", "generate_sdk_synthetic_data\\.py"],
                          capture_output=True, text=True).stdout.split()
     return [int(p) for p in out]
 
 
 def kill_committee() -> None:
-    pids = committee_pids()
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    # uv wrapper parents too (they do not forward signals to the python child)
-    out = subprocess.run(["pgrep", "-f", "uv run python -u generate_sdk_syn"],
-                         capture_output=True, text=True).stdout.split()
-    for pid in [int(p) for p in out]:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    time.sleep(2)
-    log(f"committee pids killed: {pids}")
+    for round_no in range(3):
+        pids = committee_pids()
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        time.sleep(2)
+    log(f"committee kill rounds done; remaining: {committee_pids()}")
+
+
+def gpu_memory_used_mb() -> float:
+    out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True).stdout.strip().splitlines()[0]
+    return float(out)
+
+
+def wait_gpu_drain(threshold_mb: float = 2500.0, timeout_s: int = 180) -> bool:
+    """WHY: /models/unload is asynchronous - today train_A OOMed 8s after unload."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if gpu_memory_used_mb() < threshold_mb:
+            return True
+        time.sleep(5)
+    return gpu_memory_used_mb() < threshold_mb
 
 
 def unload_gpu_models() -> None:
+    errors = []
     try:
         with urllib.request.urlopen("http://localhost:8080/v1/models", timeout=10) as r:
             models = json.loads(r.read().decode()).get("data", [])
-        for m in models:
-            if m.get("status", {}).get("value") != "unloaded":
-                req = urllib.request.Request("http://localhost:8080/models/unload",
-                                             data=json.dumps({"model": m["id"]}).encode(),
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=30)
-                log(f"unloaded {m['id']}")
     except Exception as e:
-        log(f"unload skipped: {e}")
+        log(f"model list unavailable: {e}")
+        return
+    for m in models:
+        if m.get("status", {}).get("value") == "unloaded":
+            continue
+        req = urllib.request.Request("http://localhost:8080/models/unload",
+                                     data=json.dumps({"model": m["id"]}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=60)
+            log(f"unloaded {m['id']}")
+        except Exception as e:
+            errors.append(f"{m['id']}: {e}")
+    if errors:
+        log(f"unload errors: {errors}")
 
 
-def purge_non_ok(judge: str) -> int:
-    conn = sqlite3.connect(REPO / "data" / "validation_metrics.db")
-    cur = conn.execute("DELETE FROM sample_verdicts WHERE judge_model = ? AND status != 'ok'", (judge,))
+def resume_cmd() -> list:
+    validators = ["qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4", "deepseek-v4-flash-q3"]
+    return [sys.executable, "-u", "generate_sdk_synthetic_data.py",
+            "--teacher-url", "http://localhost:8080/v1", "--teacher-model", "gemma-4-31b-q4",
+            "--validator-url", "http://localhost:8080/v1", "--validators", ",".join(validators),
+            "--out-dir", "./data", "--resume-run", RUN_ID, "--validator-timeout", "600"]
+
+
+def ensure_committee() -> subprocess.Popen:
+    """Launches the committee (resume, explicit run id) and verifies liveness + progress log."""
+    COMMITTEE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(resume_cmd(), cwd=REPO, start_new_session=True,
+                            stdout=open(COMMITTEE_LOG, "a"), stderr=subprocess.STDOUT)
+    PID_FILE.write_text(str(proc.pid))
+    time.sleep(45)
+    if proc.poll() is not None:
+        raise RuntimeError(f"committee died within 45s rc={proc.poll()}")
+    tail = COMMITTEE_LOG.read_text()[-2000:] if COMMITTEE_LOG.exists() else ""
+    if "Resuming validation run" not in tail:
+        raise RuntimeError(f"committee log lacks resume marker; tail:\n{tail}")
+    log(f"committee live (pid {proc.pid}), liveness verified")
+    return proc
+
+
+def ensure_or_await_committee() -> subprocess.Popen:
+    """Returns a live committee handle; relaunches (<=3x) if dead or unresumable."""
+    for attempt in range(MAX_COMMITTEE_RESTARTS):
+        try:
+            return ensure_committee()
+        except RuntimeError as e:
+            log(f"committee start failed (attempt {attempt + 1}/{MAX_COMMITTEE_RESTARTS}): {e}")
+            write_alert("committee_start_failed", {"attempt": attempt + 1, "error": str(e)})
+            time.sleep(60)
+    raise RuntimeError("committee could not be started after max restarts")
+
+
+def wait_judge1(db_path: Path, proc: subprocess.Popen) -> None:
+    """Polls run-scoped ok verdicts with committee liveness + bounded auto-restart."""
+    restarts = 0
+    deadline = time.time() + 6 * 3600
+    while time.time() < deadline:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA busy_timeout=30000")
+        n = conn.execute(
+            "SELECT COUNT(*) FROM sample_verdicts WHERE run_id=? AND judge_model=? AND status='ok'",
+            (RUN_ID, JUDGE1)).fetchone()[0]
+        conn.close()
+        if n >= TOTAL:
+            log(f"judge 1 complete: {n}/{TOTAL} ok verdicts")
+            return
+        if proc.poll() is not None:
+            restarts += 1
+            if restarts > MAX_COMMITTEE_RESTARTS:
+                raise RuntimeError("committee keeps dying during judge 1 - giving up")
+            log(f"committee died mid-judge-1 (restart {restarts}/{MAX_COMMITTEE_RESTARTS}); relaunching")
+            write_alert("committee_died_during_judge1", {"restart": restarts})
+            proc = ensure_or_await_committee()
+        time.sleep(120)
+    raise TimeoutError("judge 1 did not complete in time")
+
+
+def purge_run_non_ok(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=30000")
+    cur = conn.execute("DELETE FROM sample_verdicts WHERE run_id = ? AND status != 'ok'", (RUN_ID,))
     conn.commit()
     n = cur.rowcount
     conn.close()
     return n
 
 
-def wait_judge1(db_path: Path, timeout_s: int = 4 * 3600) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        conn = sqlite3.connect(db_path)
-        n = conn.execute("SELECT COUNT(*) FROM sample_verdicts WHERE judge_model=? AND status='ok'",
-                         (JUDGE1,)).fetchone()[0]
-        conn.close()
-        if n >= TOTAL:
-            log(f"judge 1 complete: {n}/{TOTAL} ok verdicts")
-            return
-        log(f"judge 1 at {n}/{TOTAL} ok verdicts; waiting...")
-        time.sleep(120)
-    raise TimeoutError("judge 1 did not complete in time")
-
-
 def main() -> None:
     db_path = REPO / "data" / "validation_metrics.db"
+
+    # LAUNCH GUARD (audit NIGHT-WASTER 4): the legacy driver fires a stale stage list
+    # on committee exit and targets the same ckpt dirs. Retire it hard.
+    stale = subprocess.run(["pgrep", "-f", "run_night_queue\\.py"],
+                           capture_output=True, text=True).stdout.split()
+    for pid in [int(p) for p in stale]:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            log(f"killed stale night-queue driver pid {pid}")
+        except ProcessLookupError:
+            pass
+    legacy = REPO / "scripts" / "run_night_queue.py"
+    if legacy.exists():
+        legacy.rename(legacy.with_suffix(".py.retired"))
+        log("retired scripts/run_night_queue.py (superseded by tonight_chain)")
+
+    set_stage("ensure-committee", "running")
+    proc = ensure_or_await_committee()
+    set_stage("ensure-committee", "done", f"pid={proc.pid}")
+
     set_stage("wait-judge1", "running")
-    wait_judge1(db_path)
+    wait_judge1(db_path, proc)
 
-    set_stage("pause-committee", "running")
-    kill_committee()
-    purged = purge_non_ok(JUDGE1)
-    unload_gpu_models()
-    set_stage("pause-committee", "done", f"purged {purged} non-ok rows")
+    # From here the committee is intentionally stopped; EVERY failure path must
+    # resume it in `finally` so the multi-day validation tail never dies silently.
+    resumed_in_finally = False
 
-    set_stage("train-armA", "running")
-    rc = run([sys.executable, "-u", "train_cross_encoder.py", "--data-dir", "./data",
-              "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_A",
-              "--target-quant", "none", "--epochs", "3"], "armA_train.log", timeout_s=12 * 3600)
-    if rc != 0:
-        set_stage("train-armA", "failed", f"rc={rc}")
-        raise SystemExit(1)
-    set_stage("train-armA", "done")
+    def resume_in_finally() -> None:
+        nonlocal resumed_in_finally
+        if resumed_in_finally:
+            return
+        resumed_in_finally = True
+        try:
+            kill_committee()
+            proc2 = subprocess.Popen(resume_cmd(), cwd=REPO, start_new_session=True,
+                                     stdout=open(COMMITTEE_LOG, "a"), stderr=subprocess.STDOUT)
+            PID_FILE.write_text(str(proc2.pid))
+            write_alert("chain_failed_committee_resumed",
+                        {"note": "validation tail continues; chain stage failed - see tonight_chain logs"})
+            log(f"finally: committee resumed (pid {proc2.pid}) despite chain failure")
+        except Exception as e:
+            log(f"finally: committee resume FAILED: {e}")
 
-    set_stage("export", "running")
-    raw = REPO / "data" / "sdk_synthetic_raw.jsonl"
-    staged = REPO / "data" / "staged" / "sdk_synthetic_train.jsonl"
-    stats = export_validated_synthetic(str(raw), str(db_path), str(staged), JUDGE1)
-    set_stage("export", "done", json.dumps(stats))
-    log(f"exported validated synthetic: {stats}")
+    try:
+        set_stage("pause", "running")
+        kill_committee()
+        purged = purge_run_non_ok(db_path)
+        unload_gpu_models()
+        if not wait_gpu_drain():
+            raise RuntimeError("GPU did not drain after unload (possible foreign process)")
+        set_stage("pause", "done", f"purged {purged} non-ok rows; GPU drained")
 
-    set_stage("arms", "running")
-    manifest = build_arms(str(REPO / "data"), 0.125, 42)
-    set_stage("arms", "done", json.dumps(manifest))
+        set_stage("compile", "running")
+        rc = run([sys.executable, "-u", "data_pipeline.py", "--out-dir", "./data", "--quick"],
+                 "02_compile.log", timeout_s=3600)
+        if rc != 0:
+            set_stage("compile", "failed", f"rc={rc}")
+            raise SystemExit(1)
+        set_stage("compile", "done")
 
-    set_stage("train-armB", "running")
-    rc = run([sys.executable, "-u", "train_cross_encoder.py",
-              "--train-file", "data/armB_train.jsonl", "--data-dir", "./data",
-              "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_B",
-              "--target-quant", "none", "--epochs", "3"], "armB_train.log", timeout_s=12 * 3600)
-    if rc != 0:
-        set_stage("train-armB", "failed", f"rc={rc}")
-        raise SystemExit(1)
-    set_stage("train-armB", "done")
+        set_stage("train-armA", "running")
+        rc = run([sys.executable, "-u", "train_cross_encoder.py", "--data-dir", "./data",
+                  "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_A",
+                  "--target-quant", "none", "--epochs", "3"], "armA_train.log", timeout_s=12 * 3600)
+        if rc != 0:
+            set_stage("train-armA", "failed", f"rc={rc}")
+            raise SystemExit(1)
+        set_stage("train-armA", "done")
+
+        set_stage("export", "running")
+        staged_dir = REPO / "data" / "staged"
+        staged_dir.mkdir(exist_ok=True)
+        raw = REPO / "data" / "sdk_synthetic_raw.jsonl"
+        stats = export_validated_synthetic(str(raw), str(db_path),
+                                           str(staged_dir / "sdk_synthetic_train.jsonl"),
+                                           str(staged_dir / "sdk_synthetic_val.jsonl"),
+                                           run_id=RUN_ID, judge_model=JUDGE1, val_frac=0.1, seed=42)
+        if stats["validated_rows"] < 0.9 * TOTAL:
+            raise RuntimeError(f"validated synthetic too thin for a meaningful arm: {stats}")
+        set_stage("export", "done", json.dumps(stats))
+        log(f"exported validated synthetic: {stats}")
+
+        set_stage("arms", "running")
+        manifest = build_arms(str(REPO / "data"), 0.125, 42)
+        if manifest.get("armB_synthetic_rows", 0) <= 0:
+            raise RuntimeError("arm B has no synthetic rows - gate would be meaningless")
+        set_stage("arms", "done", json.dumps(manifest))
+
+        set_stage("train-armB", "running")
+        rc = run([sys.executable, "-u", "train_cross_encoder.py",
+                  "--train-file", "data/armB_train.jsonl", "--data-dir", "./data",
+                  "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_B",
+                  "--target-quant", "none", "--epochs", "3"], "armB_train.log", timeout_s=12 * 3600)
+        if rc != 0:
+            set_stage("train-armB", "failed", f"rc={rc}")
+            raise SystemExit(1)
+        set_stage("train-armB", "done")
+
+        set_stage("gate", "running")
+        rc = run([sys.executable, "-u", "scripts/gate_decision.py",
+                  "--arm-a", "ckpt/shakedown_A", "--arm-b", "ckpt/shakedown_B",
+                  "--out", "results/gate_decision.json"], "08_gate.log")
+        gate_path = REPO / "results" / "gate_decision.json"
+        gate_pass = gate_path.exists() and json.loads(gate_path.read_text()).get("passed", False)
+        set_stage("gate", "done" if rc in (0, 3) else "failed",
+                  f"passed={gate_pass} (single-judge pilot gate; flagship mixing requires the multi-judge gate)")
+    finally:
+        # ALWAYS keep the validation tail alive, even when a training stage fails.
+        resume_in_finally()
 
     set_stage("resume-committee", "running")
-    validators = ["qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4", "deepseek-v4-flash-q3"]
-    cmd = [sys.executable, "-u", "generate_sdk_synthetic_data.py",
-           "--teacher-url", "http://localhost:8080/v1", "--teacher-model", "gemma-4-31b-q4",
-           "--validator-url", "http://localhost:8080/v1", "--validators", ",".join(validators),
-           "--out-dir", "./data", "--resume-run", RUN_ID, "--validator-timeout", "600"]
-    proc = subprocess.Popen(cmd, cwd=REPO, start_new_session=True,
-                            stdout=open(REPO / "results" / "tonight_chain" / "committee_resume.log", "w"),
-                            stderr=subprocess.STDOUT)
-    (REPO / "results" / "sdk_synthetic_run.pid").write_text(str(proc.pid))
-    log(f"committee resumed (pid {proc.pid}) with judge order: {validators} - deepseek LAST")
-    # Re-arm the committee health watchdog for the multi-day judges 2-4 tail.
-    watchdog = subprocess.Popen([sys.executable, "-u", str(REPO / "scripts" / "committee_watchdog.py")],
-                                cwd=REPO, start_new_session=True,
-                                stdout=open(REPO / "results" / "tonight_chain" / "watchdog.log", "a"),
-                                stderr=subprocess.STDOUT)
-    (REPO / "results" / "committee_watchdog.pid").write_text(str(watchdog.pid))
-    log(f"watchdog re-armed (pid {watchdog.pid})")
-    set_stage("resume-committee", "done", f"pid={proc.pid}")
+    # The finally-block resume already relaunched the committee (judges 2-4, deepseek last).
+    set_stage("resume-committee", "done")
     set_stage("chain", "completed")
 
 

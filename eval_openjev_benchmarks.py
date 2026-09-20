@@ -241,7 +241,7 @@ def load_forbidden_nli_keys(data_dir: str = "data") -> set:
     global _FORBIDDEN_PAIR_KEYS
     if _FORBIDDEN_PAIR_KEYS is None:
         keys: set = set()
-        for name in ("train.jsonl", "val.jsonl"):
+        for name in ("train.jsonl", "val.jsonl", "test.jsonl"):
             path = os.path.join(data_dir, name)
             if not os.path.exists(path):
                 continue
