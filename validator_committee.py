@@ -20,15 +20,14 @@ Usage example:
 
 import json
 import os
-import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from llm_client import LLMEndpointClient
 from nli_labels import CONTRADICTION, ENTAILMENT, ID2LABEL, LABEL2ID, NEUTRAL
+from validation_metrics_db import RunSpec, ValidationMetricsDB, utc_now  # noqa: F401 (re-export)
 
 BATCH_VERDICT_SCHEMA = {
     "type": "array",
@@ -37,7 +36,7 @@ BATCH_VERDICT_SCHEMA = {
         "properties": {
             "id": {"type": "integer"},
             "verdict": {"type": "string", "enum": ["entailment", "contradiction", "neutral"]},
-            "rationale": {"type": "string"}
+            "rationale": {"type": "string", "maxLength": 240}
         },
         "required": ["id", "verdict", "rationale"]
     }
@@ -59,11 +58,6 @@ STATUS_PARSE_ERROR = "parse_error"  # batch response was not valid JSON
 STATUS_OFFLINE = "offline"      # transport-level failure / empty response
 
 
-def utc_now() -> str:
-    """UTC ISO-8601 timestamp for DB rows."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
 @dataclass(frozen=True)
 class JudgeVerdict:
     """One judge's raw verdict for one sample.
@@ -79,15 +73,6 @@ class JudgeVerdict:
     @property
     def ok(self) -> bool:
         return self.status == STATUS_OK and self.label in (CONTRADICTION, ENTAILMENT, NEUTRAL)
-
-
-@dataclass
-class RunSpec:
-    """Parameters describing one pipeline invocation, persisted in the `runs` table."""
-    teacher_model: str
-    validator_models: List[str]
-    samples_per_mode: int
-    seed: int
 
 
 @dataclass
@@ -111,98 +96,25 @@ class AggregateResult:
 
 
 # -----------------------------------------------------------------------------
-# SQLite Judge Metrics DB
-# -----------------------------------------------------------------------------
-# WHY: DDL lives in validator_schema.sql, reviewable independently of wrapper code (SRP).
-DB_SCHEMA = (Path(__file__).parent / "validator_schema.sql").read_text(encoding="utf-8")
-
-
-class ValidationMetricsDB:
-    """Thin SQLite wrapper persisting judge verdicts & batch telemetry for later analysis.
-
-    Inject an alternate `conn` (e.g. `:memory:`) in tests.
-
-    Example:
-        db = ValidationMetricsDB("data/validation_metrics.db")
-        run_id = db.start_run(RunSpec("gemma-4-31b-q4", ["qwen-3.6-27b-q4"], 10, 42))
-        db.finish_run(run_id, "completed", total_samples=60)
-    """
-
-    def __init__(self, db_path: str, conn: Optional[sqlite3.Connection] = None):
-        self.db_path = db_path
-        if conn is not None:
-            self.conn = conn
-        else:
-            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-            self.conn = sqlite3.connect(db_path)
-        # WHY: name-addressable rows (sqlite3.Row) so analysis queries read r["judge_model"].
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(DB_SCHEMA)
-        self.conn.commit()
-
-    def __enter__(self) -> "ValidationMetricsDB":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def close(self) -> None:
-        self.conn.close()
-
-    def start_run(self, spec: RunSpec, run_id: Optional[str] = None) -> str:
-        """Inserts a running run row; returns the run_id (timestamp-based by default)."""
-        rid = run_id or f"run_{time.strftime('%Y%m%d_%H%M%S')}"
-        self.conn.execute(
-            "INSERT INTO runs (run_id, started_at, teacher_model, validator_models,"
-            " samples_per_mode, seed, status) VALUES (?,?,?,?,?,?, 'running')",
-            (rid, utc_now(), spec.teacher_model, json.dumps(spec.validator_models),
-             spec.samples_per_mode, spec.seed),
-        )
-        self.conn.commit()
-        return rid
-
-    def finish_run(self, run_id: str, status: str = "completed", total_samples: Optional[int] = None) -> None:
-        self.conn.execute(
-            "UPDATE runs SET finished_at = ?, status = ?, total_samples = ? WHERE run_id = ?",
-            (utc_now(), status, total_samples, run_id),
-        )
-        self.conn.commit()
-
-    def record_batch(self, run_id: str, judge_model: str, batch_index: int,
-                     batch_size: int, parse_ok: bool, latency_ms: float) -> None:
-        self.conn.execute(
-            "INSERT INTO judge_batches (run_id, judge_model, batch_index, batch_size,"
-            " parse_ok, latency_ms, created_at) VALUES (?,?,?,?,?,?,?)",
-            (run_id, judge_model, batch_index, batch_size, int(parse_ok), latency_ms, utc_now()),
-        )
-        self.conn.commit()
-
-    def record_verdicts(self, rows: Sequence[Tuple]) -> None:
-        self.conn.executemany(
-            "INSERT INTO sample_verdicts (run_id, sample_id, source, judge_model,"
-            " generator_label, verdict_label, status, rationale, agreed_with_generator,"
-            " latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            rows,
-        )
-        self.conn.commit()
-
-    def record_final_labels(self, rows: Sequence[Tuple]) -> None:
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO final_labels (run_id, sample_id, generator_label,"
-            " final_label, confidence, needs_review, disagreement_type) VALUES (?,?,?,?,?,?,?)",
-            rows,
-        )
-        self.conn.commit()
-
-    def judge_summary(self, run_id: str) -> List[sqlite3.Row]:
-        cur = self.conn.execute(
-            "SELECT * FROM judge_performance WHERE run_id = ? ORDER BY judge_model", (run_id,))
-        return cur.fetchall()
-
-
-# -----------------------------------------------------------------------------
 # Single-Judge Batch Validation (raw verdicts only; flips happen at aggregation)
 # -----------------------------------------------------------------------------
+# Per-model thinking policy for batch validation (grounded by live A/B, 2026-09-20):
+# - qwen-3.6-27b-q4: thinking emits ~9K chars of hidden reasoning that truncates the
+#   token budget before the JSON completes (89% parse_error, 20.3s/batch). Off:
+#   3.2s/batch, 100% parse.
+# - deepseek-v4-flash-q3: thinking-OFF breaks batch completeness (returns 1 of 5
+#   items); its default mode delivers full batches at ~82s. Leave at vendor default.
+# - unknown models default to vendor behaviour; the watchdog alerts on failure rates.
+THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4"}
+
+
+def _chat_template_kwargs(client: Any) -> Optional[Dict[str, Any]]:
+    model = str(getattr(client, "model", ""))
+    if any(tag in model for tag in THINKING_DISABLED_MODELS):
+        return {"enable_thinking": False}
+    return None
+
+
 def validate_batch_consensus(
     client: Any,
     candidate_batch: List[Dict[str, Any]],
@@ -234,8 +146,14 @@ def validate_batch_consensus(
         system_prompt=VALIDATOR_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         temperature=0.0,
-        max_tokens=2048,
+        max_tokens=3072,
         response_format=response_format,
+        # WHY (measured 2026-09-20): with default thinking, validators emit ~9K chars of
+        # hidden reasoning that truncates the 2048-3072 token budget before the JSON
+        # completes (89% parse_error). Thinking-off: 3.2s vs 20.3s per batch, 100% parse.
+        # WHY: see THINKING_DISABLED_MODELS - hidden reasoning truncates the token
+        # budget before the JSON completes on affected models (89% parse_error measured).
+        chat_template_kwargs=_chat_template_kwargs(client),
     )
     latency = getattr(client, "last_latency_ms", None) or 0.0
     if not response:
@@ -271,6 +189,17 @@ def _parse_verdict(idx: int, candidate: Dict[str, Any],
 # -----------------------------------------------------------------------------
 # Committee Runner (judge-outer / batch-inner: zero model thrashing)
 # -----------------------------------------------------------------------------
+@dataclass
+class CommitteeContext:
+    """Shared state threaded through the per-judge batch loops."""
+    samples: List[Dict[str, Any]]
+    committee: List[Dict[str, JudgeVerdict]]
+    db: Optional[ValidationMetricsDB]
+    run_id: str
+    batch_size: int
+    checkpoint_path: Optional[str] = None
+
+
 def run_validator_committee(
     validator_url: str,
     validator_models: List[str],
@@ -278,14 +207,18 @@ def run_validator_committee(
     db: Optional[ValidationMetricsDB],
     run_id: str,
     batch_size: int = 5,
-    timeout: int = 180,
+    timeout: int = 600,
+    checkpoint_path: Optional[str] = None,
     client_factory: Optional[Callable[[str], Any]] = None,
 ) -> List[Dict[str, JudgeVerdict]]:
-    """Runs every judge over ALL samples before switching models.
+    """Runs every judge over ALL samples before switching models (resume-aware).
 
-    WHY: llama-swap serves `--models-max 1`; per-batch model switching would force a
-    multi-GB reload for every 5 samples. Batches are grouped per judge and each judge
-    is unloaded exactly once after its last batch.
+    WHY no thrashing: llama-swap serves `--models-max 1`; batches are grouped per judge
+    and each judge is unloaded exactly once after its last batch.
+    WHY resumable: verdicts commit to SQLite per batch. On restart, judges with fully
+    persisted samples are skipped WITHOUT loading the model, partially-persisted judges
+    only re-run incomplete batches, and the checkpoint JSONL is rewritten after each
+    judge completes.
 
     Returns a list aligned with `samples`: committee[i][judge] = JudgeVerdict.
     `client_factory` is an injection point for tests (fake LLM clients).
@@ -294,39 +227,93 @@ def run_validator_committee(
         committee = run_validator_committee(url, judges, samples, db, run_id, batch_size=5)
     """
     factory = client_factory or (lambda m: LLMEndpointClient(base_url=validator_url, model=m, timeout=timeout))
-    committee: List[Dict[str, JudgeVerdict]] = [dict() for _ in samples]
+    ctx = CommitteeContext(samples=samples, committee=[dict() for _ in samples],
+                           db=db, run_id=run_id, batch_size=batch_size,
+                           checkpoint_path=checkpoint_path)
     for judge_idx, judge_model in enumerate(validator_models, 1):
-        _run_single_judge(factory(judge_model), judge_model, judge_idx, len(validator_models),
-                          samples, committee, db, run_id, batch_size)
-    return committee
+        _run_single_judge(factory, judge_model, judge_idx, len(validator_models), ctx)
+    return ctx.committee
 
 
-def _run_single_judge(
-    client: Any,
-    judge_model: str,
-    judge_idx: int,
-    num_judges: int,
-    samples: List[Dict[str, Any]],
-    committee: List[Dict[str, JudgeVerdict]],
-    db: Optional[ValidationMetricsDB],
-    run_id: str,
-    batch_size: int,
-) -> None:
-    total_batches = (len(samples) + batch_size - 1) // batch_size
-    print(f"\n[Judge {judge_idx}/{num_judges}] {judge_model}: validating ALL {len(samples)} "
-          f"samples across {total_batches} batches before switching models (no llama-swap thrashing)")
-    for b_idx in range(0, len(samples), batch_size):
-        chunk = samples[b_idx:b_idx + batch_size]
-        verdicts = validate_batch_consensus(client, chunk)
-        latency = getattr(client, "last_latency_ms", None) or 0.0
-        if db is not None:
-            db.record_batch(run_id, judge_model, b_idx // batch_size, len(chunk),
-                            all(v.ok for v in verdicts), latency)
-            db.record_verdicts(_verdict_rows(run_id, judge_model, chunk, verdicts, latency))
-        for offset, (sample, verdict) in enumerate(zip(chunk, verdicts)):
-            committee[b_idx + offset][judge_model] = verdict
+def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
+                      judge_idx: int, num_judges: int, ctx: CommitteeContext) -> None:
+    done = (ctx.db.persisted_verdicts(ctx.run_id, judge_model, [s["id"] for s in ctx.samples])
+            if ctx.db else {})
+    pending = [i for i, s in enumerate(ctx.samples) if s["id"] not in done]
+    if done:
+        n_failed = sum(1 for r in done.values() if r["status"] != STATUS_OK)
+        if n_failed:
+            print(f"  WARNING: {n_failed}/{len(done)} persisted verdicts for {judge_model} are "
+                  f"FAILURES (offline/parse_error) - purge rows or they count as done on resume")
+    print(f"\n[Judge {judge_idx}/{num_judges}] {judge_model}: "
+          f"{len(ctx.samples) - len(pending)}/{len(ctx.samples)} verdicts persisted, "
+          f"{len(pending)} remaining - all batches run before switching models (no thrashing)")
+    if not pending:
+        _restore_persisted_verdicts(done, judge_model, ctx)
+        _write_checkpoint(ctx)
+        return
+    # WHY: the client is constructed lazily so a fully-persisted judge never even loads.
+    client = factory(judge_model)
+    total_batches = (len(ctx.samples) + ctx.batch_size - 1) // ctx.batch_size
+    for b_idx in range(0, len(ctx.samples), ctx.batch_size):
+        _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
     print(f"  Unloading {judge_model} after its final batch to free 100% VRAM for the next judge...")
     client.unload_model()
+    _write_checkpoint(ctx)
+
+
+def _validate_batch_or_restore(client: Any, judge_model: str, b_idx: int, total_batches: int,
+                               done: Dict[str, Any], ctx: CommitteeContext) -> None:
+    """Validates one batch via LLM, or restores it from the DB when already persisted."""
+    chunk = ctx.samples[b_idx:b_idx + ctx.batch_size]
+    if all(s["id"] in done for s in chunk):
+        for offset, sample in enumerate(chunk):
+            ctx.committee[b_idx + offset][judge_model] = _verdict_from_row(done[sample["id"]])
+        return
+    verdicts = validate_batch_consensus(client, chunk)
+    # WHY: one bounded retry for transport-level timeouts - a llama-swap blip would
+    # otherwise permanently bake STATUS_OFFLINE verdicts for a whole batch (audit
+    # finding: no-retry silently shrinks real judge coverage on multi-day runs).
+    if all(v.status == STATUS_OFFLINE for v in verdicts):
+        time.sleep(30)
+        verdicts = validate_batch_consensus(client, chunk)
+    latency = getattr(client, "last_latency_ms", None) or 0.0
+    if ctx.db is not None:
+        ctx.db.record_batch(ctx.run_id, judge_model, b_idx // ctx.batch_size, len(chunk),
+                            all(v.ok for v in verdicts), latency)
+        ctx.db.record_verdicts(_verdict_rows(ctx.run_id, judge_model, chunk, verdicts, latency))
+    for offset, (sample, verdict) in enumerate(zip(chunk, verdicts)):
+        ctx.committee[b_idx + offset][judge_model] = verdict
+
+
+def _restore_persisted_verdicts(done: Dict[str, Any], judge_model: str,
+                                ctx: CommitteeContext) -> None:
+    """Rebuilds committee verdicts entirely from DB rows (fully-done judge on resume)."""
+    for i, sample in enumerate(ctx.samples):
+        if sample["id"] in done:
+            ctx.committee[i][judge_model] = _verdict_from_row(done[sample["id"]])
+
+
+def _verdict_from_row(row: Any) -> JudgeVerdict:
+    """Rebuilds a JudgeVerdict from a persisted sample_verdicts row (resume path)."""
+    return JudgeVerdict(label=row["verdict_label"], rationale=row["rationale"] or "",
+                        status=row["status"], latency_ms=row["latency_ms"] or 0.0)
+
+
+def _write_checkpoint(ctx: CommitteeContext) -> None:
+    """Atomically snapshots all verdicts so far (one JSON line per sample, tmp+rename)."""
+    if not ctx.checkpoint_path:
+        return
+    tmp_path = ctx.checkpoint_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        for sample, votes in zip(ctx.samples, ctx.committee):
+            row = {"id": sample["id"], "votes": {
+                judge: {"label": v.label, "status": v.status, "rationale": v.rationale}
+                for judge, v in votes.items()}}
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, ctx.checkpoint_path)
 
 
 def _verdict_rows(run_id: str, judge_model: str, chunk: List[Dict[str, Any]],

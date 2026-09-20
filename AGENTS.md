@@ -84,6 +84,12 @@ Hypothesis: {hypothesis}
 ├── eval_openjev_benchmarks.py     # Direct head-to-head capability benchmark suite vs Jev/OpenJEV/Laya
 ├── data_pipeline.py               # Multi-source dataset compiler (NLI, vision, multilingual)
 ├── train_cross_encoder.py         # PyTorch training & calibration loop with in-loop QAT
+├── generate_sdk_synthetic_data.py # SDK-parity synthetic data engine (teacher + 4-judge committee)
+├── validator_committee.py         # Multi-judge consensus, disagreement queue, checkpoint/resume
+├── validation_metrics_db.py       # SQLite judge metrics DB (idempotent verdicts, judge_performance view)
+├── llm_client.py                  # OpenAI-compatible llama-server client (GBNF-constrained JSON)
+├── nli_labels.py                  # Shared label enum (0=contradiction, 1=entailment, 2=neutral)
+├── tests/                         # Offline test suite: uv run python tests/test_validator_committee.py
 ├── docs/
 │   └── CUSTOM_FINETUNING_GUIDE.md # User-facing custom fine-tuning guide & recipes
 ├── ckpt/

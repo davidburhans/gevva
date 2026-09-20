@@ -11,8 +11,8 @@ $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neut
 ## Key Highlights
 
 - **100% Drop-In Jev & OpenJEV API Parity**: Full signature and return-type compatibility with [`AlexWortega/openjev`](https://huggingface.co/AlexWortega/openjev) (`predict`, `rerank`, `grade`, `latents`, `LatentMLPHead`, `OpenJevCrossEncoder`).
-- **Production W4A16 Quantized Model**: Merged INT4 Group-32 weights (`model.safetensors`, 7.04 GB) with zero-VRAM-spike host-to-device streaming. Loads in 1.84s, runs in 5.1 GB VRAM, with **14.3 ms P50 latency** (72+ decisions/sec).
-- **World-Class Calibration**: Expected Calibration Error (ECE) of **0.0790** on out-of-distribution evaluation (vs Jev's 0.246 and Laya's 0.081).
+- **Production W4A16 Quantized Model**: Merged INT4 Group-32 weights (`model.safetensors`, 7.04 GB) with zero-VRAM-spike host-to-device streaming, **14.3 ms P50 latency** (≈69.9 decisions/sec, artifact: `results/benchmark_comparison_100.json`; 5.1 GB VRAM / 1.84 s load are dev measurements, not persisted artifacts).
+- **Strong Calibration**: ECE **0.0790** on a 100-example MNLI-matched slice (Jev 0.246 / Laya 0.081 are quoted publication figures; cross-dataset ECE ratios are not protocol-identical, and MNLI is in-distribution for our curriculum).
 - **1-Command Custom Data Fine-Tuning**: Auto-detects input formats (`.jsonl`, `.csv`, `.tsv`, `.parquet`), auto-maps column headers, normalizes string/int labels, and performs stratified auto-splitting with in-loop QAT.
 - **Multimodal & 128K Native**: Natively processes text and image tokens through Gemma 4's SigLIP vision tower with last-token sequence classification pooling.
 
@@ -20,7 +20,7 @@ $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neut
 
 ## Direct Capability Comparison vs. Jev, OpenJEV & Laya
 
-All benchmarks evaluated using the identical zero-shot evaluation protocols from TypeSafe AI and OpenJEV via [`eval_openjev_benchmarks.py`](file:///home/dave/workspaces/nli-cross-encoder/eval_openjev_benchmarks.py) on NVIDIA GeForce RTX 5090:
+**Provenance (2025-09-20 adversarial audit)**: **our** columns are local runs of [`eval_openjev_benchmarks.py`](file:///home/dave/workspaces/nli-cross-encoder/eval_openjev_benchmarks.py) on an RTX 5090 at n=100 seeded-shuffled slices (ECE on the MNLI-matched slice); **competitor** columns are quoted published constants (`REFERENCE_BENCHMARKS`, incl. tilde-estimates) with unknown hardware/protocol — so cross-model ratios ("2.4× faster", "4.3× more calibrated") are indicative only. Rerank columns use our post-hoc `margin` scoring; under the raw-entailment protocol competitors document, ours scores **0.52 / 0.37 / 0.19** on ARC-Easy / ARC-Challenge / MMLU (`results/benchmark_comparison_100.json`). openjev-**4B** outperforms our E2B model on most capability rows, and the strongest published baseline (openjev v2: ARC-C 0.72, MMLU 0.53) is not yet tabulated. At n=100, 95% CIs are ±9–10pp — deltas under ~10pp are not statistically meaningful. Baseline re-runs under one frozen protocol are tracked in [PROGRESS.md §8](file:///home/dave/workspaces/nli-cross-encoder/PROGRESS.md).
 
 | Benchmark Task / Metric | Jev 1.13.0 | openjev-4B | openjev-2B (2.0B) | ModernCE (395M) | Convai Laya (421M) | Gemma 4 E2B W4A16 (Stage 1) | Gemma 4 E2B W4A16 (Stage 2) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -39,9 +39,9 @@ All benchmarks evaluated using the identical zero-shot evaluation protocols from
 | **BoolQ (Yes/No Q&A)** | — | — | — | — | 0.830 | 0.7000 | **0.7000** |
 | **DAIR Emotion (6 classes)** | 0.480 | — | — | — | 0.595 | 0.5900 | **0.5700** |
 
-> **Key Findings on Stage 2 Training**:
-> 1. **Decisive Wins over Same-Size OpenJEV-2B**: Gemma 4 E2B W4A16 outperforms OpenJEV-2B across ARC-Easy (+8.1%), ARC-Challenge (+1.9%), WinoGrande (+6.6%), and MMLU Grade F1 (+1.2%), while achieving **2.4× faster inference latency (14.7 ms vs 35 ms)**.
-> 2. **World-Class Calibration**: With an ECE of **0.0572**, it is 36% more calibrated than OpenJEV-2B and 4.3× more calibrated than Jev 1.13.0.
+> **Key Findings on Stage 2 Training** *(2025-09-20 audit: deltas below are n=100 point estimates under margin scoring; see provenance note above)*:
+> 1. **Gains over Same-Size OpenJEV-2B under margin scoring**: ARC-Easy (+8.1pp), ARC-Challenge (+1.9pp), WinoGrande (+6.6pp), MMLU Grade F1 (+1.2pp) — all within n=100 noise bands individually; under the raw-entailment protocol, ours trails 2B on ARC/MMLU. Latency **14.7 ms measured locally vs 35 ms quoted** (unknown hardware/protocol) for OpenJEV-2B.
+> 2. **Calibration**: ECE **0.0572** (n=100 slice) vs OpenJEV-2B's quoted ~0.090 — directionally favorable, statistically unconfirmed.
 > 3. **Multi-Quant QAT Engine**: Supports native Blackwell NVFP4 (FP4 E2M1), GGUF Q4_K_M affine quant, and standard INT4 Group-32 (`compressed-tensors`).
 
 
@@ -130,6 +130,34 @@ uv run python eval_openjev_benchmarks.py --full --out-file results/benchmark_com
 ### Downstream Decisions & Tool Routing Benchmark
 ```bash
 uv run python eval_downstream_decisions.py --model-path ./ckpt/gemma-4-e2b-nli-w4a16
+```
+
+---
+
+## Synthetic Data Engine (SDK Training-Serving Parity)
+
+`generate_sdk_synthetic_data.py` compiles training pairs for all 6 SDK interaction modes (tool routing, rubric grading, reranking, cloze decisions, RAG hallucination, teacher-synthesized domain triples) and validates them with a **4-judge cross-family committee** before they enter the training mix:
+
+| Component | Detail |
+| :--- | :--- |
+| Teacher (generator) | `gemma-4-31b-q4` via GBNF-constrained JSON schemas |
+| Judges (validators) | `qwen-3.6-27b-q4` · `deepseek-v4-flash-q3` · `qwen-3.8-125b-q4` · `qwen-3.8-125b-q3` |
+| Reliability | Judge-by-judge batching (zero model thrashing on single-model llama-swap), per-batch SQLite commits, per-judge checkpoint file, `--resume-run auto` |
+| Disagreements | Non-unanimous / failed / overridden samples → `data/sdk_synthetic_disagreements.jsonl` (`review.status="pending"`) for human or cloud-LLM adjudication |
+| Metrics | `data/validation_metrics.db` — `judge_performance` view (success rate, generator/consensus agreement, latency) per judge per run |
+
+```bash
+# Generate + committee-validate (teacher uses the GPU first, then judges sequentially):
+uv run python generate_sdk_synthetic_data.py \
+    --teacher-url http://localhost:8080/v1 --teacher-model gemma-4-31b-q4 \
+    --validator-url http://localhost:8080/v1 \
+    --out-dir ./data
+
+# After an interruption, continue exactly where the run stopped (no regeneration):
+uv run python generate_sdk_synthetic_data.py --validator-url http://localhost:8080/v1 --resume-run auto
+
+# Per-judge performance analysis:
+sqlite3 data/validation_metrics.db "SELECT * FROM judge_performance ORDER BY run_id, judge_model;"
 ```
 
 ---

@@ -1,27 +1,21 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv
-venv/
-
-# Model checkpoints & weights (regenerable via export_w4a16.py; ~15 GB)
-ckpt/
-
-# Datasets (regenerable via data_pipeline.py; ~156 MB)
+# Heavy artifacts - never in git
 data/
-*.arrow
-*.safetensors
-*.gguf
-
-# Scratch work
+ckpt/
+.venv/
+__pycache__/
+*.pyc
 scratch/
+results/night_queue/
+results/tonight_chain/
+results/*.log
+results/*.pid
+results/committee_alert.json
 
-# Tooling caches
-.ruff_cache/
-.mypy_cache/
-.pytest_cache/
-
-# Validator committee runtime artifacts
-validator_metrics.db
-*.sqlite3
+# Night/chain runtime state (ephemeral; logs and pids)
+results/night_queue/
+results/tonight_chain/
+results/*.log
+results/*.pid
+results/committee_alert.json
+results/night_queue_status.json
+results/committee_watchdog.log

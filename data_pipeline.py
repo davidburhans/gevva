@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import os
 import random
 import re
@@ -72,12 +73,71 @@ SYNONYMS: Dict[str, str] = {
 }
 
 
-def normalize_label(val: Any) -> Optional[int]:
-    """Resolve raw label into canonical 0=CON, 1=ENT, 2=NEU."""
-    if isinstance(val, int):
-        if val in NATIVE_MNLI2OURS:
-            return NATIVE_MNLI2OURS[val]
+HAYSTACK_VAL_FRACTION = 0.1
+TEST_FRACTION_OF_VAL = 0.4
+XNLI_VAL_PER_LANG = 100
+
+
+def _xnli_row(ex: Dict[str, Any], lang: str, split_tag: str, lang_count: int) -> Optional[Dict[str, Any]]:
+    """Builds one canonical XNLI row (or None for malformed labels)."""
+    p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
+    if l not in (0, 1, 2) or not p or not h:
         return None
+    return {
+        "id": f"xnli_{lang}_{split_tag}_{lang_count:06d}",
+        "premise": p.strip(),
+        "hypothesis": h.strip(),
+        "label": NATIVE_MNLI2OURS[l],
+        "source": f"xnli_{lang}",
+        "language": lang,
+        "image": "",
+        "length": len(p.split()) + len(h.split()),
+    }
+
+
+def _pair_key(premise: str, hypothesis: str) -> str:
+    """Stable content key for a (premise, hypothesis) pair (leakage detection)."""
+    norm = lambda t: " ".join(t.lower().split())
+    return hashlib.sha1(f"{norm(premise)}\x1f{norm(hypothesis)}".encode("utf-8")).hexdigest()
+
+
+def _is_haystack_holdout(premise: str, hypothesis: str) -> bool:
+    """Deterministic 10% content-addressed holdout for haystack source pairs."""
+    digest = hashlib.md5(_pair_key(premise, hypothesis).encode()).hexdigest()
+    return int(digest, 16) % 10 == 0
+
+
+def _dedupe_split(
+    train_rows: List[Dict[str, Any]], val_rows: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    """Removes verbatim pair duplicates within train, and val rows duplicating train.
+
+    WHY: verbatim val-in-train duplicates inflate selection/benchmark metrics
+    (audit found 218 such rows, incl. all multimodal_synth).
+
+    Example:
+        train, val, n_t, n_v = _dedupe_split(train_samples, val_samples)
+    """
+    seen: set = set()
+    clean_train, dropped_train = [], 0
+    for row in train_rows:
+        # WHY image in key: multimodal rows share one premise template; their content
+        # identity is (image, claim), otherwise dedup would collapse the whole set.
+        key = f"{_pair_key(row['premise'], row['hypothesis'])}\x1f{row.get('image', '')}"
+        if key in seen:
+            dropped_train += 1
+            continue
+        seen.add(key)
+        clean_train.append(row)
+    clean_val, dropped_val = [], 0
+    for row in val_rows:
+        key = f"{_pair_key(row['premise'], row['hypothesis'])}\x1f{row.get('image', '')}"
+        if key in seen:
+            dropped_val += 1
+            continue
+        seen.add(key)
+        clean_val.append(row)
+    return clean_train, clean_val, dropped_train, dropped_val
     if isinstance(val, str):
         cleaned = val.strip().lower()
         canonical = SYNONYMS.get(cleaned)
@@ -212,6 +272,7 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
     val_samples: List[Dict[str, Any]] = []
     filler_pool: List[str] = []
     pairs_for_haystack: List[Tuple[str, str, int, str]] = []
+    val_haystack_pairs: List[Tuple[str, str, int, str]] = []
 
     # Target counts
     if mode == "quick":
@@ -268,11 +329,19 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
                     "length": len(p.split()) + len(h.split()),
                 }
                 if split == "train":
-                    train_samples.append(row)
-                    if len(filler_pool) < 20000:
-                        filler_pool.append(p.strip())
-                    if len(pairs_for_haystack) < 15000:
-                        pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
+                    if (len(pairs_for_haystack) + len(val_haystack_pairs) < 15000
+                            and _is_haystack_holdout(p, h)):
+                        # WHY: whole source pairs are held out of training (their plain
+                        # rows go to val) so val haystack rows never test memorized
+                        # needles (audit finding: pair-shared haystack leakage).
+                        val_haystack_pairs.append((p.strip(), h.strip(), label, "en"))
+                        val_samples.append(row)
+                    else:
+                        train_samples.append(row)
+                        if len(filler_pool) < 20000:
+                            filler_pool.append(p.strip())
+                        if len(pairs_for_haystack) < 15000:
+                            pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
                 else:
                     val_samples.append(row)
                 count += 1
@@ -305,11 +374,16 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
                     "length": len(p.split()) + len(h.split()),
                 }
                 if split == "train":
-                    train_samples.append(row)
-                    if len(filler_pool) < 30000:
-                        filler_pool.append(p.strip())
-                    if len(pairs_for_haystack) < 25000:
-                        pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
+                    if (len(pairs_for_haystack) + len(val_haystack_pairs) < 25000
+                            and _is_haystack_holdout(p, h)):
+                        val_haystack_pairs.append((p.strip(), h.strip(), label, "en"))
+                        val_samples.append(row)
+                    else:
+                        train_samples.append(row)
+                        if len(filler_pool) < 30000:
+                            filler_pool.append(p.strip())
+                        if len(pairs_for_haystack) < 25000:
+                            pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
                 else:
                     val_samples.append(row)
                 count += 1
@@ -352,36 +426,32 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
         print(f"  ANLI load failed: {e}")
 
     # 4. Multilingual NLI (XNLI)
+    # WHY: XNLI's validation set is a translation of MNLI-dev. Training on it while
+    # MNLI-dev sits in val would leak the checkpoint-selection set cross-lingually
+    # (audit finding). Train rows come from the XNLI *train* split (MNLI-train
+    # derived); only genuine validation rows go to val.
     print("Loading XNLI (Multilingual)...")
     xnli_langs = ["es", "fr", "de", "ru", "ar", "zh", "hi", "vi", "sw"]
+    xnli_per_lang = int(N_XNLI / len(xnli_langs))
     count = 0
     for lang in xnli_langs:
         try:
-            ds = load_dataset("facebook/xnli", lang, split="validation")
             lang_count = 0
-            for ex in ds:
-                p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
-                if l not in (0, 1, 2) or not p or not h:
-                    continue
-                label = NATIVE_MNLI2OURS[l]
-                row = {
-                    "id": f"xnli_{lang}_{lang_count:06d}",
-                    "premise": p.strip(),
-                    "hypothesis": h.strip(),
-                    "label": label,
-                    "source": f"xnli_{lang}",
-                    "language": lang,
-                    "image": "",
-                    "length": len(p.split()) + len(h.split()),
-                }
-                if lang_count < int(N_XNLI / len(xnli_langs)):
+            for ex in load_dataset("facebook/xnli", lang, split="train"):
+                row = _xnli_row(ex, lang, "train", lang_count)
+                if row:
                     train_samples.append(row)
-                else:
-                    val_samples.append(row)
-                lang_count += 1
-                count += 1
-                if lang_count >= (N_XNLI / len(xnli_langs)) * 1.5:
+                    lang_count += 1
+                if lang_count >= xnli_per_lang:
                     break
+            for ex in load_dataset("facebook/xnli", lang, split="validation"):
+                row = _xnli_row(ex, lang, "val", lang_count)
+                if row:
+                    val_samples.append(row)
+                    lang_count += 1
+                if lang_count >= xnli_per_lang + XNLI_VAL_PER_LANG:
+                    break
+            count += lang_count
         except Exception as e:
             print(f"  XNLI {lang} load failed: {e}")
     print(f"  XNLI total loaded: {count} rows")
@@ -489,18 +559,30 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
 
     # 8. Long-Context Synthetic Haystack
     print("Generating Synthetic Haystack Pairs...")
-    haystack_rows = build_haystack_samples(
+    # WHY pair-disjoint: val haystack rows are built ONLY from source pairs held out
+    # of training (their plain NLI rows also went to val), so haystack_drop/embedded
+    # val accuracies can never reward memorized needles (audit finding).
+    print("Generating Synthetic Haystack Pairs...")
+    n_val_haystack = int(N_HAYSTACK * HAYSTACK_VAL_FRACTION)
+    train_haystack = build_haystack_samples(
         pairs_for_haystack,
         filler_pool,
-        n_samples=N_HAYSTACK,
+        n_samples=N_HAYSTACK - n_val_haystack,
         min_fillers=6,
         max_fillers=18,
         seed=seed,
     )
-    val_haystack_split = int(len(haystack_rows) * 0.1)
-    train_samples.extend(haystack_rows[val_haystack_split:])
-    val_samples.extend(haystack_rows[:val_haystack_split])
-    print(f"  Haystack pairs generated: {len(haystack_rows)} rows")
+    val_haystack = build_haystack_samples(
+        val_haystack_pairs,
+        filler_pool,
+        n_samples=n_val_haystack + 50,
+        min_fillers=6,
+        max_fillers=18,
+        seed=seed + 1,
+    )[:n_val_haystack]
+    train_samples.extend(train_haystack)
+    val_samples.extend(val_haystack)
+    print(f"  Haystack pairs generated: {len(train_haystack)} train / {len(val_haystack)} val rows")
 
     # 6. Visual / Multimodal Grounding Pairs
     print("Generating Multimodal Grounding Samples...")
@@ -552,7 +634,7 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
 
         row = {
             "id": f"vision_{i:06d}",
-            "premise": f"<|image><|image|>*280<image|> An image showing geometric figures.",
+            "premise": "<|vision_start|>" + "<|image_pad|>" * 280 + "<|vision_end|> An image showing geometric figures.",
             "hypothesis": claim,
             "label": rel_type,
             "source": "multimodal_synth",
@@ -582,21 +664,32 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
                 if line.strip():
                     val_samples.append(json.loads(line))
 
+    # Contamination guard: drop verbatim pair duplicates within train and across the
+    # val boundary (audit finding: 218 val rows duplicated train rows verbatim).
+    train_samples, val_samples, dup_train, dup_val = _dedupe_split(train_samples, val_samples)
+    print(f"Contamination guard: dropped {dup_train} duplicate train rows, "
+          f"{dup_val} val rows duplicating train.")
+
     # Shuffle datasets
     rng.shuffle(train_samples)
     rng.shuffle(val_samples)
 
+    # Carve the report-only TEST split out of the selection pool (audit A1: test is
+    # never trained on and never used for checkpoint selection; written once here).
+    n_test = int(len(val_samples) * TEST_FRACTION_OF_VAL)
+    test_samples = val_samples[:n_test]
+    val_samples = val_samples[n_test:]
+    print(f"Split: train={len(train_samples):,} val(selection)={len(val_samples):,} test(report)={len(test_samples):,}")
+
     # Write output jsonl files
     train_file = os.path.join(out_dir, "train.jsonl")
     val_file = os.path.join(out_dir, "val.jsonl")
+    test_file = os.path.join(out_dir, "test.jsonl")
 
-    with open(train_file, "w", encoding="utf-8") as f:
-        for row in train_samples:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    with open(val_file, "w", encoding="utf-8") as f:
-        for row in val_samples:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    for path, rows in ((train_file, train_samples), (val_file, val_samples), (test_file, test_samples)):
+        with open(path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     # Statistics
     train_dist = Counter(r["label"] for r in train_samples)
@@ -609,8 +702,26 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
     print(f"Train samples: {len(train_samples):,} | Labels: {dict(train_dist)}")
     print(f"Val samples:   {len(val_samples):,} | Labels: {dict(val_dist)}")
     print("Top Train Sources:", train_sources.most_common(8))
-    print(f"Output files:\n  - {train_file}\n  - {val_file}")
+    print(f"Output files:\n  - {train_file}\n  - {val_file}\n  - {test_file}")
     print("=" * 60)
+
+    # Provenance manifest so shipped datasets are reproducible/auditable.
+    manifest = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mode": mode,
+        "seed": seed,
+        "train_rows": len(train_samples),
+        "val_rows": len(val_samples),
+        "test_rows": len(test_samples),
+        "duplicates_dropped_train": dup_train,
+        "val_rows_duplicated_with_train_dropped": dup_val,
+        "haystack_val_source_pairs": len(val_haystack_pairs),
+        "per_source_train": dict(train_sources),
+    }
+    manifest_path = os.path.join(out_dir, "dataset_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"Manifest written: {manifest_path}")
 
 
 if __name__ == "__main__":

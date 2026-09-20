@@ -134,6 +134,7 @@ class DataCollatorNLI:
         ]
         labels = [r["label"] for r in batch]
         sources = [r["source"] for r in batch]
+        ids = [r.get("id", f"row_{i}") for i, r in enumerate(batch)]
 
         max_len = max(len(ids) for ids in batch_input_ids)
         if self.pad_to_multiple_of > 0 and max_len % self.pad_to_multiple_of != 0:
@@ -152,6 +153,7 @@ class DataCollatorNLI:
             "attention_mask": torch.tensor(attn_masks, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
             "sources": sources,
+            "ids": ids,
         }
 
 
@@ -270,7 +272,9 @@ def train_cross_encoder(args):
     model.to(device)
 
     # 3. Datasets & Dataloaders
-    train_path = os.path.join(args.data_dir, "train.jsonl")
+    # WHY: --train-file lets the A/B shakedown arms swap training mixes without
+    # duplicating loaders; val stays the selection split, test the report-only split.
+    train_path = args.train_file or os.path.join(args.data_dir, "train.jsonl")
     val_path = os.path.join(args.data_dir, "val.jsonl")
 
     train_ds = NLIDataset(train_path, max_samples=args.max_train_samples)
@@ -380,17 +384,75 @@ def train_cross_encoder(args):
     print(f"Training Complete! Best Validation Accuracy: {best_val_acc:.4f}")
     print("=" * 60)
 
+    # Config provenance (audit A8: the trained quant format & recipe must be recoverable).
+    run_config = {"args": vars(args), "best_val_acc": best_val_acc,
+                  "train_path": train_path, "val_path": val_path,
+                  "test_file": args.test_file,
+                  "qat_applied": bool(getattr(args, "qat", False) or getattr(args, "target_quant", "none") != "none"),
+                  "target_quant": getattr(args, "target_quant", "none")}
+    for cfg_dir in (args.out_dir, os.path.join(args.out_dir, "best")):
+        if os.path.isdir(cfg_dir):
+            with open(os.path.join(cfg_dir, "train_config.json"), "w") as f:
+                json.dump(run_config, f, indent=2)
+
+    # Report-only test evaluation, exactly ONCE, on the RELOADED best checkpoint
+    # (audit A1: test never participates in checkpoint selection).
+    if args.test_file and os.path.exists(args.test_file):
+        save_dir = os.path.join(args.out_dir, "best")
+        if not os.path.isdir(save_dir):
+            print("No best checkpoint saved; skipping test evaluation.")
+            return
+        print(f"Reloading best checkpoint from {save_dir} for one-shot test evaluation...")
+        best_model = _reload_best_for_eval(args, tokenizer, save_dir)
+        best_model.to(device)
+        test_ds = NLIDataset(args.test_file)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2, shuffle=False,
+                                 collate_fn=collator, num_workers=2)
+        test_out = evaluate(best_model, test_loader, device, return_items=True)
+        items = test_out.pop("items")
+        with open(os.path.join(args.out_dir, "test_metrics.json"), "w") as f:
+            json.dump(test_out, f, indent=2)
+        with open(os.path.join(args.out_dir, "test_items.jsonl"), "w", encoding="utf-8") as f:
+            for item in items:
+                f.write(json.dumps(item) + "\n")
+        print(f"TEST (report-only, n={test_out['n_samples']}): "
+              f"acc={test_out['accuracy']:.4f} ece={test_out['ece']:.4f} brier={test_out['brier']:.4f}")
+        print(f"  per-item log: {os.path.join(args.out_dir, 'test_items.jsonl')}")
+
+
+def _reload_best_for_eval(args, tokenizer, save_dir):
+    """Rebuilds the base model and restores the best adapter + saved head modules."""
+    from peft import PeftModel
+    is_gemma = "gemma" in args.model.lower()
+    config = AutoConfig.from_pretrained(args.model)
+    config.num_labels = 3
+    config.id2label = ID2LABEL
+    config.label2id = LABEL2ID
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    config.pad_token_id = pad_id
+    if hasattr(config, "get_text_config"):
+        config.get_text_config().pad_token_id = pad_id
+    if is_gemma:
+        base = Gemma4ForSequenceClassification.from_pretrained(
+            args.model, config=config, torch_dtype=torch.bfloat16)
+    else:
+        from transformers import AutoModelForSequenceClassification
+        base = AutoModelForSequenceClassification.from_pretrained(
+            args.model, config=config, torch_dtype=torch.bfloat16)
+    return PeftModel.from_pretrained(base, save_dir)
+
 
 @torch.no_grad()
-def evaluate(model, dataloader, device) -> Dict[str, Any]:
+def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str, Any]:
     model.eval()
-    all_preds, all_probs, all_golds, all_sources = [], [], [], []
+    all_preds, all_probs, all_golds, all_sources, all_ids = [], [], [], [], []
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"]
         sources = batch["sources"]
+        all_ids.extend(batch["ids"])
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
@@ -421,6 +483,11 @@ def evaluate(model, dataloader, device) -> Dict[str, Any]:
         "by_source": by_source_acc,
         "n_samples": len(golds),
         "label_dist": dict(Counter(preds.tolist())),
+        **({"items": [
+            {"id": i, "source": s, "gold": int(g), "pred": int(p),
+             "confidence": float(max(pr)), "correct": bool(p == g)}
+            for i, s, g, p, pr in zip(all_ids, all_sources, golds, preds, probs)
+        ]} if return_items else {}),
     }
 
 
@@ -428,6 +495,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="google/gemma-4-E2B", help="Base Gemma 4 model path")
     parser.add_argument("--data-dir", default="./data", help="Path to compiled dataset directory")
+    parser.add_argument("--train-file", default=None, help="Override train.jsonl path (A/B arm datasets)")
+    parser.add_argument("--test-file", default=None, help="Report-only test jsonl; evaluated once on the reloaded best checkpoint")
     parser.add_argument("--out-dir", default="./ckpt/gemma-4-e2b-nli", help="Output directory")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)

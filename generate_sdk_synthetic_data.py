@@ -38,10 +38,9 @@ from typing import Dict, List, Any, Optional, Tuple
 # - validator_committee.py: 4-judge consensus, disagreement queue & metrics DB
 from nli_labels import CONTRADICTION, ENTAILMENT, ID2LABEL, LABEL2ID, NEUTRAL  # noqa: F401
 from llm_client import LLMEndpointClient  # noqa: F401
+from validation_metrics_db import RunSpec, ValidationMetricsDB
 from validator_committee import (
     AggregateResult,
-    RunSpec,
-    ValidationMetricsDB,
     aggregate_committee_votes,
     print_judge_summary,
     run_validator_committee,
@@ -841,6 +840,102 @@ def generate_rag_hallucination_samples(n_target: int = 1500, seed: int = 42) -> 
 # Validation Committee Stage Orchestration
 # -----------------------------------------------------------------------------
 DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,deepseek-v4-flash-q3,qwen-3.8-125b-q4,qwen-3.8-125b-q3"
+CHECKPOINT_FILENAME = "sdk_synthetic_raw.jsonl"
+VALIDATION_CHECKPOINT_FILENAME = "sdk_synthetic_validation_checkpoint.jsonl"
+
+
+def _append_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
+    """Appends rows to a JSONL checkpoint with fsync - crashes never lose generated data."""
+    with open(path, "a", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
+    """Writes rows to a JSONL file (final outputs)."""
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _load_jsonl(path: str) -> List[Dict[str, Any]]:
+    """Loads a JSONL checkpoint; a missing file is a hard resume error."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"cannot resume: raw checkpoint missing at {path}")
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _resolve_resume_run(db_path: str, resume_run: Optional[str], judges: List[str]) -> Optional[str]:
+    """Resolves --resume-run ('auto' | explicit run id | None) to a concrete run id."""
+    if not resume_run:
+        return None
+    db = ValidationMetricsDB(db_path)
+    try:
+        if resume_run == "auto":
+            run_id = db.latest_resumable_run(judges)
+            if run_id is None:
+                print("No resumable run found in metrics DB; starting a fresh run.")
+            return run_id
+        if not db.run_exists(resume_run):
+            raise ValueError(f"resume run id not found in metrics DB: {resume_run!r}")
+        return resume_run
+    finally:
+        db.close()
+
+
+def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optional[str],
+                          teacher_model: str, raw_path: str,
+                          resume_run: Optional[str]) -> List[Dict[str, Any]]:
+    """Generates all 6 SDK-mode sample sets, checkpointing each stage to disk.
+
+    On resume the raw checkpoint IS the sample set - nothing is regenerated, so
+    sample ids stay stable against the persisted verdicts.
+    """
+    if resume_run:
+        samples = _load_jsonl(raw_path)
+        print(f"Resuming from raw checkpoint {raw_path} ({len(samples)} samples, no regeneration).")
+        return samples
+    open(raw_path, "w", encoding="utf-8").close()  # truncate stale checkpoint
+    generators = [
+        ("Tool Routing", generate_tool_routing_samples),
+        ("Rubric Grading", generate_rubric_grading_samples),
+        ("Search Reranking", generate_search_rerank_samples),
+        ("Cloze Decision", generate_cloze_decision_samples),
+        ("RAG Hallucination", generate_rag_hallucination_samples),
+    ]
+    all_generated: List[Dict[str, Any]] = []
+    for salt, (name, gen_fn) in enumerate(generators):
+        print(f"Generating {name} samples (target={samples_per_mode})...")
+        made = gen_fn(samples_per_mode, seed=seed + salt)
+        all_generated.extend(made)
+        _append_jsonl(raw_path, made)
+        print(f"  Generated {len(made)} samples (checkpoint total: {len(all_generated)}).")
+    return _generate_teacher_samples(teacher_url, teacher_model, all_generated, raw_path)
+
+
+def _generate_teacher_samples(teacher_url: Optional[str], teacher_model: str,
+                              all_generated: List[Dict[str, Any]],
+                              raw_path: str) -> List[Dict[str, Any]]:
+    """Teacher-synthesized domain triples (Gemma 4 31B via optimized alias).
+
+    WHY: teacher output is fsynced to the raw checkpoint BEFORE the GPU model is
+    unloaded - a crash during the committee's first model load must never cost us
+    the expensive teacher generation.
+    """
+    if not teacher_url:
+        return all_generated
+    print(f"\nQuerying Teacher Model (Alias: {teacher_model}) via {teacher_url} with GBNF token restriction...")
+    teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=180)
+    teacher_samples = generate_teacher_domain_samples(teacher_client)
+    all_generated.extend(teacher_samples)
+    _append_jsonl(raw_path, teacher_samples)
+    print(f"  Generated {len(teacher_samples)} novel teacher domain samples (checkpointed).")
+    print("  Unloading teacher model to free GPU VRAM for validator...")
+    teacher_client.unload_model()
+    return all_generated
 
 
 def run_validation_committee_stage(
@@ -851,11 +946,15 @@ def run_validation_committee_stage(
     run_spec: RunSpec,
     metrics_db_path: str,
     batch_size: int = 5,
+    resume_run: Optional[str] = None,
+    validator_timeout: int = 600,
 ) -> List[Dict[str, Any]]:
     """Runs the cross-family judge committee over ALL samples, judge by judge.
 
-    Verdicts, batch telemetry and final labels persist to the SQLite metrics DB;
-    non-unanimous / failed-agreement samples land in the JSONL review queue.
+    Verdicts commit to the SQLite metrics DB per batch (crash-safe), a validation
+    checkpoint JSONL is rewritten after each judge, and non-unanimous / failed-agreement
+    samples land in the JSONL review queue. With `resume_run`, persisted verdicts are
+    reused and only missing batches hit the GPU.
 
     Example:
         validated = run_validation_committee_stage(samples, "data", url, judges, spec, db_path)
@@ -865,11 +964,20 @@ def run_validation_committee_stage(
     print(f"Judges: {', '.join(judges)}")
     print(f"=================================================================")
 
+    checkpoint_path = os.path.join(out_dir, VALIDATION_CHECKPOINT_FILENAME)
     db = ValidationMetricsDB(metrics_db_path)
     run_id: Optional[str] = None
     try:
-        run_id = db.start_run(run_spec)
-        committee = run_validator_committee(validator_url, judges, samples, db, run_id, batch_size=batch_size)
+        if resume_run:
+            run_id = resume_run
+            print(f"Resuming validation run {run_id} "
+                  f"({db.count_verdicts(run_id)} verdicts already persisted).")
+        else:
+            run_id = db.start_run(run_spec)
+        committee = run_validator_committee(
+            validator_url, judges, samples, db, run_id,
+            batch_size=batch_size, checkpoint_path=checkpoint_path,
+            timeout=validator_timeout)
         result = aggregate_committee_votes(samples, committee, judges)
         db.record_final_labels([(run_id, *row) for row in result.final_rows])
         queue_path = os.path.join(out_dir, "sdk_synthetic_disagreements.jsonl")
@@ -913,64 +1021,34 @@ def compile_sdk_synthetic_dataset(
     seed: int = 42,
     metrics_db_path: Optional[str] = None,
     batch_size: int = 5,
+    resume_run: Optional[str] = None,
+    validator_timeout: int = 600,
 ) -> Dict[str, int]:
-    """Compiles and validates synthetic data for all SDK interaction patterns."""
+    """Compiles and validates synthetic data for all SDK interaction patterns.
+
+    With `resume_run` ('auto' or a run id), regeneration is skipped entirely: samples
+    come from the raw checkpoint and the committee continues from persisted verdicts.
+    """
     os.makedirs(out_dir, exist_ok=True)
     print("=" * 65)
     print("Compiling SDK-Aligned Synthetic Dataset (Training-Serving Parity)")
     print("=" * 65)
 
-    all_generated: List[Dict[str, Any]] = []
-
-    # 1. Tool Routing
-    print(f"Generating Tool Routing samples (target={samples_per_mode})...")
-    tool_samples = generate_tool_routing_samples(samples_per_mode, seed=seed)
-    all_generated.extend(tool_samples)
-    print(f"  Generated {len(tool_samples)} tool routing samples.")
-
-    # 2. Rubric Grading
-    print(f"Generating Rubric Grading samples (target={samples_per_mode})...")
-    rubric_samples = generate_rubric_grading_samples(samples_per_mode, seed=seed + 1)
-    all_generated.extend(rubric_samples)
-    print(f"  Generated {len(rubric_samples)} rubric grading samples.")
-
-    # 3. Search Reranking
-    print(f"Generating Search Reranking samples (target={samples_per_mode})...")
-    rerank_samples = generate_search_rerank_samples(samples_per_mode, seed=seed + 2)
-    all_generated.extend(rerank_samples)
-    print(f"  Generated {len(rerank_samples)} search reranking samples.")
-
-    # 4. Cloze Decision
-    print(f"Generating Cloze Decision samples (target={samples_per_mode})...")
-    cloze_samples = generate_cloze_decision_samples(samples_per_mode, seed=seed + 3)
-    all_generated.extend(cloze_samples)
-    print(f"  Generated {len(cloze_samples)} cloze decision samples.")
-
-    # 5. RAG Hallucination Detection
-    print(f"Generating RAG Hallucination samples (target={samples_per_mode})...")
-    rag_samples = generate_rag_hallucination_samples(samples_per_mode, seed=seed + 4)
-    all_generated.extend(rag_samples)
-    print(f"  Generated {len(rag_samples)} RAG hallucination samples.")
-
-    # 6. Novel Teacher-Synthesized Domain Triples (Gemma 4 31B via optimized alias)
-    if teacher_url:
-        print(f"\nQuerying Teacher Model (Alias: {teacher_model}) via {teacher_url} with GBNF token restriction...")
-        teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=180)
-        teacher_samples = generate_teacher_domain_samples(teacher_client)
-        all_generated.extend(teacher_samples)
-        print(f"  Generated {len(teacher_samples)} novel teacher domain samples.")
-        print("  Unloading teacher model to free GPU VRAM for validator...")
-        teacher_client.unload_model()
+    judges = [m.strip() for m in validator_model.split(",") if m.strip()]
+    db_path = metrics_db_path or os.path.join(out_dir, "validation_metrics.db")
+    resume_id = _resolve_resume_run(db_path, resume_run, judges)
+    raw_path = os.path.join(out_dir, CHECKPOINT_FILENAME)
+    all_generated = _generate_all_samples(samples_per_mode, seed, teacher_url,
+                                          teacher_model, raw_path, resume_id)
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + DeepSeek V4 Flash + Qwen 3.8 125B q4 + Qwen 3.8 125B q3)
     if validator_url:
-        judges = [m.strip() for m in validator_model.split(",") if m.strip()]
         run_spec = RunSpec(teacher_model=teacher_model, validator_models=judges,
                            samples_per_mode=samples_per_mode, seed=seed)
         validated_samples = run_validation_committee_stage(
-            all_generated, out_dir, validator_url, judges, run_spec,
-            metrics_db_path or os.path.join(out_dir, "validation_metrics.db"), batch_size)
+            all_generated, out_dir, validator_url, judges, run_spec, db_path,
+            batch_size, resume_run=resume_id, validator_timeout=validator_timeout)
     else:
         validated_samples = all_generated
 
@@ -991,13 +1069,8 @@ def compile_sdk_synthetic_dataset(
     out_train_path = os.path.join(out_dir, "sdk_synthetic_train.jsonl")
     out_val_path = os.path.join(out_dir, "sdk_synthetic_val.jsonl")
 
-    with open(out_train_path, "w", encoding="utf-8") as f:
-        for row in train_data:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    with open(out_val_path, "w", encoding="utf-8") as f:
-        for row in val_data:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    _write_jsonl(out_train_path, train_data)
+    _write_jsonl(out_val_path, val_data)
 
     print("\nDataset Saved Successfully:")
     print(f"  Train: {out_train_path} ({len(train_data):,} rows)")
@@ -1026,6 +1099,11 @@ if __name__ == "__main__":
     parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,deepseek-v4-flash-q3,qwen-3.8-125b-q4,qwen-3.8-125b-q3)")
     parser.add_argument("--metrics-db", default=None, help="SQLite path for judge metrics (default: <out-dir>/validation_metrics.db)")
     parser.add_argument("--batch-size", type=int, default=5, help="Samples per validator batch call")
+    parser.add_argument("--validator-timeout", type=int, default=600, help="Per-call timeout (s) for validator batches (reasoning models may exceed 180)")
+    parser.add_argument("--resume-run", nargs="?", const="auto", default=None,
+                        help="Resume an interrupted committee: 'auto' picks the newest incomplete run "
+                             "with the same judges, or pass an explicit run id. Reuses "
+                             "sdk_synthetic_raw.jsonl and persisted verdicts (no regeneration).")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1039,4 +1117,6 @@ if __name__ == "__main__":
         seed=args.seed,
         metrics_db_path=args.metrics_db,
         batch_size=args.batch_size,
+        resume_run=args.resume_run,
+        validator_timeout=args.validator_timeout,
     )

@@ -3,8 +3,14 @@
 ==============================
 Direct Head-to-Head Capability Comparison Benchmark Suite.
 
-Executes the identical evaluation protocols used by TypeSafe AI Jev, OpenJEV (AlexWortega/openjev),
-and Convai Laya (convaiinnovations/laya) on our Gemma 4 E2B NLI Cross-Encoder.
+Benchmarks our Gemma 4 E2B NLI Cross-Encoder.
+
+PROVENANCE NOTE: competitor numbers printed alongside ours are quoted published
+reference constants (REFERENCE_BENCHMARKS below), NOT local runs - protocols and
+hardware may differ. Our default rerank scoring is `margin`, a post-hoc variant;
+openjev's documented protocol is raw entailment (`--scoring entailment`). MNLI/ECE
+slices are shuffled with a fixed seed and exclude any pair present in the training
+or checkpoint-selection data.
 
 Supported Benchmarks:
 1. NLI Sanity (Accuracy on MNLI-m and MNLI-mm)
@@ -201,11 +207,62 @@ def compute_brier(probs: np.ndarray, labels: np.ndarray) -> float:
     return float(np.mean(np.sum((probs - one_hot) ** 2, axis=1)))
 
 
+def _seeded_slice(ds: Any, limit: Optional[int], seed: int = 0) -> Any:
+    """Deterministic shuffled slice.
+
+    WHY: first-N slices pick wrong distributions (MMLU's test set is subject-ordered
+    so the first 100 rows are Abstract Algebra only; AG News CSVs are class-grouped).
+
+    Example:
+        ds = _seeded_slice(load_dataset("nyu-mll/multi_nli", split="validation_matched"), 100)
+    """
+    shuffled = ds.shuffle(seed=seed)
+    if limit is None or limit >= len(shuffled):
+        return shuffled
+    return shuffled.select(range(limit))
+
+
+def _pair_key(premise: str, hypothesis: str) -> str:
+    """Content key matching data_pipeline's normalization (contamination checks)."""
+    import hashlib
+    norm = lambda t: " ".join(str(t).lower().split())
+    return hashlib.sha1(f"{norm(premise)}\x1f{norm(hypothesis)}".encode("utf-8")).hexdigest()
+
+
+_FORBIDDEN_PAIR_KEYS = None
+
+
+def load_forbidden_nli_keys(data_dir: str = "data") -> set:
+    """Every (premise, hypothesis) pair compiled into train/val, for benchmark exclusion.
+
+    Example:
+        forbidden = load_forbidden_nli_keys("data")
+    """
+    global _FORBIDDEN_PAIR_KEYS
+    if _FORBIDDEN_PAIR_KEYS is None:
+        keys: set = set()
+        for name in ("train.jsonl", "val.jsonl"):
+            path = os.path.join(data_dir, name)
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("premise") and row.get("hypothesis"):
+                        keys.add(_pair_key(row["premise"], row["hypothesis"]))
+        _FORBIDDEN_PAIR_KEYS = keys
+    return _FORBIDDEN_PAIR_KEYS
+
+
 def eval_mnli(ce: Gemma4CrossEncoder, split: str = "validation_matched", limit: Optional[int] = 100) -> float:
     """Evaluates NLI sanity on MNLI matched or mismatched split."""
     ds = load_dataset("nyu-mll/multi_nli", split=split)
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
+    forbidden = load_forbidden_nli_keys()
 
     # Native MNLI mapping: 0=entailment, 1=neutral, 2=contradiction
     # Our schema: 0=contradiction, 1=entailment, 2=neutral
@@ -213,13 +270,21 @@ def eval_mnli(ce: Gemma4CrossEncoder, split: str = "validation_matched", limit: 
 
     pairs = []
     gold_labels = []
+    excluded = 0
     for row in ds:
         p = row["premise"]
         h = row["hypothesis"]
         lbl = row["label"]
         if lbl in NATIVE2OURS:
+            # WHY: never benchmark on pairs the model trained on or that were part of
+            # the checkpoint-selection set (audit blocker).
+            if _pair_key(p, h) in forbidden:
+                excluded += 1
+                continue
             pairs.append((p, h))
             gold_labels.append(NATIVE2OURS[lbl])
+    if excluded:
+        print(f"  [contamination-guard] excluded {excluded} {split} rows seen in train/val")
 
     probs = ce.predict(pairs)
     preds = np.argmax(probs, axis=1)
@@ -231,7 +296,7 @@ def eval_arc_rerank(ce: Gemma4CrossEncoder, subset: str = "ARC-Easy", limit: Opt
     """Evaluates multiple-choice reranking without reference (Blog #3 protocol)."""
     ds = load_dataset("allenai/ai2_arc", subset, split="test")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     correct = 0
     total = 0
@@ -263,7 +328,7 @@ def eval_mmlu_rerank(ce: Gemma4CrossEncoder, limit: Optional[int] = 100, scoring
     """Evaluates MMLU multiple-choice reranking without reference."""
     ds = load_dataset("cais/mmlu", "all", split="test")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     correct = 0
     total = 0
@@ -289,7 +354,7 @@ def eval_winogrande_rerank(ce: Gemma4CrossEncoder, limit: Optional[int] = 100, s
     """Evaluates WinoGrande debiased reranking."""
     ds = load_dataset("allenai/winogrande", "winogrande_debiased", split="validation")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     correct = 0
     total = 0
@@ -335,7 +400,7 @@ def eval_grading_with_reference(
         raise ValueError(f"Unknown grading dataset: {dataset_name}")
 
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     y_true = []
     y_pred = []
@@ -388,7 +453,7 @@ def eval_boolq(ce: Gemma4CrossEncoder, limit: Optional[int] = 100, scoring: str 
     """Evaluates BoolQ binary question answering as zero-shot reranking."""
     ds = load_dataset("google/boolq", split="validation")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     correct = 0
     total = 0
@@ -416,7 +481,7 @@ def eval_ag_news(ce: Gemma4CrossEncoder, limit: Optional[int] = 100, scoring: st
     """Evaluates AG News 4-topic classification."""
     ds = load_dataset("fancyzhx/ag_news", split="test")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     options = [
         "World news, foreign affairs, and international politics.",
@@ -448,7 +513,7 @@ def eval_dair_emotion(ce: Gemma4CrossEncoder, limit: Optional[int] = 100, scorin
     """Evaluates DAIR Emotion 6-class classification."""
     ds = load_dataset("dair-ai/emotion", split="test")
     if limit is not None:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = _seeded_slice(ds, limit)
 
     # Labels: 0: sadness, 1: joy, 2: love, 3: anger, 4: fear, 5: surprise
     options = [
@@ -484,16 +549,23 @@ def eval_latency_and_calibration(
 ) -> Tuple[Dict[str, float], float, float]:
     """Measures single-decision latency percentiles (P50, P90, P99) and calibration on MNLI."""
     ds = load_dataset("nyu-mll/multi_nli", split="validation_matched")
-    ds = ds.select(range(min(n_samples, len(ds))))
+    ds = _seeded_slice(ds, n_samples)
+    forbidden = load_forbidden_nli_keys()
 
     NATIVE2OURS = {0: 1, 1: 2, 2: 0}
     pairs = []
     gold_labels = []
+    excluded = 0
     for row in ds:
         lbl = row["label"]
         if lbl in NATIVE2OURS:
+            if _pair_key(row["premise"], row["hypothesis"]) in forbidden:
+                excluded += 1
+                continue
             pairs.append((row["premise"], row["hypothesis"]))
             gold_labels.append(NATIVE2OURS[lbl])
+    if excluded:
+        print(f"  [contamination-guard] excluded {excluded} latency/ECE rows seen in train/val")
 
     # Warmup
     for _ in range(5):
@@ -595,6 +667,15 @@ def main():
 
     results: Dict[str, Any] = {}
     results["scoring_rule"] = args.scoring
+    results["provenance"] = {
+        "model_path": args.model_path,
+        "limit_per_task": limit,
+        "shuffle_seed": 0,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "competitor_columns": "quoted published reference constants (REFERENCE_BENCHMARKS), not local runs",
+        "scoring_note": "margin/contrastive are post-hoc variants; openjev's documented protocol is raw entailment",
+        "contamination_guard": "MNLI/latency/ECE slices exclude pairs present in data/train.jsonl or data/val.jsonl",
+    }
 
     def should_run(task_name: str) -> bool:
         if task_filter is None:

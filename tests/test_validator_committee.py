@@ -21,9 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from nli_labels import CONTRADICTION, ENTAILMENT, NEUTRAL  # noqa: E402
+from validation_metrics_db import RunSpec, ValidationMetricsDB  # noqa: E402
 from validator_committee import (  # noqa: E402
-    RunSpec,
-    ValidationMetricsDB,
     aggregate_committee_votes,
     run_validator_committee,
     write_disagreement_queue,
@@ -88,12 +87,14 @@ def make_samples(labels: List[int]) -> List[Dict[str, Any]]:
 def run_committee(samples: List[Dict[str, Any]], scripts: Dict[str, Dict[str, Optional[str]]],
                   log: EventLog, db: Optional[ValidationMetricsDB] = None,
                   run_id: str = "run_test", batch_size: int = 5,
-                  fail: Optional[Dict[str, bool]] = None):
+                  fail: Optional[Dict[str, bool]] = None, judges: List[str] = JUDGES,
+                  checkpoint_path: Optional[str] = None):
     fail = fail or {}
     def factory(model: str) -> FakeJudgeClient:
         return FakeJudgeClient(model, scripts.get(model, {}), log, fail=fail.get(model, False))
-    return run_validator_committee("http://fake/v1", JUDGES, samples, db, run_id,
-                                   batch_size=batch_size, client_factory=factory)
+    return run_validator_committee("http://fake/v1", judges, samples, db, run_id,
+                                   batch_size=batch_size, checkpoint_path=checkpoint_path,
+                                   client_factory=factory)
 
 
 # -----------------------------------------------------------------------------
@@ -252,6 +253,100 @@ def test_offline_compile_split_guard():
             assert {"id", "premise", "hypothesis", "label", "source"} <= set(row)
 
 
+def test_resume_skips_fully_persisted_judge_work():
+    """A judge with all verdicts persisted must not even load its model on resume."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = ValidationMetricsDB(str(Path(tmp) / "metrics.db"))
+        samples = make_samples([ENTAILMENT] * 4)
+        scripts = {j: {f"p{i}": "entailment" for i in range(4)} for j in JUDGES[:2]}
+        run_id = db.start_run(RunSpec("teacher-test", JUDGES[:2], 4, 42))
+        run_committee(samples, scripts, EventLog(), db=db, run_id=run_id,
+                      batch_size=2, judges=JUDGES[:2])
+        # Simulate a crash right after judge-a finished: wipe judge-b's verdicts.
+        db.conn.execute("DELETE FROM sample_verdicts WHERE judge_model = ?", ("judge-b",))
+        db.conn.commit()
+
+        log2 = EventLog()
+        committee2 = run_committee(samples, scripts, log2, db=db, run_id=run_id,
+                                   batch_size=2, judges=JUDGES[:2])
+        assert [e for e in log2.items if e[1] == "judge-a"] == [], \
+            "fully-persisted judge must be skipped without loading or batching"
+        assert log2.items == [("load", "judge-b"), ("batch", "judge-b"),
+                              ("batch", "judge-b"), ("unload", "judge-b")]
+        assert db.count_verdicts(run_id) == 8, "resume must never duplicate verdict rows"
+        for i, s in enumerate(samples):
+            assert committee2[i]["judge-a"].label == ENTAILMENT, \
+                "restored verdicts must match the original run"
+        db.close()
+
+
+def test_validation_checkpoint_rewritten_after_each_judge():
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt_path = str(Path(tmp) / "validation_checkpoint.jsonl")
+        samples = make_samples([ENTAILMENT] * 3)
+        scripts = {j: {f"p{i}": "entailment" for i in range(3)} for j in JUDGES}
+        run_committee(samples, scripts, EventLog(), batch_size=3, checkpoint_path=ckpt_path)
+        rows = [json.loads(line) for line in open(ckpt_path, encoding="utf-8")]
+        assert len(rows) == 3
+        for row in rows:
+            assert set(row["votes"]) == set(JUDGES)
+            assert all(v["label"] == ENTAILMENT and v["status"] == "ok"
+                       for v in row["votes"].values())
+        assert not (Path(tmp) / "validation_checkpoint.jsonl.tmp").exists(), \
+            "checkpoint writes must be atomic (tmp file renamed)"
+
+
+def test_raw_checkpoint_survives_validation_crash():
+    """Regression: generated data must hit disk BEFORE the committee stage runs."""
+    import generate_sdk_synthetic_data as gen
+    original_stage = gen.run_validation_committee_stage
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("simulated llama-swap failure before the first batch")
+
+    gen.run_validation_committee_stage = boom
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            raised = False
+            try:
+                gen.compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=10,
+                                                  validator_url="http://fake/v1")
+            except RuntimeError:
+                raised = True
+            assert raised, "simulated committee failure must propagate"
+            raw = [json.loads(line) for line in
+                   open(Path(tmp) / "sdk_synthetic_raw.jsonl", encoding="utf-8")]
+            assert len(raw) == 50, "all 5 offline modes x 10 samples must be checkpointed pre-validation"
+            assert all({"id", "premise", "hypothesis", "label", "source"} <= set(r) for r in raw)
+            assert not (Path(tmp) / "sdk_synthetic_train.jsonl").exists()
+    finally:
+        gen.run_validation_committee_stage = original_stage
+
+
+def test_offline_batch_is_retried_once():
+    """A transport blip must not permanently bake STATUS_OFFLINE for a batch."""
+    class FlakyClient:
+        def __init__(self):
+            self.calls = 0
+            self.last_latency_ms = 5.0
+        def query_chat(self, system_prompt, user_prompt, **_):
+            self.calls += 1
+            if self.calls == 1:
+                return None  # simulate llama-swap timeout
+            return json.dumps([{"id": 0, "verdict": "entailment", "rationale": "ok"}])
+        def unload_model(self):
+            return True
+
+    samples = make_samples([ENTAILMENT])
+    flaky = FlakyClient()
+    committee = run_validator_committee(
+        "http://fake/v1", ["judge-a"], samples, None, "run_retry",
+        batch_size=1, client_factory=lambda m: flaky)
+    assert flaky.calls == 2, "offline batch must be retried exactly once"
+    assert committee[0]["judge-a"].label == ENTAILMENT
+    assert committee[0]["judge-a"].status == "ok"
+
+
 TESTS = [test_unanimous_consensus_is_clean,
          test_majority_split_flips_label_and_reviews,
          test_tie_keeps_generator_label,
@@ -261,6 +356,10 @@ TESTS = [test_unanimous_consensus_is_clean,
          test_batches_grouped_per_judge_before_switching,
          test_metrics_db_persistence_and_view,
          test_disagreement_queue_writer,
+         test_resume_skips_fully_persisted_judge_work,
+         test_offline_batch_is_retried_once,
+         test_validation_checkpoint_rewritten_after_each_judge,
+         test_raw_checkpoint_survives_validation_crash,
          test_offline_compile_split_guard]
 
 

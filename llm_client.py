@@ -64,6 +64,7 @@ class LLMEndpointClient:
         max_tokens: int = 1500,
         response_format: Optional[Dict[str, Any]] = None,
         grammar: Optional[str] = None,
+        chat_template_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """Single chat completion; returns content (or reasoning_content fallback), None on failure.
 
@@ -85,6 +86,8 @@ class LLMEndpointClient:
             body["response_format"] = response_format
         if grammar is not None:
             body["grammar"] = grammar
+        if chat_template_kwargs is not None:
+            body["chat_template_kwargs"] = chat_template_kwargs
 
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(

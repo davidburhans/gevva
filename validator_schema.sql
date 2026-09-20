@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS final_labels (
 );
 CREATE INDEX IF NOT EXISTS idx_sv_run_judge ON sample_verdicts(run_id, judge_model);
 CREATE INDEX IF NOT EXISTS idx_jb_run_judge ON judge_batches(run_id, judge_model);
+-- WHY: idempotent verdict writes - resumed runs re-validate at most the in-flight
+-- batch, and INSERT OR REPLACE against this index keeps judge stats double-count-free.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sv_unique ON sample_verdicts(run_id, sample_id, judge_model);
 -- Per-judge scoring: success rate, generator agreement, consensus agreement, latency.
 CREATE VIEW IF NOT EXISTS judge_performance AS
 SELECT
