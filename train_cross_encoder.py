@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -405,15 +406,24 @@ def train_cross_encoder(args):
         print(f"Reloading best checkpoint from {save_dir} for one-shot test evaluation...")
         best_model = _reload_best_for_eval(args, tokenizer, save_dir)
         best_model.to(device)
+        # Head-restore probe (WHY: a PEFT reload that silently drops the saved score
+        # head scores near-chance; fail loudly BEFORE the one-shot test pass).
+        probe = evaluate(best_model, val_loader, device)
+        if probe["accuracy"] < 0.5 * max(best_val_acc, 1e-6):
+            raise RuntimeError("reloaded checkpoint validation accuracy collapsed - PEFT head restore failed")
+        # Test-set fingerprint: ties every reported number & row to the exact test bytes.
+        test_sha = hashlib.sha256(open(args.test_file, 'rb').read()).hexdigest()[:16]
         test_ds = NLIDataset(args.test_file)
         test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2, shuffle=False,
                                  collate_fn=collator, num_workers=2)
         test_out = evaluate(best_model, test_loader, device, return_items=True)
         items = test_out.pop("items")
+        test_out["test_sha"] = test_sha
         with open(os.path.join(args.out_dir, "test_metrics.json"), "w") as f:
             json.dump(test_out, f, indent=2)
         with open(os.path.join(args.out_dir, "test_items.jsonl"), "w", encoding="utf-8") as f:
             for item in items:
+                item["test_sha"] = test_sha
                 f.write(json.dumps(item) + "\n")
         print(f"TEST (report-only, n={test_out['n_samples']}): "
               f"acc={test_out['accuracy']:.4f} ece={test_out['ece']:.4f} brier={test_out['brier']:.4f}")

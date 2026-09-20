@@ -3,8 +3,9 @@
 > Grounding note: von-1.0 facts cite `https://huggingface.co/wfzyx/von-1.0` (README,
 > config.json, calibration.json fetched directly). GLiNER2 facts cite
 > `https://huggingface.co/fastino/gliner2-large-v1` and
-> `github.com/fastino-ai/GLiNER2` (README). Items marked **[pending G2]** await the
-> grounding subagent's primary-source verification and are NOT assumed.
+> `github.com/fastino-ai/GLiNER2` (README). Items marked **[pending G2]** in the
+> first draft have since been **grounded (task G2, §4)** — the classification API is
+> primary-source verified, no longer assumed.
 
 ## 1. wfzyx/von-1.0 — what it is (grounded)
 
@@ -29,8 +30,10 @@ Training corpus: **250K class-balanced examples from ANLI R1-3 + WANLI + MNLI + 
    Argmax-invariant, so the gate is pure ECE/Brier improvement with accuracy unchanged.
    Nearly free; von demonstrates the shipping pattern.
 3. **Benchmark roster**: von-1.0 added as a LOCAL measured baseline (adapter: grounded
-   decide/probabilities → our label order). GLiNER2 added but **skipped-until-grounded**
-   (task G2) — recorded as skipped, never guessed.
+   decide/probabilities → our label order). GLiNER2 added and now **grounded
+   (task G2)** — classification API verified (`classify_text` with
+   `include_confidence=True`: top-1 label + confidence only, no full distribution,
+   so ECE/Brier rows are N/A in published tables).
 4. **Backlog (design, not tonight)**: ordinal `rate`-style expected-value output for
    rubric grading (SDK product idea); dual positive/negative criteria framing for
    binary verification (RAG-hallucination data augmentation); option-marker joint
@@ -40,7 +43,7 @@ Training corpus: **250K class-balanced examples from ANLI R1-3 + WANLI + MNLI + 
 ### Honesty observation
 
 Von's README claims to surpass "published commercial alternatives" while its own table
-shows Jev at 97.2% vs von 93.5% — the same claim-laundering pattern our 2025-09-20
+shows Jev at 97.2% vs von 93.5% — the same claim-laundering pattern our 2026-09-20
 audit removed from OUR README. Also note: their benchmark is n=78 self-published
 (smoke-scale); we will not adopt it as a headline suite, and any von/GLiNER2 rows we
 publish will be our own local measurements at n≥1000 under our frozen protocol.
@@ -56,8 +59,9 @@ are not calibrated decision engines.
 
 ### Program relevance
 
-- Included in our local baseline roster for completeness (SKIPPED until task G2
-  grounds the classification API — the adapter refuses to run ungrounded by design).
+- Included in our local baseline roster for completeness (**grounded (task G2)** —
+  the refuse-ungrounded gate was lifted after source verification; ECE/Brier rows
+  for GLiNER2 are N/A in published tables).
 - Architectural lesson: schema-in-input multi-task conditioning is attractive for
   serving many decision heads from one encoder, but decision calibration (our
   differentiator) is not its strength. No training-pipeline change adopted.
@@ -69,7 +73,7 @@ are not calibrated decision engines.
 | H1: proper-scoring composite loss (λ sweep) | training hypothesis | REGISTERED (externally validated by von's method) |
 | H2: post-hoc temperature scaling | calibration hypothesis | REGISTERED (von-grounded shipping pattern) |
 | von-1.0 local baseline | benchmark | ADDED (grounded adapter + tests) |
-| GLiNER2 local baseline | benchmark | ADDED, SKIPPED-until-G2 |
+| GLiNER2 local baseline | benchmark | ADDED, GROUNDED (task G2) |
 | Ordinal rate() primitive; negation-framing augmentation; option-marker attention; jabr suite | backlog ideas | LOGGED |
 
 ## 4. Grounding addendum (task G1-G5, 2026-09-20 late evening)
@@ -87,8 +91,9 @@ heavy) - vendor docs conflict with their own artifacts.
 **G2 — GLiNER2 classification API (grounded)**: `GLiNER2.from_pretrained(repo)` +
 `model.classify_text(text, {"field": [labels]}, include_confidence=True)` ->
 `{"field": {"label": str, "confidence": float}}` (runtime.py classify_text).
-Vendor exposes ONLY top-label + confidence. Implemented; adapter spreads remainder
-uniformly - accuracy rows exact, ECE/Brier rows flagged approximate/N/A.
+Vendor exposes ONLY top-1 label + confidence (no full distribution). Implemented;
+adapter spreads remainder uniformly — accuracy rows exact, ECE/Brier rows for
+GLiNER2 must be N/A in published tables.
 
 **G3 — openjev subfolders (grounded via HF tree API)**: `qwen3.5-4b-nli` EXISTS,
 `qwen3.5-4b-nli-v2` EXISTS, **`qwen3.5-0.8b-nli` ABSENT, `qwen3.5-2b-nli` ABSENT**.

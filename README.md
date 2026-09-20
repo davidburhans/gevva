@@ -20,12 +20,12 @@ $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neut
 
 ## Direct Capability Comparison vs. Jev, OpenJEV & Laya
 
-**Provenance (2025-09-20 adversarial audit)**: **our** columns are local runs of [`eval_openjev_benchmarks.py`](file:///home/dave/workspaces/nli-cross-encoder/eval_openjev_benchmarks.py) on an RTX 5090 at n=100 seeded-shuffled slices (ECE on the MNLI-matched slice); **competitor** columns are quoted published constants (`REFERENCE_BENCHMARKS`, incl. tilde-estimates) with unknown hardware/protocol — so cross-model ratios ("2.4× faster", "4.3× more calibrated") are indicative only. Rerank columns use our post-hoc `margin` scoring; under the raw-entailment protocol competitors document, ours scores **0.52 / 0.37 / 0.19** on ARC-Easy / ARC-Challenge / MMLU (`results/benchmark_comparison_100.json`). openjev-**4B** outperforms our E2B model on most capability rows, and the strongest published baseline (openjev v2: ARC-C 0.72, MMLU 0.53) is not yet tabulated. At n=100, 95% CIs are ±9–10pp — deltas under ~10pp are not statistically meaningful. Baseline re-runs under one frozen protocol are tracked in [PROGRESS.md §8](file:///home/dave/workspaces/nli-cross-encoder/PROGRESS.md).
+**Provenance (2026-09-20 adversarial audit)**: **our** columns are local runs of [`eval_openjev_benchmarks.py`](file:///home/dave/workspaces/nli-cross-encoder/eval_openjev_benchmarks.py) on an RTX 5090 at n=100 seeded-shuffled slices (ECE on the MNLI-matched slice); **competitor** columns are quoted published constants (`REFERENCE_BENCHMARKS`, incl. tilde-estimates) with unknown hardware/protocol — so cross-model ratio claims are indicative only and appear in the tables below only under the tag "[quoted-baseline ratio - not protocol-identical]". Rerank columns use our post-hoc `margin` scoring; under the raw-entailment protocol competitors document, ours scores **0.52 / 0.37 / 0.19** on ARC-Easy / ARC-Challenge / MMLU (`results/benchmark_comparison_100.json`). openjev-**4B** outperforms our E2B model on most capability rows, and the strongest published baseline (openjev v2: ARC-C 0.72, MMLU 0.53) is not yet tabulated. At n=100, 95% CIs are ±9–10pp — deltas under ~10pp are not statistically meaningful. Baseline re-runs under one frozen protocol are tracked in [PROGRESS.md §8](file:///home/dave/workspaces/nli-cross-encoder/PROGRESS.md).
 
 | Benchmark Task / Metric | Jev 1.13.0 | openjev-4B | openjev-2B (2.0B) | ModernCE (395M) | Convai Laya (421M) | Gemma 4 E2B W4A16 (Stage 1) | Gemma 4 E2B W4A16 (Stage 2) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Single-Forward Latency (P50)**| 236–276 ms | 57 ms | 35.0 ms | 18.0 ms | 32.8 ms | **14.31 ms** | **14.73 ms** *(2.4x faster than 2B)* |
-| **ECE Calibration (lower better)**| 0.246 | ~0.080 | ~0.090 | ~0.070 | 0.081 | 0.0790 | **0.0572** *(#1 overall, 36% lower than 2B)* |
+| **Single-Forward Latency (P50)**| 236–276 ms | 57 ms | 35.0 ms | 18.0 ms | 32.8 ms | **14.31 ms** | **14.73 ms** *([quoted-baseline ratio - not protocol-identical] 2.4x faster than 2B)* |
+| **ECE Calibration (lower better)**| 0.246 | ~0.080 | ~0.090 | ~0.070 | 0.081 | 0.0790 | **0.0572** *(#1 overall, [quoted-baseline ratio - not protocol-identical] 36% lower than 2B)* |
 | **ARC-Easy Rerank (0-shot)** | ~0.65 | 0.769 | 0.629 | 0.607 | — | 0.7500 | **0.7100** *(+8.1% over OpenJEV-2B)* |
 | **ARC-Challenge Rerank (0-shot)**| ~0.55 | 0.592 | 0.491 | 0.416 | — | 0.5300 | **0.5100** *(+1.9% over OpenJEV-2B)* |
 | **WinoGrande Rerank (0-shot)** | ~0.55 | 0.586 | 0.534 | 0.569 | — | 0.6300 | **0.6000** *(+6.6% over OpenJEV-2B, beats 4B)* |
@@ -39,7 +39,7 @@ $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neut
 | **BoolQ (Yes/No Q&A)** | — | — | — | — | 0.830 | 0.7000 | **0.7000** |
 | **DAIR Emotion (6 classes)** | 0.480 | — | — | — | 0.595 | 0.5900 | **0.5700** |
 
-> **Key Findings on Stage 2 Training** *(2025-09-20 audit: deltas below are n=100 point estimates under margin scoring; see provenance note above)*:
+> **Key Findings on Stage 2 Training** *(2026-09-20 audit: deltas below are n=100 point estimates under margin scoring; see provenance note above)*:
 > 1. **Gains over Same-Size OpenJEV-2B under margin scoring**: ARC-Easy (+8.1pp), ARC-Challenge (+1.9pp), WinoGrande (+6.6pp), MMLU Grade F1 (+1.2pp) — all within n=100 noise bands individually; under the raw-entailment protocol, ours trails 2B on ARC/MMLU. Latency **14.7 ms measured locally vs 35 ms quoted** (unknown hardware/protocol) for OpenJEV-2B.
 > 2. **Calibration**: ECE **0.0572** (n=100 slice) vs OpenJEV-2B's quoted ~0.090 — directionally favorable, statistically unconfirmed.
 > 3. **Multi-Quant QAT Engine**: Supports native Blackwell NVFP4 (FP4 E2M1), GGUF Q4_K_M affine quant, and standard INT4 Group-32 (`compressed-tensors`).

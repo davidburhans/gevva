@@ -10,10 +10,13 @@
  7. arms             : build_arms (A=clean, B=clean + <=12.5% validated synthetic)
  8. train-armB       : synthetic arm
  9. gate             : gate_decision (rc 3 = legitimate FAIL, recorded)
-10. resume-committee : judges 2-4 in owner order (q3 -> q4 -> deepseek LAST), liveness-verified
+10. resume-committee : judges 2-4 in owner order (q3 -> q4 -> deepseek LAST) + watchdog re-arm
 
-SAFETY: any failure after pause writes results/committee_alert.json and ALWAYS resumes
-the committee in `finally` - validation never dies overnight (audit NIGHT-WASTER 3).
+SAFETY: any failure after pause writes results/committee_alert.json and relaunches the
+committee from the failure handler before re-raising - validation never dies overnight
+(audit NIGHT-WASTER 3). Exactly ONE committee launch per path: failure -> handler
+resume; success -> resume after the gate, then scripts/committee_watchdog.py re-armed
+detached alongside it.
 The legacy run_night_queue driver must not be running (startup guard kills it).
 """
 
@@ -26,6 +29,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Dict
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -41,6 +45,8 @@ STATUS = REPO / "results" / "tonight_chain_status.json"
 ALERT = REPO / "results" / "committee_alert.json"
 PID_FILE = REPO / "results" / "sdk_synthetic_run.pid"
 COMMITTEE_LOG = REPO / "results" / "tonight_chain" / "committee_resume.log"
+WATCHDOG_PID_FILE = REPO / "results" / "committee_watchdog.pid"
+WATCHDOG_STDOUT = REPO / "results" / "tonight_chain" / "committee_watchdog_stdout.log"
 MAX_COMMITTEE_RESTARTS = 3
 
 
@@ -236,24 +242,15 @@ def main() -> None:
     wait_judge1(db_path, proc)
 
     # From here the committee is intentionally stopped; EVERY failure path must
-    # resume it in `finally` so the multi-day validation tail never dies silently.
-    resumed_in_finally = False
-
-    def resume_in_finally() -> None:
-        nonlocal resumed_in_finally
-        if resumed_in_finally:
-            return
-        resumed_in_finally = True
-        try:
-            kill_committee()
-            proc2 = subprocess.Popen(resume_cmd(), cwd=REPO, start_new_session=True,
-                                     stdout=open(COMMITTEE_LOG, "a"), stderr=subprocess.STDOUT)
-            PID_FILE.write_text(str(proc2.pid))
-            write_alert("chain_failed_committee_resumed",
-                        {"note": "validation tail continues; chain stage failed - see tonight_chain logs"})
-            log(f"finally: committee resumed (pid {proc2.pid}) despite chain failure")
-        except Exception as e:
-            log(f"finally: committee resume FAILED: {e}")
+    # resume it so the multi-day validation tail never dies silently
+    # (audit NIGHT-WASTER 3). Exactly ONE committee launch per path:
+    #   failure -> kill leftovers + alert + relaunch inside the handler, re-raise
+    #   success -> relaunch after the gate, then re-arm the watchdog.
+    def launch_committee_detached() -> subprocess.Popen:
+        proc2 = subprocess.Popen(resume_cmd(), cwd=REPO, start_new_session=True,
+                                 stdout=open(COMMITTEE_LOG, "a"), stderr=subprocess.STDOUT)
+        PID_FILE.write_text(str(proc2.pid))
+        return proc2
 
     try:
         set_stage("pause", "running")
@@ -318,13 +315,31 @@ def main() -> None:
         gate_pass = gate_path.exists() and json.loads(gate_path.read_text()).get("passed", False)
         set_stage("gate", "done" if rc in (0, 3) else "failed",
                   f"passed={gate_pass} (single-judge pilot gate; flagship mixing requires the multi-judge gate)")
-    finally:
-        # ALWAYS keep the validation tail alive, even when a training stage fails.
-        resume_in_finally()
+    except BaseException:
+        # WHY BaseException: stage failures raise SystemExit(1), and Ctrl-C during a
+        # multi-hour training stage must still keep the validation tail alive.
+        try:
+            kill_committee()
+            proc2 = launch_committee_detached()
+            write_alert("chain_failed_committee_resumed",
+                        {"note": "validation tail continues; chain stage failed - see tonight_chain logs"})
+            log(f"chain failed: committee resumed (pid {proc2.pid}) so judges 2-4 continue")
+        except Exception as resume_err:
+            log(f"chain failed AND committee resume FAILED: {resume_err}")
+        raise
 
+    # SUCCESS path: judges 2-4 tail continues for days; keep a health watchdog on it.
     set_stage("resume-committee", "running")
-    # The finally-block resume already relaunched the committee (judges 2-4, deepseek last).
-    set_stage("resume-committee", "done")
+    proc2 = launch_committee_detached()
+    watchdog = subprocess.Popen(
+        [sys.executable, "-u", "scripts/committee_watchdog.py",
+         "--pid-file", "results/sdk_synthetic_run.pid"],
+        cwd=REPO, start_new_session=True, stdout=open(WATCHDOG_STDOUT, "a"),
+        stderr=subprocess.STDOUT)
+    WATCHDOG_PID_FILE.write_text(str(watchdog.pid))
+    log(f"committee resumed (judges 2-4, deepseek LAST) pid={proc2.pid}; "
+        f"watchdog re-armed pid={watchdog.pid}")
+    set_stage("resume-committee", "done", f"committee pid={proc2.pid}; watchdog pid={watchdog.pid}")
     set_stage("chain", "completed")
 
 

@@ -17,7 +17,7 @@
 | **Stage 1 QAT Training Run** | **COMPLETED** | [`ckpt/gemma-4-e2b-nli-qat-stage1/best`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-qat-stage1/best) | **84.77% Validation Accuracy**, **ECE = 0.0306**, Brier score = 0.2282. 4-bit Group-32 simulated quantization with STE in-loop training. |
 | **Production W4A16 Exporter** | **COMPLETED** | [`ckpt/gemma-4-e2b-nli-w4a16`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16) | Standard `compressed-tensors` format (`model.safetensors` + `quantization_config.json`, 7.04 GB). Preserves MQA & ViT in 16-bit. Reconstruction verification passed. |
 | **1-Line W4A16 Inference Engine** | **VERIFIED** | [`gemma4_cross_encoder.py`](file:///home/dave/workspaces/nli-cross-encoder/gemma4_cross_encoder.py) | In-place CPU-to-GPU streaming, auto-restoration of non-persistent RoPE & PLE embedding scale buffers. **14.31 ms P50 latency** (≈69.9 decisions/sec; persisted artifact `results/benchmark_comparison_100.json` — the earlier 13.62 ms / 72.5-per-sec figures trace only to research prose). |
-| **Stage 2 E2B QAT & W4A16 Model** | **VERIFIED** | [`ckpt/gemma-4-e2b-nli-w4a16-stage2`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16-stage2) | **Decisively beats OpenJEV-2B**: ARC-Easy (+8.1%), ARC-Challenge (+1.9%), WinoGrande (+6.6%), MMLU Grade (+1.2%), ECE (0.057 vs 0.090), Latency (14.7ms vs 35ms — 2.4× faster). |
+| **Stage 2 E2B QAT & W4A16 Model** | **VERIFIED** | [`ckpt/gemma-4-e2b-nli-w4a16-stage2`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16-stage2) | **Decisively beats OpenJEV-2B**: ARC-Easy (+8.1%), ARC-Challenge (+1.9%), WinoGrande (+6.6%), MMLU Grade (+1.2%), ECE (0.057 vs 0.090), Latency (14.7ms vs 35ms — [quoted-baseline ratio - not protocol-identical] 2.4× faster). |
 | **Train-Serving Parity & SDK Synthetic Engine** | **ACTIVE** | [`generate_sdk_synthetic_data.py`](file:///home/dave/workspaces/nli-cross-encoder/generate_sdk_synthetic_data.py) + [`validator_committee.py`](file:///home/dave/workspaces/nli-cross-encoder/validator_committee.py) + [`validation_metrics_db.py`](file:///home/dave/workspaces/nli-cross-encoder/validation_metrics_db.py) | 4-judge cross-family committee (Qwen 3.6 27B, DeepSeek V4 Flash q3, Qwen 3.8 125B q4/q3) with crash-safe checkpointing, `--resume-run`, disagreement review queue & SQLite judge metrics DB. |
 | **Qwen3.5-0.8B Like-for-Like Pipeline** | **VERIFIED** | [`train_cross_encoder.py`](file:///home/dave/workspaces/nli-cross-encoder/train_cross_encoder.py) | General cross-architecture loader & trainer verified with exit code 0. Ready for attribution benchmark vs OpenJEV-0.8B. |
 
@@ -64,7 +64,7 @@
 
 ## 3. Benchmark Comparison: Full Precision vs. QAT vs. W4A16
 
-> **Provenance note (2025-09-20 audit)**: the two rows below "Checkpoint Storage Size" are **smoke demos on n=3/7/5 hardcoded examples**, not benchmarks (a 3/3 score has a 95% CI of [43.8%, 100%]; the RAG demo cases also mirror trained curriculum patterns). Identical 100.0% across all three checkpoints signals task easiness, not model perfection. Latency/throughput for `w4a16`: artifact-backed figure is **14.31 ms P50 ≈ 69.9/sec** (`benchmark_comparison_100.json`); 13.62 ms / 72.5-per-sec appear only in research prose. QAT ECE 0.0306 has no backing artifact (`eval_report.json` records accuracy/Brier only).
+> **Provenance note (2026-09-20 audit)**: the two rows below "Checkpoint Storage Size" are **smoke demos on n=3/7/5 hardcoded examples**, not benchmarks (a 3/3 score has a 95% CI of [43.8%, 100%]; the RAG demo cases also mirror trained curriculum patterns). Identical 100.0% across all three checkpoints signals task easiness, not model perfection. Latency/throughput for `w4a16`: artifact-backed figure is **14.31 ms P50 ≈ 69.9/sec** (`benchmark_comparison_100.json`); 13.62 ms / 72.5-per-sec appear only in research prose. QAT ECE 0.0306 has no backing artifact (`eval_report.json` records accuracy/Brier only).
 
 | Metric | BF16 Baseline (`stage1`) | 4-bit QAT LoRA (`qat-stage1`) | Exported W4A16 (`w4a16`) |
 | :--- | :---: | :---: | :---: |
@@ -99,8 +99,8 @@ Evaluated locally via [`eval_openjev_benchmarks.py`](file:///home/dave/workspace
 | **AG News (4 topics)** | 0.910 | — | — | — | 0.950 | 0.7700 | **0.7900** |
 | **BoolQ (Yes/No Q&A)** | — | — | — | — | 0.830 | 0.6400 | **0.7000** |
 | **DAIR Emotion (6 classes)** | 0.480 | — | — | — | 0.595 | 0.5200 | **0.5900** *(beats Jev, ties Laya)* |
-| **Single-Forward Latency (P50)**| 236–276 ms | 57 ms | 35 ms | 18 ms | 32.8 ms | **14.31 ms** | **14.96 ms** *(~19x faster than Jev)* |
-| **ECE Calibration (lower better)**| 0.246 | ~0.08 | ~0.09 | ~0.07 | 0.081 | **0.0790** | **0.0790** *(3.1x more calibrated)* |
+| **Single-Forward Latency (P50)**| 236–276 ms | 57 ms | 35 ms | 18 ms | 32.8 ms | **14.31 ms** | **14.96 ms** *([quoted-baseline ratio - not protocol-identical] ~19x faster than Jev)* |
+| **ECE Calibration (lower better)**| 0.246 | ~0.08 | ~0.09 | ~0.07 | 0.081 | **0.0790** | **0.0790** *([quoted-baseline ratio - not protocol-identical] 3.1x more calibrated)* |
 
 
 ---
@@ -184,7 +184,7 @@ Previous evaluations suffered from domain disparity where downstream SDK methods
   - Generator Entailment + Verifier Neutral $\implies$ **Neutral Boundary Control** (ungrounded extrapolation).
   - Generator Contradiction + Verifier Neutral $\implies$ **Relabelled Neutral** (resolves false contradiction bias).
 
-### E. Four-Judge Cross-Family Committee, Checkpointing & Judge Metrics DB (2025-09-19)
+### E. Four-Judge Cross-Family Committee, Checkpointing & Judge Metrics DB (2026-09-19)
 Validator lineup upgraded from a single verifier to a 4-judge cross-family committee using optimized llama-server aliases:
 `qwen-3.6-27b-q4`, `deepseek-v4-flash-q3`, `qwen-3.8-125b-q4`, `qwen-3.8-125b-q3`.
 
@@ -209,7 +209,7 @@ Validator lineup upgraded from a single verifier to a 4-judge cross-family commi
 
 | Field | Value |
 | :--- | :--- |
-| Status | **RUNNING** (started 2025-09-19 22:33 local) |
+| Status | **RUNNING** (started 2026-09-19 22:33 local) |
 | PID / log | `results/sdk_synthetic_run.pid` · `results/sdk_synthetic_run_20260919_223307.log` |
 | Teacher | `gemma-4-31b-q4` (GBNF-constrained domain triples) |
 | Judges (in order) | `qwen-3.6-27b-q4` → `deepseek-v4-flash-q3` → `qwen-3.8-125b-q4` → `qwen-3.8-125b-q3` |
@@ -230,7 +230,7 @@ uv run python generate_sdk_synthetic_data.py --validator-url http://localhost:80
 
 ---
 
-## 8. Adversarial Audit: Findings & Remediation (2025-09-20)
+## 8. Adversarial Audit: Findings & Remediation (2026-09-20)
 
 Five independent adversarial reviews ran against this repo (training pipeline, benchmark fairness ×2, claims-vs-artifacts, validator committee). **Verified clean**: padding-invariant last-non-pad pooling, NATIVE2OURS mapping on every ingestion/eval path, W4A16 pack/unpack math + MQA/vision exclusion, bounded gradient clipping, metric arithmetic, per-task label-option orders vs HF ClassLabels, table↔artifact arithmetic, and the validator committee implementation (verdict: SAFE TO LAUNCH).
 
@@ -239,7 +239,7 @@ Five independent adversarial reviews ran against this repo (training pipeline, b
 | A1 | BLOCKER | No held-out test split: every headline metric is a checkpoint-**selection**-split statistic; the MNLI benchmark slice ⊂ selection set | BACKLOG — needs retrain/re-eval decision (report on MNLI-mismatched/XNLI-test meanwhile) |
 | A2 | BLOCKER | "Identical evaluation protocols" claim false: competitor cells are quoted constants (openjev 57ms = Doom-loop latency; 2B 35ms untraceable; ECE ~values appear in no source); our default scoring is post-hoc `margin` (+23pp ARC-E vs raw-entailment protocol) | **DOC-FIXED** (README/PROGRESS relabeled, both-scoring disclosed); local baseline re-runs BACKLOG |
 | A3 | BLOCKER | 100.0% rows are n=3/7 hardcoded fixtures mirroring trained patterns (80.0% routing is 4/5); presented as per-checkpoint benchmarks | **DOC-LABELED** as smoke demos (§3 note); replace with ≥200-item sampled suites BACKLOG |
-| A4 | MAJOR | Train/bench pollution: XNLI-**dev** translations trained while MNLI-dev originals in val; haystack val rows derived from trained pairs; 218 verbatim val∩train duplicates | **FIXED + REGENERATED** (quick mode, 2025-09-20): `data/train.jsonl` 39,494 / `val.jsonl` 7,783 rows, **0 val∩train text-pair overlap** (independently verified), 1,985 holdout-sourced val rows, XNLI leak closed, `dataset_manifest.json` written. Log: `results/data_compile_hygiene_20260919_230319.log`. Final recompile after the committee run folds in validated sdk rows. Old leaky data archived at `data/archive_pre_hygiene_fix_20260920/` |
+| A4 | MAJOR | Train/bench pollution: XNLI-**dev** translations trained while MNLI-dev originals in val; haystack val rows derived from trained pairs; 218 verbatim val∩train duplicates | **FIXED + REGENERATED** (quick mode, 2026-09-20): `data/train.jsonl` 39,494 / `val.jsonl` 4,670 / `test.jsonl` 3,113 rows, **0 val∩train text-pair overlap** (independently verified), 1,985 holdout-sourced val rows, XNLI leak closed, `dataset_manifest.json` written. Log: `results/data_compile_hygiene_20260919_230319.log`. Final recompile after the committee run folds in validated sdk rows. Old leaky data archived at `data/archive_pre_hygiene_fix_20260920/` |
 | A5 | MAJOR | n=100 first-N slices: ±9–10pp CIs, MMLU slice = Abstract Algebra only, AG News/DAIR slices class-skewed, no per-item logs (no McNemar possible) | **FIXED** (seeded shuffle, contamination guard, provenance in artifacts); n≥1000 + CI reruns BACKLOG |
 | A6 | MAJOR | Baseline selection bias: openjev-4B leads ours on most rows (never headlined); stage-2 regressions unmentioned; losses unannotated | **DOC-NOTED**; symmetric annotation + v2 rows BACKLOG |
 | A7 | MAJOR | Multimodal training never presents an image (mangled premise literal; collator ignores `row["image"]`) — violates train-serving parity; 80.5% "multimodal" val score is template memorization | Premise string **FIXED**; image-into-collator + regeneration BACKLOG |
@@ -253,11 +253,11 @@ Five independent adversarial reviews ran against this repo (training pipeline, b
 
 ---
 
-## 9. Night Queue Runbook (pre-registered 2025-09-20)
+## 9. Night Queue Runbook (pre-registered 2026-09-20)
 
 **Protocol (frozen before any results)**: [`docs/EVALUATION_PROTOCOL.md`](docs/EVALUATION_PROTOCOL.md) — three-way split (train / val-selection / test-report), one-shot test evaluation on reloaded best checkpoints, paired McNemar gates, Wilson CIs, local-only baseline claims, symmetric win/loss reporting.
 
-**Decisions locked with owner (2025-09-20 evening)**:
+**Decisions locked with owner (2026-09-20 evening)**:
 1. Two-stage training: quick shakedown → stage2 flagship (~370K pairs).
 2. Synthetic data enters the flagship **only** through the A/B gate: arm B (clean + ≤12.5% validated synthetic) must beat arm A (clean) with McNemar p<0.05 AND no ECE regression.
 3. Fully autonomous overnight GPU chain; morning report on wake.
@@ -266,12 +266,14 @@ Five independent adversarial reviews ran against this repo (training pipeline, b
 **Queue** (driver: `scripts/run_night_queue.py`, pid `results/night_queue.pid`, status `results/night_queue_status.json`, stage logs `results/night_queue/`):
 wait for committee → stage sdk files → clean recompile (train/val/**test**) → build arms → free GPU → shakedown A (clean) → shakedown B (+synthetic) → baselines (best-effort; feasibility scout running) → **gate** → stage2 compile → flagship training with gated recipe.
 
+**Round-2 audits (rigor + execution) received; consolidated remediation committed at HEAD; chain launch gated on worker fixes.**
+
 **Artifacts promised by morning**: `ckpt/shakedown_A|B` (+ `test_metrics.json` / `test_items.jsonl`), `results/gate_decision.json`, `results/night_queue_status.json`, stage2 flagship training or queued.
 
 **Known limitation honestly stated**: shakedown arms train multimodal rows as text-only (audit A7 — the image-into-collator fix lands before the stage2 flagship if ready in time; otherwise stage2 ships text-only too and A7 stays at the top of the backlog). The A/B comparison remains internally valid either way (both arms identical except synthetic rows).
 
-**External survey additions (2025-09-20 late evening)**: [`research/reports/08_external_system1_survey.md`](research/reports/08_external_system1_survey.md) — von-1.0 & GLiNER2 analyzed; **H1 externally validated** (von ships CE+0.5·Brier as its calibration method; λ sweep {0.25, 0.5, 1.0} registered); **H2 registered**: post-hoc temperature scaling (val-NLL fit, argmax-invariant, gate = ECE/Brier improvement); **von-1.0 + GLiNER2 added to the local baseline roster** (von adapter grounded + tested; GLiNER2 adapter present but SKIPPED until its classification API is grounded — task G2). Backlog ideas logged: ordinal rate() primitive, negation-framing augmentation, option-marker attention, jabr ecosystem suite.
+**External survey additions (2026-09-20 late evening)**: [`research/reports/08_external_system1_survey.md`](research/reports/08_external_system1_survey.md) — von-1.0 & GLiNER2 analyzed; **H1 externally validated** (von ships CE+0.5·Brier as its calibration method; λ sweep {0.25, 0.5, 1.0} registered); **H2 registered**: post-hoc temperature scaling (val-NLL fit, argmax-invariant, gate = ECE/Brier improvement); **von-1.0 + GLiNER2 added to the local baseline roster** (von adapter grounded + tested; GLiNER2 adapter grounded (task G2) — classification API verified: `classify_text` with `include_confidence=True`, vendor exposes top-1 label + confidence only, no full distribution, so ECE/Brier rows for GLiNER2 must be N/A in published tables). Backlog ideas logged: ordinal rate() primitive, negation-framing augmentation, option-marker attention, jabr ecosystem suite.
 
 **Council converged (overnight)**: `docs/council_memo_08b_baseline.md` - 0.8B-phase baseline = C+ (self-trained openjev-0.8B via their unmodified train.py as PRIMARY + quoted as labeled context), with two-seed fidelity rule, volume-matched decomposition arm (`--n-train 39494`), pre-registered abort criteria, and one scheduled harness gap (foreign-checkpoint per-item evaluator). Owner ratification pending at morning review.
 
-**Grounding addendum (G1-G5)**: see research report 08 §4. Key facts: openjev-0.8B/2B weights ABSENT from HF (0.8B-phase comparison must self-train openjev-0.8B or stay quoted-caveated - deferred to SOTA-gate time); GLiNER2 classification API verified and adapter IMPLEMENTED (accuracy rows exact, ECE/Brier N/A - vendor exposes no full distribution); von README inconsistent with its own artifacts (T=1.0367 vs 1.1692; 250K-NLI corpus claim vs 66K decision-trajectory run.log); jabr scores von-1.0.1 BELOW von's README claim. Laya NLI prompt unpublished - our mapping will be documented in provenance.
+**Grounding addendum (G1-G5)**: see research report 08 §4. Key facts: openjev-0.8B/2B weights ABSENT from HF (0.8B-phase comparison must self-train openjev-0.8B or stay quoted-caveated - deferred to SOTA-gate time); GLiNER2 GROUNDED (task G2): classification API verified (`classify_text` with `include_confidence=True` — vendor exposes top-1 label + confidence only, no full distribution) and adapter IMPLEMENTED (accuracy rows exact; ECE/Brier rows for GLiNER2 must be N/A in published tables); von README inconsistent with its own artifacts (T=1.0367 vs 1.1692; 250K-NLI corpus claim vs 66K decision-trajectory run.log); jabr scores von-1.0.1 BELOW von's README claim. Laya NLI prompt unpublished - our mapping will be documented in provenance.

@@ -27,17 +27,18 @@ heavy work; ground every assumption; no unverifiable headline claims.
 | Git | HEAD `7244c90` + hand-off commit; clean tree except workers' in-flight edits |
 | Tests | 33/33 across 4 suites (tests/test_{validator_committee,sdk_parity,night_stats,data_hygiene}.py) |
 
-**In-flight workers** (fresh context, async):
-- `210329bc` (worker): fix `scripts/tonight_chain.py` main() control flow (failure →
-  alert + committee resume; success → committee resume for judges 2-4 + watchdog re-arm;
-  exactly one launch per path) + `train_cross_encoder.py` head-restore numeric guard +
-  test_sha fingerprint in test artifacts.
-- `e49dbcef` (worker): doc amendments — protocol MDE/multiplicity/cap-label/two-stage
-  gate; README+PROGRESS claims sweep (strike quoted-baseline ratios, year 2026, A4
-  split counts, GLiNER2 grounded status).
+**Workers: COMPLETE + VERIFIED** (both fresh-context; commit `HEAD`):
+- `210329bc` (code): tonight_chain main() control flow (failure → alert + committee
+  resume via `except BaseException`; success → single detached launch + watchdog re-arm;
+  also fixed a missing `Dict` import that would have crashed the chain at startup) +
+  trainer head-restore probe guard (val-accuracy collapse check) + test_sha fingerprint
+  in test_metrics/test_items. Sandbox dry-run of main(): 20/20 checks.
+- `e49dbcef` (docs): protocol amendments (MDE ~1.5pp, Holm family policy, 2-attempt
+  cap, a-priori cap label, two-stage pilot/binding gate, ECE SE rule) + claims sweep
+  (quoted-baseline ratios tagged, years → 2026, A4 split counts, GLiNER2 grounded).
 
-**On worker completion**: verify their claims (py_compile + 4 test suites + read diffs),
-fix anything broken, `git add -A && git commit`, THEN launch the chain:
+**NEXT SESSION FIRST ACTION — launch the chain** (deliberately NOT launched from the
+previous session):
 ```bash
 cd /home/dave/workspaces/nli-cross-encoder
 nohup uv run python -u scripts/tonight_chain.py > results/tonight_chain_driver.log 2>&1 &
