@@ -1,0 +1,26 @@
+{
+  "mnli_m": 1.0,
+  "mnli_mm": 0.9,
+  "arc_easy_rerank": 0.7,
+  "arc_challenge_rerank": 0.3,
+  "mmlu_rerank": 0.1,
+  "winogrande_rerank": 0.4,
+  "arc_easy_grade_acc": 0.975,
+  "arc_easy_grade_f1": 0.9473684210526316,
+  "arc_challenge_grade_acc": 0.9,
+  "arc_challenge_grade_f1": 0.8181818181818182,
+  "mmlu_grade_acc": 0.95,
+  "mmlu_grade_f1": 0.9,
+  "boolq": 0.5,
+  "ag_news": 0.6,
+  "dair_emotion": 0.6,
+  "p50_latency_ms": "14.81 ms",
+  "latency_stats": {
+    "p50_ms": 14.805854996666312,
+    "p90_ms": 16.61692432826385,
+    "p99_ms": 17.019739829702303,
+    "mean_ms": 15.088772226590663
+  },
+  "ece_score": 0.09077222347259521,
+  "brier_score": 0.021309003233909607
+}

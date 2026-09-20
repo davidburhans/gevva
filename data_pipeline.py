@@ -1,0 +1,635 @@
+#!/usr/bin/env python3
+"""data_pipeline.py
+===================
+Dataset compilation and balancing pipeline for Multimodal, Multilingual,
+128K NLI Cross-Encoder based on Google Gemma 4.
+
+Label Convention (dleemiller / ModernCE / OpenJEV standard):
+    0: contradiction
+    1: entailment
+    2: neutral
+
+Schema per sample:
+    {
+        "id": str,
+        "premise": str,
+        "hypothesis": str,
+        "label": int,       # 0=contradiction, 1=entailment, 2=neutral
+        "source": str,      # dataset provenance
+        "language": str,    # ISO language code (en, es, zh, hi, etc.)
+        "image": str,       # path to image or empty string
+        "length": int       # approximate token count
+    }
+
+Usage:
+    python data_pipeline.py --out-dir ./data --quick     # Quick build for fast validation
+    python data_pipeline.py --out-dir ./data --full      # Full-scale dataset build
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import sys
+import time
+from collections import Counter, defaultdict
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+# -----------------------------------------------------------------------------
+# Canonical Label Space
+# -----------------------------------------------------------------------------
+CONTRADICTION: int = 0
+ENTAILMENT: int = 1
+NEUTRAL: int = 2
+
+LABEL2ID: Dict[str, int] = {
+    "contradiction": 0,
+    "entailment": 1,
+    "neutral": 2,
+}
+ID2LABEL: Dict[int, str] = {v: k for k, v in LABEL2ID.items()}
+
+# Standard SNLI / MNLI native format: 0=entailment, 1=neutral, 2=contradiction
+NATIVE_MNLI2OURS: Dict[int, int] = {0: 1, 1: 2, 2: 0}
+
+SYNONYMS: Dict[str, str] = {
+    "entailment": "entailment",
+    "entails": "entailment",
+    "supports": "entailment",
+    "contradiction": "contradiction",
+    "contradicts": "contradiction",
+    "refutes": "contradiction",
+    "neutral": "neutral",
+    "not_entailment": "neutral",
+    "not enough info": "neutral",
+    "not_enough_info": "neutral",
+    "nei": "neutral",
+}
+
+
+def normalize_label(val: Any) -> Optional[int]:
+    """Resolve raw label into canonical 0=CON, 1=ENT, 2=NEU."""
+    if isinstance(val, int):
+        if val in NATIVE_MNLI2OURS:
+            return NATIVE_MNLI2OURS[val]
+        return None
+    if isinstance(val, str):
+        cleaned = val.strip().lower()
+        canonical = SYNONYMS.get(cleaned)
+        if canonical:
+            return LABEL2ID[canonical]
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Long-Context Synthetic Haystack Generator
+# -----------------------------------------------------------------------------
+def build_haystack_samples(
+    pairs: List[Tuple[str, str, int, str]],
+    filler_pool: List[str],
+    n_samples: int = 2000,
+    min_fillers: int = 8,
+    max_fillers: int = 25,
+    seed: int = 42,
+) -> List[Dict[str, Any]]:
+    """Builds synthetic long-document NLI pairs:
+    - 40% Entailment (premise needle embedded at random depth)
+    - 30% Contradiction (fact corrupted via entity / number mutation)
+    - 30% Neutral (needle dropped entirely -> unsupported in document)
+    """
+    rng = random.Random(seed)
+    haystack_rows: List[Dict[str, Any]] = []
+
+    if not filler_pool or not pairs:
+        return haystack_rows
+
+    rng.shuffle(pairs)
+
+    for i in range(min(n_samples, len(pairs))):
+        premise_needle, hypothesis, orig_label, lang = pairs[i]
+        n_fillers = rng.randint(min_fillers, max_fillers)
+        fillers = rng.sample(filler_pool, min(n_fillers, len(filler_pool)))
+
+        dice = rng.random()
+        if dice < 0.30:
+            # Drop needle: evidence is NOT in document -> Neutral ("Not Stated")
+            doc = "\n\n".join(fillers)
+            label = NEUTRAL
+            sub_source = "haystack_drop_neutral"
+        elif dice < 0.60:
+            # Corrupted needle -> Contradiction
+            # Mutate numbers or insert negation
+            mutated_premise = re.sub(
+                r"\b(\d+)\b",
+                lambda m: str(int(m.group(1)) + rng.choice([5, 10, 100])),
+                premise_needle,
+                count=1,
+            )
+            if mutated_premise == premise_needle:
+                # If no numbers, insert negation
+                words = premise_needle.split()
+                if len(words) > 3:
+                    words.insert(2, "never")
+                    mutated_premise = " ".join(words)
+                else:
+                    mutated_premise = "It is completely false that " + premise_needle
+
+            pos = rng.randrange(len(fillers) + 1)
+            doc_paragraphs = fillers[:pos] + [mutated_premise] + fillers[pos:]
+            doc = "\n\n".join(doc_paragraphs)
+            label = CONTRADICTION
+            sub_source = "haystack_corrupted_con"
+        else:
+            # Genuine needle inserted -> Keep original relation (or entailment)
+            pos = rng.randrange(len(fillers) + 1)
+            doc_paragraphs = fillers[:pos] + [premise_needle] + fillers[pos:]
+            doc = "\n\n".join(doc_paragraphs)
+            label = orig_label
+            sub_source = "haystack_embedded"
+
+        haystack_rows.append(
+            {
+                "id": f"haystack_{i:06d}",
+                "premise": doc,
+                "hypothesis": hypothesis,
+                "label": label,
+                "source": sub_source,
+                "language": lang,
+                "image": "",
+                "length": len(doc.split()) + len(hypothesis.split()),
+            }
+        )
+
+    return haystack_rows
+
+
+# -----------------------------------------------------------------------------
+# Local Teacher Model Distillation Client (Port 8080)
+# -----------------------------------------------------------------------------
+class LocalTeacherClient:
+    def __init__(self, base_url: str = "http://localhost:8080/v1", model: str = "unsloth/gemma-4-26B-A4B-it-GGUF:BF16"):
+        self.base_url = base_url
+        self.model = model
+
+    def query(self, prompt: str, max_tokens: int = 256, temperature: float = 0.3) -> Optional[str]:
+        import urllib.request
+        payload = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return None
+
+
+# -----------------------------------------------------------------------------
+# Main Dataset Compiler
+# -----------------------------------------------------------------------------
+def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
+    rng = random.Random(seed)
+
+    print(f"=== Compiling Gemma 4 NLI Dataset (Mode: {mode.upper()}) ===")
+    from datasets import concatenate_datasets, load_dataset
+
+    train_samples: List[Dict[str, Any]] = []
+    val_samples: List[Dict[str, Any]] = []
+    filler_pool: List[str] = []
+    pairs_for_haystack: List[Tuple[str, str, int, str]] = []
+
+    # Target counts
+    if mode == "quick":
+        N_SNLI = 10000
+        N_MNLI = 10000
+        N_ANLI = 3000
+        N_FEVER = 5000
+        N_SCITAIL = 3000
+        N_QNLI = 5000
+        N_XNLI = 2000
+        N_HAYSTACK = 2000
+        N_VISION = 2000
+    elif mode == "stage2":
+        N_SNLI = 80000
+        N_MNLI = 120000
+        N_ANLI = 20000
+        N_FEVER = 60000
+        N_SCITAIL = 23000
+        N_QNLI = 40000
+        N_XNLI = 15000
+        N_HAYSTACK = 10000
+        N_VISION = 5000
+    else:  # full
+        N_SNLI = 150000
+        N_MNLI = 200000
+        N_ANLI = 25000
+        N_FEVER = 100000
+        N_SCITAIL = 23000
+        N_QNLI = 80000
+        N_XNLI = 30000
+        N_HAYSTACK = 20000
+        N_VISION = 30000
+
+    # 1. Stanford SNLI
+    print("Loading SNLI...")
+    try:
+        snli = load_dataset("stanfordnlp/snli")
+        for split, max_n in [("train", N_SNLI), ("validation", 1000)]:
+            ds = snli[split]
+            count = 0
+            for ex in ds:
+                p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
+                if l not in (0, 1, 2) or not p or not h:
+                    continue
+                label = NATIVE_MNLI2OURS[l]
+                row = {
+                    "id": f"snli_{split}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"snli_{split}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if split == "train":
+                    train_samples.append(row)
+                    if len(filler_pool) < 20000:
+                        filler_pool.append(p.strip())
+                    if len(pairs_for_haystack) < 15000:
+                        pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
+                else:
+                    val_samples.append(row)
+                count += 1
+                if count >= max_n:
+                    break
+        print(f"  SNLI loaded: {count} rows")
+    except Exception as e:
+        print(f"  SNLI load failed: {e}")
+
+    # 2. NYU MNLI
+    print("Loading MNLI...")
+    try:
+        mnli = load_dataset("nyu-mll/multi_nli")
+        for split, max_n in [("train", N_MNLI), ("validation_matched", 1000)]:
+            ds = mnli[split]
+            count = 0
+            for ex in ds:
+                p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
+                if l not in (0, 1, 2) or not p or not h:
+                    continue
+                label = NATIVE_MNLI2OURS[l]
+                row = {
+                    "id": f"mnli_{split}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"mnli_{split}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if split == "train":
+                    train_samples.append(row)
+                    if len(filler_pool) < 30000:
+                        filler_pool.append(p.strip())
+                    if len(pairs_for_haystack) < 25000:
+                        pairs_for_haystack.append((p.strip(), h.strip(), label, "en"))
+                else:
+                    val_samples.append(row)
+                count += 1
+                if count >= max_n:
+                    break
+        print(f"  MNLI loaded: {count} rows")
+    except Exception as e:
+        print(f"  MNLI load failed: {e}")
+
+    # 3. Adversarial NLI (ANLI)
+    print("Loading ANLI (R1, R2, R3)...")
+    try:
+        anli = load_dataset("facebook/anli")
+        count = 0
+        for round_name in ["train_r1", "train_r2", "train_r3"]:
+            ds = anli[round_name]
+            for ex in ds:
+                p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
+                if l not in (0, 1, 2) or not p or not h:
+                    continue
+                label = NATIVE_MNLI2OURS[l]
+                row = {
+                    "id": f"anli_{round_name}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"anli_{round_name}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                train_samples.append(row)
+                count += 1
+                if count >= N_ANLI:
+                    break
+            if count >= N_ANLI:
+                break
+        print(f"  ANLI loaded: {count} rows")
+    except Exception as e:
+        print(f"  ANLI load failed: {e}")
+
+    # 4. Multilingual NLI (XNLI)
+    print("Loading XNLI (Multilingual)...")
+    xnli_langs = ["es", "fr", "de", "ru", "ar", "zh", "hi", "vi", "sw"]
+    count = 0
+    for lang in xnli_langs:
+        try:
+            ds = load_dataset("facebook/xnli", lang, split="validation")
+            lang_count = 0
+            for ex in ds:
+                p, h, l = ex["premise"], ex["hypothesis"], ex["label"]
+                if l not in (0, 1, 2) or not p or not h:
+                    continue
+                label = NATIVE_MNLI2OURS[l]
+                row = {
+                    "id": f"xnli_{lang}_{lang_count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"xnli_{lang}",
+                    "language": lang,
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if lang_count < int(N_XNLI / len(xnli_langs)):
+                    train_samples.append(row)
+                else:
+                    val_samples.append(row)
+                lang_count += 1
+                count += 1
+                if lang_count >= (N_XNLI / len(xnli_langs)) * 1.5:
+                    break
+        except Exception as e:
+            print(f"  XNLI {lang} load failed: {e}")
+    print(f"  XNLI total loaded: {count} rows")
+
+    # 5. NLI-FEVER (Fact Verification & Refutations)
+    print("Loading NLI-FEVER...")
+    try:
+        fever = load_dataset("pietrolesci/nli_fever")
+        for split, max_n in [("train", N_FEVER), ("dev", 1000)]:
+            ds = fever[split]
+            count = 0
+            for ex in ds:
+                p, h, l = ex["hypothesis"], ex["premise"], ex["label"]
+                if l not in (0, 1, 2) or not p or not h:
+                    continue
+                label = NATIVE_MNLI2OURS[l]
+                row = {
+                    "id": f"fever_{split}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"fever_{split}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if split == "train":
+                    train_samples.append(row)
+                else:
+                    val_samples.append(row)
+                count += 1
+                if count >= max_n:
+                    break
+        print(f"  FEVER loaded: {count} rows")
+    except Exception as e:
+        print(f"  FEVER load failed: {e}")
+
+    # 6. SciTail (Scientific Reasoning)
+    print("Loading SciTail...")
+    try:
+        scitail = load_dataset("allenai/scitail", "snli_format")
+        for split, max_n in [("train", N_SCITAIL), ("validation", 500)]:
+            ds = scitail[split]
+            count = 0
+            for ex in ds:
+                p, h = ex["sentence1"], ex["sentence2"]
+                gold = ex.get("gold_label")
+                if not p or not h or gold not in LABEL2ID:
+                    continue
+                label = LABEL2ID[gold]
+                row = {
+                    "id": f"scitail_{split}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"scitail_{split}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if split == "train":
+                    train_samples.append(row)
+                else:
+                    val_samples.append(row)
+                count += 1
+                if count >= max_n:
+                    break
+        print(f"  SciTail loaded: {count} rows")
+    except Exception as e:
+        print(f"  SciTail load failed: {e}")
+
+    # 7. QNLI (Passage Question Answering Grounding)
+    print("Loading QNLI...")
+    try:
+        qnli = load_dataset("nyu-mll/glue", "qnli")
+        for split, max_n in [("train", N_QNLI), ("validation", 1000)]:
+            ds = qnli[split]
+            count = 0
+            for ex in ds:
+                p, h, l = ex["sentence"], ex["question"], ex["label"]
+                if l not in (0, 1) or not p or not h:
+                    continue
+                # Note: 0=entailment (1), 1=not_entailment -> mapped strictly to neutral (2)
+                label = ENTAILMENT if l == 0 else NEUTRAL
+                row = {
+                    "id": f"qnli_{split}_{count:06d}",
+                    "premise": p.strip(),
+                    "hypothesis": h.strip(),
+                    "label": label,
+                    "source": f"qnli_{split}",
+                    "language": "en",
+                    "image": "",
+                    "length": len(p.split()) + len(h.split()),
+                }
+                if split == "train":
+                    train_samples.append(row)
+                else:
+                    val_samples.append(row)
+                count += 1
+                if count >= max_n:
+                    break
+        print(f"  QNLI loaded: {count} rows")
+    except Exception as e:
+        print(f"  QNLI load failed: {e}")
+
+    # 8. Long-Context Synthetic Haystack
+    print("Generating Synthetic Haystack Pairs...")
+    haystack_rows = build_haystack_samples(
+        pairs_for_haystack,
+        filler_pool,
+        n_samples=N_HAYSTACK,
+        min_fillers=6,
+        max_fillers=18,
+        seed=seed,
+    )
+    val_haystack_split = int(len(haystack_rows) * 0.1)
+    train_samples.extend(haystack_rows[val_haystack_split:])
+    val_samples.extend(haystack_rows[:val_haystack_split])
+    print(f"  Haystack pairs generated: {len(haystack_rows)} rows")
+
+    # 6. Visual / Multimodal Grounding Pairs
+    print("Generating Multimodal Grounding Samples...")
+    # Generate spatial & visual grounding claim samples using PIL images
+    from PIL import Image, ImageDraw
+
+    vis_count = 0
+    img_dir = os.path.join(out_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+
+    colors = [("red", (255, 0, 0)), ("blue", (0, 0, 255)), ("green", (0, 255, 0)), ("yellow", (255, 255, 0))]
+    shapes = ["circle", "rectangle", "square"]
+
+    for i in range(N_VISION):
+        img_name = f"synth_{i:04d}.jpg"
+        img_path = os.path.join(img_dir, img_name)
+        
+        # Create a simple synthetic scene
+        img = Image.new("RGB", (320, 240), (240, 240, 240))
+        draw = ImageDraw.Draw(img)
+        
+        color_name, color_val = rng.choice(colors)
+        shape_name = rng.choice(shapes)
+        
+        # Position: left, center, right
+        pos_type = rng.choice(["left", "center", "right"])
+        if pos_type == "left":
+            bbox = (30, 70, 100, 150)
+        elif pos_type == "center":
+            bbox = (120, 70, 200, 150)
+        else:
+            bbox = (220, 70, 290, 150)
+            
+        if shape_name == "circle":
+            draw.ellipse(bbox, fill=color_val)
+        else:
+            draw.rectangle(bbox, fill=color_val)
+        img.save(img_path)
+
+        # Generate Entailment, Contradiction, Neutral
+        rel_type = rng.choice([ENTAILMENT, CONTRADICTION, NEUTRAL])
+        if rel_type == ENTAILMENT:
+            claim = f"There is a {color_name} {shape_name} in the {pos_type} of the image."
+        elif rel_type == CONTRADICTION:
+            wrong_color = [c[0] for c in colors if c[0] != color_name][0]
+            claim = f"There is a {wrong_color} {shape_name} in the {pos_type} of the image."
+        else:
+            claim = f"The {shape_name} was placed there yesterday by a photographer."
+
+        row = {
+            "id": f"vision_{i:06d}",
+            "premise": f"<|image><|image|>*280<image|> An image showing geometric figures.",
+            "hypothesis": claim,
+            "label": rel_type,
+            "source": "multimodal_synth",
+            "language": "en",
+            "image": os.path.relpath(img_path, out_dir),
+            "length": 300,
+        }
+        if i < int(N_VISION * 0.9):
+            train_samples.append(row)
+        else:
+            val_samples.append(row)
+        vis_count += 1
+    print(f"  Multimodal samples compiled: {vis_count} rows")
+
+    # 7. SDK-Aligned Synthetic Samples (Tool routing, rubric grading, reranking, cloze, RAG)
+    sdk_train_path = os.path.join(out_dir, "sdk_synthetic_train.jsonl")
+    sdk_val_path = os.path.join(out_dir, "sdk_synthetic_val.jsonl")
+    if os.path.exists(sdk_train_path):
+        print(f"Loading SDK-aligned synthetic training pairs from {sdk_train_path}...")
+        with open(sdk_train_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    train_samples.append(json.loads(line))
+    if os.path.exists(sdk_val_path):
+        with open(sdk_val_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    val_samples.append(json.loads(line))
+
+    # Shuffle datasets
+    rng.shuffle(train_samples)
+    rng.shuffle(val_samples)
+
+    # Write output jsonl files
+    train_file = os.path.join(out_dir, "train.jsonl")
+    val_file = os.path.join(out_dir, "val.jsonl")
+
+    with open(train_file, "w", encoding="utf-8") as f:
+        for row in train_samples:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    with open(val_file, "w", encoding="utf-8") as f:
+        for row in val_samples:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # Statistics
+    train_dist = Counter(r["label"] for r in train_samples)
+    val_dist = Counter(r["label"] for r in val_samples)
+    train_sources = Counter(r["source"] for r in train_samples)
+
+    print("\n" + "=" * 60)
+    print("DATASET COMPILATION COMPLETE")
+    print("=" * 60)
+    print(f"Train samples: {len(train_samples):,} | Labels: {dict(train_dist)}")
+    print(f"Val samples:   {len(val_samples):,} | Labels: {dict(val_dist)}")
+    print("Top Train Sources:", train_sources.most_common(8))
+    print(f"Output files:\n  - {train_file}\n  - {val_file}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out-dir", default="./data", help="Output directory")
+    parser.add_argument("--mode", choices=["quick", "stage2", "full"], default=None, help="Compilation mode")
+    parser.add_argument("--stage2", action="store_true", help="Build Stage 2 production dataset (~370k pairs)")
+    parser.add_argument("--full", action="store_true", help="Build full-scale production dataset (~650k pairs)")
+    parser.add_argument("--quick", action="store_true", help="Build quick prototype dataset (~40k pairs)")
+    args = parser.parse_args()
+
+    mode = "quick"
+    if args.mode:
+        mode = args.mode
+    elif args.stage2:
+        mode = "stage2"
+    elif args.full:
+        mode = "full"
+    elif args.quick:
+        mode = "quick"
+
+    compile_dataset(args.out_dir, mode=mode)

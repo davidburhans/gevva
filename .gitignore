@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv
+venv/
+
+# Model checkpoints & weights (regenerable via export_w4a16.py; ~15 GB)
+ckpt/
+
+# Datasets (regenerable via data_pipeline.py; ~156 MB)
+data/
+*.arrow
+*.safetensors
+*.gguf
+
+# Scratch work
+scratch/
+
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Validator committee runtime artifacts
+validator_metrics.db
+*.sqlite3
