@@ -302,4 +302,21 @@ Integrated and empirically gated five SOTA advancements with strict open-source 
    - Automatically optimizes scalar temperature $T^*$ on validation logits via L-BFGS to minimize validation NLL without changing $\arg\max$ predictions. Calibrates confidence probabilities, logs ECE/Brier deltas, exports `calibration.json`, and loads seamlessly at inference time.
    - *Attribution*: Platt Scaling / SOTA Calibration (`Mapika/decider`, `von-1.0`).
 
-All 53 project unit tests passing across all test suites (`test_validator_committee.py`, `test_data_hygiene.py`, `test_night_stats.py`, `test_sdk_parity.py`).
+All 55 project unit tests passing across all test suites (`test_validator_committee.py`, `test_data_hygiene.py`, `test_night_stats.py`, `test_sdk_parity.py`).
+
+---
+
+## 11. Arm A Clean Baseline: Empirical Results (2026-09-20)
+
+Trained the first post-contamination, unpolluted baseline checkpoint (`ckpt/shakedown_A/best`) on the RTX 5090 using `train_cross_encoder.py`:
+- **Training Set**: 39,494 clean pairs (`data/train.jsonl`), zero train/val/test overlap.
+- **Multimodal Collator (A7)**: Real SigLIP image patch features (`pixel_values`, `image_position_ids`) fed into `Gemma4ForSequenceClassification` on all 1,800 multimodal rows.
+- **Validation**: Best val accuracy = **88.14%**, ECE = **0.0581**, Brier = **0.2007**.
+- **Post-Hoc Calibration**: Optimal $T^* = 1.2440$ fitted on validation logits, reducing ECE to **0.0273** (saved to `ckpt/shakedown_A/best/calibration.json`).
+- **One-Shot Held-Out Test Split** (`data/test.jsonl`, $n=3,113$, SHA-256: `acb15c2be9c76876`):
+  - **Accuracy**: **87.15%**
+  - **Expected Calibration Error (ECE)**: **0.0669**
+  - **Multi-Class Brier Score**: **0.2185**
+  - **Position Bias Index (PBI)**: **0.0410** (pred counts: 846 contradiction, 1,167 entailment, 1,100 neutral)
+  - **Multimodal Synthetic Accuracy**: **100.0%** (grounded with visual features)
+  - **Per-Item Log**: Persisted with SHA-256 fingerprint in `ckpt/shakedown_A/test_items.jsonl` for paired McNemar testing against Arm B.
