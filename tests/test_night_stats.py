@@ -101,7 +101,14 @@ def test_export_validated_synthetic_excludes_failures():
         db.close()
 
 
+def test_mcnemar_large_count_equal_discordance():
+    # b = 15, c = 15 -> b + c = 30 >= 25. Continuity correction max(0, abs(b-c)-1) = 0 -> p = 1.0
+    p = mcnemar_p(15, 15)
+    assert abs(p - 1.0) < 1e-6, f"expected p=1.0 when b=c >= 25, got {p}"
+
+
 TESTS = [test_mcnemar_balanced_discordance_is_not_significant,
+         test_mcnemar_large_count_equal_discordance,
          test_mcnemar_extreme_imbalance_is_significant,
          test_mcnemar_known_value_range,
          test_ece_perfectly_calibrated_is_near_zero,

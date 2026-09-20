@@ -31,7 +31,7 @@ def mcnemar_p(b: int, c: int) -> float:
         n = b + c
         tail = sum(comb(n, k) for k in range(0, min(b, c) + 1))
         return min(1.0, 2.0 * tail / 2 ** n)
-    chi2 = (abs(b - c) - 1) ** 2 / (b + c)
+    chi2 = max(0, abs(b - c) - 1) ** 2 / (b + c)
     return math.erfc(math.sqrt(chi2 / 2.0))
 
 

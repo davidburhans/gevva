@@ -888,7 +888,8 @@ def _resolve_resume_run(db_path: str, resume_run: Optional[str], judges: List[st
 
 def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optional[str],
                           teacher_model: str, raw_path: str,
-                          resume_run: Optional[str]) -> List[Dict[str, Any]]:
+                          resume_run: Optional[str],
+                          force: bool = False) -> List[Dict[str, Any]]:
     """Generates all 6 SDK-mode sample sets, checkpointing each stage to disk.
 
     On resume the raw checkpoint IS the sample set - nothing is regenerated, so
@@ -898,6 +899,11 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
         samples = _load_jsonl(raw_path)
         print(f"Resuming from raw checkpoint {raw_path} ({len(samples)} samples, no regeneration).")
         return samples
+    if os.path.exists(raw_path) and not force:
+        raise FileExistsError(
+            f"Raw checkpoint already exists at {raw_path!r}. Pass force=True (or --force) to overwrite, "
+            f"or pass --resume-run to resume validation without regenerating."
+        )
     open(raw_path, "w", encoding="utf-8").close()  # truncate stale checkpoint
     generators = [
         ("Tool Routing", generate_tool_routing_samples),
@@ -1023,6 +1029,7 @@ def compile_sdk_synthetic_dataset(
     batch_size: int = 5,
     resume_run: Optional[str] = None,
     validator_timeout: int = 600,
+    force: bool = False,
 ) -> Dict[str, int]:
     """Compiles and validates synthetic data for all SDK interaction patterns.
 
@@ -1039,7 +1046,8 @@ def compile_sdk_synthetic_dataset(
     resume_id = _resolve_resume_run(db_path, resume_run, judges)
     raw_path = os.path.join(out_dir, CHECKPOINT_FILENAME)
     all_generated = _generate_all_samples(samples_per_mode, seed, teacher_url,
-                                          teacher_model, raw_path, resume_id)
+                                          teacher_model, raw_path, resume_id,
+                                          force=force)
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + DeepSeek V4 Flash + Qwen 3.8 125B q4 + Qwen 3.8 125B q3)
@@ -1052,19 +1060,26 @@ def compile_sdk_synthetic_dataset(
     else:
         validated_samples = all_generated
 
+    # Filter out samples flagged for review (disagreements/ties/overrides).
+    # Only clean consensus samples enter training and validation splits; flagged samples
+    # remain exclusively in sdk_synthetic_disagreements.jsonl for human adjudication.
+    clean_samples = [s for s in validated_samples if not s.get("needs_review", False)]
+
     # Stratified Split: 90% Train, 10% Val
     rng = random.Random(seed)
-    rng.shuffle(validated_samples)
+    rng.shuffle(clean_samples)
 
     # WHY: `max(100, 10%)` previously made val larger than train on small smoke runs;
     # keep the 100-row floor only when the dataset is big enough to afford it.
-    val_count = int(len(validated_samples) * 0.1)
-    if len(validated_samples) >= 1000:
+    val_count = int(len(clean_samples) * 0.1)
+    if len(clean_samples) >= 1000:
         val_count = max(100, val_count)
+    elif len(clean_samples) > 0:
+        val_count = max(1, min(val_count, len(clean_samples) // 2))
     else:
-        val_count = max(1, min(val_count, len(validated_samples) // 2))
-    train_data = validated_samples[val_count:]
-    val_data = validated_samples[:val_count]
+        val_count = 0
+    train_data = clean_samples[val_count:]
+    val_data = clean_samples[:val_count]
 
     out_train_path = os.path.join(out_dir, "sdk_synthetic_train.jsonl")
     out_val_path = os.path.join(out_dir, "sdk_synthetic_val.jsonl")
@@ -1078,7 +1093,7 @@ def compile_sdk_synthetic_dataset(
 
     # Breakdown by Source
     counts: Dict[str, int] = {}
-    for r in validated_samples:
+    for r in clean_samples:
         src = r.get("source", "unknown")
         counts[src] = counts.get(src, 0) + 1
 
@@ -1104,6 +1119,7 @@ if __name__ == "__main__":
                         help="Resume an interrupted committee: 'auto' picks the newest incomplete run "
                              "with the same judges, or pass an explicit run id. Reuses "
                              "sdk_synthetic_raw.jsonl and persisted verdicts (no regeneration).")
+    parser.add_argument("--force", action="store_true", help="Force overwrite of existing raw checkpoint")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1119,4 +1135,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         resume_run=args.resume_run,
         validator_timeout=args.validator_timeout,
+        force=args.force,
     )

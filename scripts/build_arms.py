@@ -38,6 +38,11 @@ def _write_jsonl(path: str, rows: List[Dict]) -> None:
 def build_arms(data_dir: str, synthetic_frac: float, seed: int) -> Dict:
     """Writes armA/armB train files + manifest; returns the manifest dict."""
     train = _load_jsonl(os.path.join(data_dir, "train.jsonl"))
+    test_path = os.path.join(data_dir, "test.jsonl")
+    val_path = os.path.join(data_dir, "val.jsonl")
+    test_rows = _load_jsonl(test_path) if os.path.exists(test_path) else []
+    val_rows = _load_jsonl(val_path) if os.path.exists(val_path) else []
+
     sdk_path = os.path.join(data_dir, "staged", "sdk_synthetic_train.jsonl")
     synthetic = _load_jsonl(sdk_path) if os.path.exists(sdk_path) else []
 
@@ -46,13 +51,18 @@ def build_arms(data_dir: str, synthetic_frac: float, seed: int) -> Dict:
     rng = random.Random(seed)
     arm_b_synth = rng.sample(synthetic, n_synth) if n_synth < len(synthetic) else list(synthetic)
 
-    # Defensive dedup: filter only the SYNTHETIC candidates against train keys
+    # Defensive dedup & test leakage guard (ModernCE/OpenJEV hygiene audit):
+    # filter only the SYNTHETIC candidates against seen_train | seen_test | seen_val
     # (never the train rows themselves - that would gut arm B to just the synth rows).
     seen_train = {_pair_key(r["premise"], r["hypothesis"]) for r in train}
+    seen_test = {_pair_key(r["premise"], r["hypothesis"]) for r in test_rows}
+    seen_val = {_pair_key(r["premise"], r["hypothesis"]) for r in val_rows}
+    forbidden_keys = seen_train | seen_test | seen_val
+
     kept_synth, seen_synth = [], set()
     for r in arm_b_synth:
         k = _pair_key(r["premise"], r["hypothesis"])
-        if k in seen_train or k in seen_synth:
+        if k in forbidden_keys or k in seen_synth:
             continue
         seen_synth.add(k)
         kept_synth.append(r)

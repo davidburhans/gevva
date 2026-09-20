@@ -6,6 +6,7 @@ Run (single command, no GPU, no network):
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -70,11 +71,39 @@ def test_forbidden_keys_exclude_trained_pairs():
     ev._FORBIDDEN_PAIR_KEYS = None
 
 
+def test_build_arms_prevents_test_leakage():
+    from scripts.build_arms import build_arms
+    with tempfile.TemporaryDirectory() as tmp:
+        train = [_row(f"P_train_{i}", f"H_train_{i}") for i in range(10)]
+        test = [_row("P_test", "H_test")]
+        val = [_row("P_val", "H_val")]
+        staged_synth = [
+            _row("P_synth", "H_synth"),
+            _row("P_test", "H_test"),  # LEAK ATTEMPT: must be excluded
+            _row("P_val", "H_val"),    # VAL OVERLAP: must be excluded
+        ]
+        os.makedirs(Path(tmp) / "staged", exist_ok=True)
+        (Path(tmp) / "train.jsonl").write_text("\n".join(json.dumps(r) for r in train) + "\n", encoding="utf-8")
+        (Path(tmp) / "test.jsonl").write_text(json.dumps(test[0]) + "\n", encoding="utf-8")
+        (Path(tmp) / "val.jsonl").write_text(json.dumps(val[0]) + "\n", encoding="utf-8")
+        (Path(tmp) / "staged" / "sdk_synthetic_train.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in staged_synth) + "\n", encoding="utf-8"
+        )
+
+        build_arms(data_dir=tmp, synthetic_frac=0.5, seed=42)
+        arm_b = [json.loads(line) for line in (Path(tmp) / "armB_train.jsonl").read_text(encoding="utf-8").splitlines() if line]
+        keys = {_pair_key(r["premise"], r["hypothesis"]) for r in arm_b}
+        assert _pair_key("P_test", "H_test") not in keys, "test set item leaked into armB!"
+        assert _pair_key("P_val", "H_val") not in keys, "val set item leaked into armB!"
+        assert _pair_key("P_synth", "H_synth") in keys
+
+
 TESTS = [test_pair_key_normalizes_case_and_whitespace,
          test_holdout_is_deterministic_and_approximately_10pct,
          test_dedupe_split_drops_train_dupes_and_val_overlap,
          test_eval_seeded_slice_is_deterministic_and_shuffled,
-         test_forbidden_keys_exclude_trained_pairs]
+         test_forbidden_keys_exclude_trained_pairs,
+         test_build_arms_prevents_test_leakage]
 
 
 def main() -> int:

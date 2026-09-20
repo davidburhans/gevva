@@ -231,13 +231,25 @@ def tokenize_nli_pair_safe(
     r"""Safely tokenizes premise-hypothesis pair with budget-aware truncation.
 
     Guarantees:
-    1. Hypothesis is strictly preserved (never truncated).
+    1. Hypothesis is strictly preserved within budget (max_hyp_len = max(32, max_length // 2)).
     2. Premise text is truncated from the trailing end only if total length exceeds max_length.
     3. Terminal prompt ends with fixed '\nPrediction:' token to eliminate token identity prior bias.
     4. Leading BOS token serves as dedicated attention sink for causal stability.
+    5. Strips multimodal special tokens from raw premise & hypothesis to prevent Gemma4Model crashes.
     """
+    # Sanitize raw premise & hypothesis strings: strip multimodal special tokens
+    # so adversarial inputs cannot crash torch_compilable_check inside Gemma4Model.
+    for tok in ("<|image|>", "<image|>", "<|image_pad|>", "<|vision_start|>", "<|vision_end|>"):
+        if tok in premise:
+            premise = premise.replace(tok, "")
+        if tok in hypothesis:
+            hypothesis = hypothesis.replace(tok, "")
+
     bos_id = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     hyp_ids = tokenizer.encode(f"\nHypothesis: {hypothesis.strip()}\nPrediction:", add_special_tokens=False)
+    # Enforce strict budget truncation: hypothesis cannot monopolize sequence budget
+    max_hyp_len = max(32, max_length // 2)
+    hyp_ids = hyp_ids[:max_hyp_len]
     prem_prefix_ids = tokenizer.encode("Premise: ", add_special_tokens=False)
 
     vis_ids = []
@@ -256,8 +268,24 @@ def tokenize_nli_pair_safe(
         avail_premise = max(8, max_length - len(hyp_ids))
 
     prem_ids = tokenizer.encode(premise.strip(), add_special_tokens=False)[:max(0, avail_premise)]
-    full_ids = bos_id + prem_prefix_ids + vis_ids + prem_ids + hyp_ids
+    full_ids = (bos_id + prem_prefix_ids + vis_ids + prem_ids + hyp_ids)[:max_length]
     return full_ids
+
+
+def _sanitize_nli_delimiters(text: Optional[str]) -> Optional[str]:
+    """Sanitizes user input strings to prevent prompt/delimiter injection attacks.
+
+    Escapes prompt boundary sequences: '\nPrediction:', 'Reference answer:', and
+    'Candidate answer:' so adversarial inputs cannot spoof NLI prompt delimiters.
+    Preserves OpenJEV and Jev semantic conventions.
+    """
+    if not isinstance(text, str):
+        return text
+    return (
+        text.replace("\nPrediction:", "\n Prediction:")
+        .replace("Reference answer:", "Reference answer\\:")
+        .replace("Candidate answer:", "Candidate answer\\:")
+    )
 
 
 class RerankResult(int):
@@ -404,6 +432,14 @@ class Gemma4CrossEncoder:
                 if hasattr(lm, "rotary_emb"):
                     lm.rotary_emb.__init__(lm.rotary_emb.config)
                     lm.rotary_emb.to(self.device)
+
+                vt = getattr(base_model.model, "vision_tower", getattr(base_model, "vision_tower", None))
+                if vt is not None:
+                    enc = getattr(vt, "encoder", vt)
+                    if hasattr(enc, "rotary_emb") and enc.rotary_emb is not None:
+                        enc.rotary_emb.__init__(enc.rotary_emb.config)
+                        enc.rotary_emb.to(self.device)
+
                 for mod in base_model.modules():
                     if hasattr(mod, "scalar_embed_scale") and hasattr(mod, "embed_scale"):
                         mod.embed_scale.data.copy_(torch.tensor(mod.scalar_embed_scale, dtype=dtype, device=self.device))
@@ -646,9 +682,6 @@ class Gemma4CrossEncoder:
     ) -> RerankResult:
         """Reranks options by argmax score.
         
-        if not options:
-            raise ValueError("rerank requires at least one option (audit LOW-MED: empty-array crash)")
-        
         Args:
             premise: Context or question string
             options: List of candidate answers or continuations
@@ -666,11 +699,15 @@ class Gemma4CrossEncoder:
         Fully compatible with Jev: returns RerankResult which behaves as an int index,
         while supporting tuple unpacking (best_idx, scores) and .scores attribute.
         """
+        if not options:
+            raise ValueError("rerank requires at least one option (audit LOW-MED: empty-array crash)")
+
         query = premise if premise is not None else question
         if query is None:
             raise ValueError("Must provide either premise or question.")
+        query = _sanitize_nli_delimiters(query)
         fmt = hyp_format or hyp_fmt or "The correct answer is: {}"
-        pairs = [(query, fmt.format(opt)) for opt in options]
+        pairs = [(query, fmt.format(_sanitize_nli_delimiters(opt))) for opt in options]
         images = [image] * len(options) if image is not None else None
 
         if scoring in ("log_odds", "logit_margin"):
@@ -725,9 +762,9 @@ class Gemma4CrossEncoder:
         Fully compatible with Jev: returns GradeResult which behaves as a str ("contradiction",
         "entailment", "neutral"), while supporting tuple unpacking (label, prob_dict) and .probabilities.
         """
-        query = premise if premise is not None else question
-        ref = reference_answer if reference_answer is not None else reference
-        cand = candidate_answer if candidate_answer is not None else candidate
+        query = _sanitize_nli_delimiters(premise if premise is not None else question)
+        ref = _sanitize_nli_delimiters(reference_answer if reference_answer is not None else reference)
+        cand = _sanitize_nli_delimiters(candidate_answer if candidate_answer is not None else candidate)
 
         formatted_premise = f"{query}\nReference answer: {ref}"
         formatted_hyp = f"Candidate answer: {cand}"
@@ -880,7 +917,7 @@ class LatentMLPHead:
             cfg = json.load(f)
         head = cls(device=device, **cfg)
         head.model.load_state_dict(torch.load(os.path.join(path, "head.pt"), map_location=head.device, weights_only=True))
-        z = np.load(os.path.join(path, "norm.npz"))
+        z = np.load(os.path.join(path, "norm.npz"), allow_pickle=False)
         head.mu, head.sd = z["mu"], z["sd"]
         head.model.eval()
         return head

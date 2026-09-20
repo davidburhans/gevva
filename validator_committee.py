@@ -139,7 +139,7 @@ def validate_batch_consensus(
     }
     user_prompt = "Pairs to classify:\n"
     for idx, c in enumerate(candidate_batch):
-        user_prompt += f"[ID {idx}]\nPREMISE: {c['premise']}\nHYPOTHESIS: {c['hypothesis']}\n\n"
+        user_prompt += f'<candidate id="{idx}"><premise>{c["premise"]}</premise><hypothesis>{c["hypothesis"]}</hypothesis></candidate>\n\n'
     user_prompt += "JSON Array Output:"
 
     response = client.query_chat(
@@ -388,13 +388,21 @@ def _resolve_sample(gen_label: int, votes: Dict[str, JudgeVerdict],
     max_count = max(tally.values())
     leaders = [label for label, count in tally.items() if count == max_count]
 
-    if len(leaders) > 1:
+    # Strict majority requirement: max_count > num_ok / 2 (relative plurality or ties do not suffice)
+    if len(leaders) > 1 or max_count <= num_ok / 2:
         return CommitteeDecision(gen_label, max_count / num_ok, _soft(tally, num_ok),
                                  "committee_split_tie_kept_generator_label",
                                  "committee_split_tie", True, "high")
 
     final = leaders[0]
     soft = _soft(tally, num_ok)
+
+    # Minimum quorum for label override: require >= 2 agreeing judges before allowing override
+    if final != gen_label and (num_ok < 2 or max_count < 2):
+        return CommitteeDecision(gen_label, max_count / num_ok, soft,
+                                 "insufficient_quorum_kept_generator_label",
+                                 "insufficient_quorum", True, "high")
+
     if max_count == num_ok:  # unanimous among successful judges
         if final == gen_label:
             if failed:

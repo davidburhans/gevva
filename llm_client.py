@@ -11,6 +11,8 @@ Usage example:
 """
 
 import json
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, Optional
 
 
@@ -29,6 +31,9 @@ class LLMEndpointClient:
     """
 
     def __init__(self, base_url: str = "http://localhost:8080/v1", model: str = "gemma-4-31b-q4", timeout: int = 120):
+        parsed = urllib.parse.urlparse(base_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Invalid URL scheme '{parsed.scheme}': only http and https are allowed")
         self.base_url = base_url.rstrip("/")
         # WHY: llama-swap management endpoints (/models/unload) live at the server
         # root, not under /v1.
@@ -43,7 +48,6 @@ class LLMEndpointClient:
 
         Example: client.unload_model() -> True when the slot was released.
         """
-        import urllib.request
         try:
             req = urllib.request.Request(
                 f"{self.server_root}/models/unload",
@@ -51,7 +55,7 @@ class LLMEndpointClient:
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read(10 * 1024 * 1024).decode("utf-8"))
                 return data.get("success", False)
         except Exception:
             return False
@@ -98,7 +102,7 @@ class LLMEndpointClient:
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8")
+                raw = resp.read(10 * 1024 * 1024).decode("utf-8")
         except Exception as e:
             self.last_latency_ms = (time.monotonic() - started) * 1000.0
             self.last_usage = None

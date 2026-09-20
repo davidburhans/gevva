@@ -63,8 +63,14 @@ class FakeJudgeClient:
         if self.fail:
             return None
         verdicts = []
-        for idx, premise, _hypo in re.findall(
-                r"\[ID (\d+)\]\nPREMISE: (.*)\nHYPOTHESIS: (.*)\n", user_prompt):
+        xml_matches = re.findall(
+            r'<candidate id="(\d+)"><premise>(.*?)</premise><hypothesis>(.*?)</hypothesis></candidate>',
+            user_prompt, re.DOTALL
+        )
+        matches = xml_matches if xml_matches else re.findall(
+            r"\[ID (\d+)\]\nPREMISE: (.*)\nHYPOTHESIS: (.*)\n", user_prompt
+        )
+        for idx, premise, _hypo in matches:
             name = self.verdict_by_premise.get(premise)
             if name is not None:
                 verdicts.append({"id": int(idx), "verdict": name,
@@ -347,6 +353,81 @@ def test_offline_batch_is_retried_once():
     assert committee[0]["judge-a"].status == "ok"
 
 
+def test_lone_judge_override_rejected_for_insufficient_quorum():
+    """A single judge cannot override generator label (quorum >= 2 required)."""
+    samples = make_samples([ENTAILMENT])
+    scripts = {"judge-a": {"p0": "contradiction"}, "judge-b": {"p0": None}, "judge-c": {"p0": None}}
+    committee = run_committee(samples, scripts, EventLog())
+    result = aggregate_committee_votes(samples, committee, JUDGES)
+    s = result.validated[0]
+    assert s["label"] == ENTAILMENT, "lone judge must not override generator label"
+    assert s["needs_review"] is True
+    assert s["disagreement_type"] == "insufficient_quorum"
+    assert result.review_rows[0]["review"]["severity"] == "high"
+
+
+def test_relative_plurality_without_strict_majority_keeps_generator():
+    """Relative plurality (e.g. 2 of 4) without strict majority (> 50%) keeps generator label."""
+    from validator_committee import _resolve_sample, JudgeVerdict, STATUS_OK
+    votes = {
+        "j1": JudgeVerdict(CONTRADICTION, "c", STATUS_OK, 10.0),
+        "j2": JudgeVerdict(CONTRADICTION, "c", STATUS_OK, 10.0),
+        "j3": JudgeVerdict(ENTAILMENT, "e", STATUS_OK, 10.0),
+        "j4": JudgeVerdict(NEUTRAL, "n", STATUS_OK, 10.0),
+    }
+    decision = _resolve_sample(ENTAILMENT, votes, ["j1", "j2", "j3", "j4"])
+    assert decision.final_label == ENTAILMENT, "relative plurality 2-of-4 must not override generator"
+    assert decision.needs_review is True
+    assert decision.disagreement_type == "committee_split_tie"
+
+
+def test_raw_checkpoint_truncation_prevented_without_force():
+    """compile_sdk_synthetic_dataset must not wipe existing raw checkpoint without force=True."""
+    from generate_sdk_synthetic_data import compile_sdk_synthetic_dataset
+    with tempfile.TemporaryDirectory() as tmp:
+        raw_path = Path(tmp) / "sdk_synthetic_raw.jsonl"
+        raw_path.write_text(json.dumps({"id": "dummy"}) + "\n", encoding="utf-8")
+        try:
+            compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=5, force=False)
+            assert False, "must raise FileExistsError when raw_path already exists without force"
+        except FileExistsError as e:
+            assert "already exists" in str(e)
+
+
+def test_compile_filters_out_needs_review_samples():
+    """Samples flagged with needs_review=True must never enter train or val splits."""
+    from generate_sdk_synthetic_data import compile_sdk_synthetic_dataset
+    import generate_sdk_synthetic_data as gen
+
+    original_stage = gen.run_validation_committee_stage
+
+    def fake_committee(samples, *args, **kwargs):
+        res = []
+        for i, s in enumerate(samples):
+            item = dict(s)
+            if i % 2 == 1:
+                item["needs_review"] = True
+                item["disagreement_type"] = "committee_split"
+            else:
+                item["needs_review"] = False
+                item["disagreement_type"] = None
+            res.append(item)
+        return res
+
+    gen.run_validation_committee_stage = fake_committee
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            counts = compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=10, validator_url="http://fake/v1")
+            train = [json.loads(line) for line in open(Path(tmp) / "sdk_synthetic_train.jsonl", encoding="utf-8")]
+            val = [json.loads(line) for line in open(Path(tmp) / "sdk_synthetic_val.jsonl", encoding="utf-8")]
+            all_split = train + val
+            assert len(all_split) > 0
+            assert all(not r.get("needs_review", False) for r in all_split), "no needs_review rows allowed in train/val!"
+            assert len(all_split) == 25, f"expected 25 clean samples out of 50, got {len(all_split)}"
+    finally:
+        gen.run_validation_committee_stage = original_stage
+
+
 TESTS = [test_unanimous_consensus_is_clean,
          test_majority_split_flips_label_and_reviews,
          test_tie_keeps_generator_label,
@@ -360,7 +441,11 @@ TESTS = [test_unanimous_consensus_is_clean,
          test_offline_batch_is_retried_once,
          test_validation_checkpoint_rewritten_after_each_judge,
          test_raw_checkpoint_survives_validation_crash,
-         test_offline_compile_split_guard]
+         test_offline_compile_split_guard,
+         test_lone_judge_override_rejected_for_insufficient_quorum,
+         test_relative_plurality_without_strict_majority_keeps_generator,
+         test_raw_checkpoint_truncation_prevented_without_force,
+         test_compile_filters_out_needs_review_samples]
 
 
 def main() -> int:

@@ -57,6 +57,7 @@ def pack_weights_w4a16(
         packed_weight: INT32 tensor of shape `(out_features, in_features // 8)`.
         scales: BF16 tensor of shape `(out_features, in_features // group_size)`.
     """
+    weight = torch.nan_to_num(weight, nan=0.0, posinf=7.0, neginf=-8.0)
     out_features, in_features = weight.shape
     assert in_features % group_size == 0, f"in_features ({in_features}) must be divisible by group_size ({group_size})"
     assert group_size % 8 == 0, f"group_size ({group_size}) must be divisible by 8 for INT32 packing"
@@ -69,6 +70,7 @@ def pack_weights_w4a16(
 
     # 2. Integer quantization: clamp to [-8, 7]
     scales_expanded = scales.unsqueeze(-1).expand(-1, -1, group_size).reshape(out_features, in_features)
+    scales_expanded = torch.clamp_min(scales_expanded, 1e-7)
     w_int = torch.clamp(torch.round(weight / scales_expanded), -8, 7).to(torch.int32)
 
     # 3. Standard Offset-Binary [0, 15] for compressed-tensors / vLLM (Offset +8)
@@ -76,7 +78,7 @@ def pack_weights_w4a16(
     w_chunks = w_u4.view(out_features, in_features // 8, 8)
     packed_weight = torch.zeros((out_features, in_features // 8), dtype=torch.int32, device=weight.device)
     for k in range(8):
-        packed_weight |= (w_chunks[:, :, k] << (4 * k))
+        packed_weight |= ((w_chunks[:, :, k].to(torch.int32) & 0x0F) << (4 * k))
 
     return packed_weight, scales
 

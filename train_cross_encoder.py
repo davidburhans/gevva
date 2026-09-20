@@ -449,7 +449,40 @@ def _reload_best_for_eval(args, tokenizer, save_dir):
         from transformers import AutoModelForSequenceClassification
         base = AutoModelForSequenceClassification.from_pretrained(
             args.model, config=config, torch_dtype=torch.bfloat16)
-    return PeftModel.from_pretrained(base, save_dir)
+    model = PeftModel.from_pretrained(base, save_dir)
+    head_weights_path = os.path.join(save_dir, "head_weights.pt")
+    if os.path.exists(head_weights_path):
+        print(f"Restoring classification head from {head_weights_path}...")
+        hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
+        raw = model.base_model.model if hasattr(model, "base_model") else model
+
+        def _load_into_module(mod, state):
+            if not isinstance(state, dict):
+                w = state
+            elif "weight" in state:
+                w = state["weight"]
+            elif "modules_to_save.default.weight" in state:
+                w = state["modules_to_save.default.weight"]
+            elif "default.weight" in state:
+                w = state["default.weight"]
+            elif "original_module.weight" in state:
+                w = state["original_module.weight"]
+            else:
+                w = next(iter(state.values()))
+            if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+                mod.modules_to_save["default"].weight.data.copy_(w)
+                if hasattr(mod, "original_module") and hasattr(mod.original_module, "weight"):
+                    mod.original_module.weight.data.copy_(w)
+            elif hasattr(mod, "weight"):
+                mod.weight.data.copy_(w)
+            else:
+                mod.load_state_dict({"weight": w}, strict=False)
+
+        if "score" in hw and hasattr(raw, "score"):
+            _load_into_module(raw.score, hw["score"])
+        if "norm" in hw and hasattr(raw, "norm"):
+            _load_into_module(raw.norm, hw["norm"])
+    return model
 
 
 @torch.no_grad()
