@@ -527,6 +527,8 @@ def train_cross_encoder(args):
                                  collate_fn=collator, num_workers=2)
         test_out = evaluate(best_model, test_loader, device, return_items=True)
         items = test_out.pop("items")
+        test_out.pop("logits", None)
+        test_out.pop("golds", None)
         test_out["test_sha"] = test_sha
         with open(os.path.join(args.out_dir, "test_metrics.json"), "w") as f:
             json.dump(test_out, f, indent=2)
