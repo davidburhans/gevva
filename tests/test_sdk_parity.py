@@ -332,6 +332,120 @@ def test_temperature_scaling_minimizes_validation_ece():
     assert ece_after <= ece_before + 1e-4, f"ECE must not regress: {ece_before} -> {ece_after}"
 
 
+def test_brier_calibration_loss():
+    """Proper-scoring multi-class Brier calibration loss produces a positive scalar with valid gradients."""
+    import torch
+    import torch.nn as nn
+    from finetune import compute_brier_loss
+
+    # 1. Multi-class Brier loss produces a positive scalar
+    logits = torch.randn(4, 3, requires_grad=True, dtype=torch.float32)
+    labels = torch.tensor([0, 1, 2, 1], dtype=torch.long)
+
+    brier_loss = compute_brier_loss(logits, labels)
+    assert brier_loss.ndim == 0, f"brier_loss must be a scalar, got ndim={brier_loss.ndim}"
+    assert brier_loss.item() > 0.0, f"brier_loss must be positive, got {brier_loss.item()}"
+
+    # 2. Verify gradients flow back to logits
+    brier_loss.backward()
+    assert logits.grad is not None, "Gradients must flow back to logits"
+    assert logits.grad.shape == logits.shape, f"Grad shape mismatch: {logits.grad.shape} vs {logits.shape}"
+    assert not torch.isnan(logits.grad).any(), "Gradients must not contain NaNs"
+    assert torch.any(logits.grad != 0.0), "Gradients must be non-zero"
+
+    # 3. Verify total_loss = ce_loss + brier_weight * brier_loss behavior
+    logits2 = torch.randn(4, 3, requires_grad=True, dtype=torch.float32)
+    ce_loss_fn = nn.CrossEntropyLoss()
+    ce_loss = ce_loss_fn(logits2, labels)
+    brier_weight = 0.5
+    probs2 = torch.softmax(logits2, dim=-1)
+    one_hot2 = torch.zeros_like(probs2).scatter_(1, labels.unsqueeze(1), 1.0)
+    brier_loss2 = torch.mean(torch.sum((probs2 - one_hot2) ** 2, dim=-1))
+    total_loss = ce_loss + brier_weight * brier_loss2
+
+    assert total_loss.item() > ce_loss.item(), "total_loss must include positive brier penalty"
+    total_loss.backward()
+    assert logits2.grad is not None
+    assert not torch.isnan(logits2.grad).any()
+    assert torch.any(logits2.grad != 0.0)
+
+    # 4. Perfectly calibrated / confident predictions have Brier loss near zero
+    confident_logits = torch.tensor([
+        [30.0, -15.0, -15.0],
+        [-15.0, 30.0, -15.0],
+        [-15.0, -15.0, 30.0],
+    ], dtype=torch.float32)
+    confident_labels = torch.tensor([0, 1, 2], dtype=torch.long)
+    near_zero = compute_brier_loss(confident_logits, confident_labels)
+    assert near_zero.item() < 1e-6, f"Perfect predictions should have Brier ~ 0, got {near_zero.item()}"
+
+
+def test_multimodal_collator_and_forward():
+    """DataCollatorNLI processes multimodal images and produces valid model logits."""
+    import torch
+    from transformers import AutoTokenizer, AutoConfig
+    from train_cross_encoder import DataCollatorNLI
+    from gemma4_cross_encoder import Gemma4ForSequenceClassification
+
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-E2B")
+    collator = DataCollatorNLI(tokenizer, max_length=512, image_root="./data")
+
+    batch_items = [
+        {
+            "premise": "An image showing geometric figures.",
+            "hypothesis": "There is a blue circle in the right of the image.",
+            "label": 0,
+            "source": "multimodal_synth",
+            "image": "data/images/synth_0080.jpg",
+        },
+        {
+            "premise": "The dog barked at the mailman.",
+            "hypothesis": "An animal made a sound.",
+            "label": 1,
+            "source": "snli",
+            "image": "",
+        },
+    ]
+
+    batch = collator(batch_items)
+    assert "pixel_values" in batch, "batch must contain 'pixel_values'"
+    assert "image_position_ids" in batch, "batch must contain 'image_position_ids'"
+    assert batch["pixel_values"].shape == (1, 2520, 768), f"Unexpected pixel_values shape: {batch['pixel_values'].shape}"
+    assert batch["image_position_ids"].shape == (1, 2520, 2), f"Unexpected image_position_ids shape: {batch['image_position_ids'].shape}"
+    assert batch["input_ids"].shape[0] == 2
+    assert batch["attention_mask"].shape[0] == 2
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg = AutoConfig.from_pretrained("google/gemma-4-E2B")
+    cfg.num_labels = 3
+    model = Gemma4ForSequenceClassification.from_pretrained(
+        "google/gemma-4-E2B",
+        config=cfg,
+        torch_dtype=torch.bfloat16,
+        local_files_only=True,
+    ).to(device)
+    model.eval()
+
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    pixel_values = batch["pixel_values"].to(device)
+    image_position_ids = batch["image_position_ids"].to(device)
+
+    with torch.no_grad():
+        amp_device = "cuda" if ("cuda" in str(device) and torch.cuda.is_available()) else "cpu"
+        with torch.amp.autocast(amp_device, dtype=torch.bfloat16):
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_position_ids=image_position_ids,
+            )
+
+    assert outputs.logits is not None
+    assert outputs.logits.shape == (2, 3), f"Expected logits shape (2, 3), got {outputs.logits.shape}"
+    assert not torch.isnan(outputs.logits).any(), "Logits must not contain NaN"
+
+
 TESTS = [test_rerank_returns_sdk_rerankresult_with_entailment_scoring,
          test_rerank_margin_scoring_matches_sdk_rule,
          test_grade_returns_sdk_graderesult_with_probabilities,
@@ -349,7 +463,9 @@ TESTS = [test_rerank_returns_sdk_rerankresult_with_entailment_scoring,
          test_position_bias_template_diversification,
          test_cyclic_permutation_debiasing_in_rerank,
          test_token_bucket_batching_bounds_total_tokens_per_batch,
-         test_temperature_scaling_minimizes_validation_ece]
+         test_temperature_scaling_minimizes_validation_ece,
+         test_brier_calibration_loss,
+         test_multimodal_collator_and_forward]
 
 
 def main() -> int:

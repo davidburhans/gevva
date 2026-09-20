@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoConfig,
@@ -40,6 +41,7 @@ from transformers import (
     Gemma4Config,
     get_cosine_schedule_with_warmup,
 )
+from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
 
 from gemma4_cross_encoder import (
     CONTRADICTION,
@@ -52,7 +54,7 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
     tokenize_nli_pair_safe,
 )
-from finetune import TokenBucketBatchSampler, fit_temperature_scaling
+from finetune import TokenBucketBatchSampler, fit_temperature_scaling, compute_brier_loss
 
 # -----------------------------------------------------------------------------
 # Calibration Metrics
@@ -117,23 +119,62 @@ class DataCollatorNLI:
         max_length: int = 2048,
         template: str = DEFAULT_NLI_TEMPLATE,
         pad_to_multiple_of: int = 8,
+        image_processor: Optional[Any] = None,
+        image_root: str = "./data",
+        is_gemma: bool = True,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.template = template
         self.pad_to_multiple_of = pad_to_multiple_of
+        self.image_root = image_root
         self.tokenizer.padding_side = "right"
+        if image_processor is None and is_gemma:
+            try:
+                self.image_processor = Gemma4ImageProcessorPil()
+            except Exception:
+                self.image_processor = None
+        else:
+            self.image_processor = image_processor
 
-    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        batch_input_ids = [
-            tokenize_nli_pair_safe(
-                tokenizer=self.tokenizer,
-                premise=r["premise"],
-                hypothesis=r["hypothesis"],
-                max_length=self.max_length,
-            )
-            for r in batch
-        ]
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        batch_input_ids = []
+        pixel_values_list = []
+        image_pos_ids_list = []
+
+        for r in batch:
+            img_field = r.get("image")
+            resolved_path = None
+            if img_field and self.image_processor is not None:
+                p_with_root = os.path.join(self.image_root, img_field)
+                if os.path.exists(p_with_root):
+                    resolved_path = p_with_root
+                elif os.path.exists(img_field):
+                    resolved_path = img_field
+
+            if resolved_path is not None:
+                img = Image.open(resolved_path).convert("RGB")
+                feat = self.image_processor(img, return_tensors="pt")
+                n_soft = int(feat["num_soft_tokens_per_image"][0])
+                ids = tokenize_nli_pair_safe(
+                    tokenizer=self.tokenizer,
+                    premise=r["premise"],
+                    hypothesis=r["hypothesis"],
+                    max_length=self.max_length,
+                    image_soft_tokens=n_soft,
+                )
+                pixel_values_list.append(feat["pixel_values"][0])
+                image_pos_ids_list.append(feat["image_position_ids"][0])
+            else:
+                ids = tokenize_nli_pair_safe(
+                    tokenizer=self.tokenizer,
+                    premise=r["premise"],
+                    hypothesis=r["hypothesis"],
+                    max_length=self.max_length,
+                    image_soft_tokens=0,
+                )
+            batch_input_ids.append(ids)
+
         labels = [r["label"] for r in batch]
         sources = [r["source"] for r in batch]
         ids = [r.get("id", f"row_{i}") for i, r in enumerate(batch)]
@@ -150,13 +191,18 @@ class DataCollatorNLI:
             padded_ids.append(ids + [pad_id] * pad_len)
             attn_masks.append([1] * len(ids) + [0] * pad_len)
 
-        return {
+        res = {
             "input_ids": torch.tensor(padded_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attn_masks, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
             "sources": sources,
             "ids": ids,
         }
+        if pixel_values_list:
+            res["pixel_values"] = torch.stack(pixel_values_list)
+            res["image_position_ids"] = torch.stack(image_pos_ids_list)
+
+        return res
 
 
 # -----------------------------------------------------------------------------
@@ -281,8 +327,14 @@ def train_cross_encoder(args):
 
     train_ds = NLIDataset(train_path, max_samples=args.max_train_samples)
     val_ds = NLIDataset(val_path, max_samples=args.max_val_samples)
-
-    collator = DataCollatorNLI(tokenizer, max_length=args.max_length)
+    image_processor = Gemma4ImageProcessorPil() if is_gemma else None
+    collator = DataCollatorNLI(
+        tokenizer,
+        max_length=args.max_length,
+        image_processor=image_processor,
+        image_root=args.data_dir,
+        is_gemma=is_gemma,
+    )
     if getattr(args, "token_bucketing", False):
         print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={getattr(args, 'max_tokens_per_batch', 2048)})...")
         train_lengths = [max(16, min(args.max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_ds.rows]
@@ -334,6 +386,7 @@ def train_cross_encoder(args):
             train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
+        epoch_brier_loss = 0.0
         t0 = time.time()
         optimizer.zero_grad()
 
@@ -341,13 +394,31 @@ def train_cross_encoder(args):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
+            pixel_values = batch["pixel_values"].to(device) if "pixel_values" in batch else None
+            image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                loss = loss_fn(outputs.logits, labels) / args.grad_accum
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    image_position_ids=image_position_ids,
+                )
+                ce_loss = loss_fn(outputs.logits, labels)
+                if getattr(args, "brier_weight", 0.0) > 0.0:
+                    probs = torch.softmax(outputs.logits, dim=-1)
+                    one_hot = torch.zeros_like(probs).scatter_(1, labels.unsqueeze(1), 1.0)
+                    brier_loss = torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1))
+                    total_loss = ce_loss + args.brier_weight * brier_loss
+                else:
+                    brier_loss = None
+                    total_loss = ce_loss
+                loss = total_loss / args.grad_accum
 
             loss.backward()
             epoch_loss += loss.item() * args.grad_accum
+            if brier_loss is not None:
+                epoch_brier_loss += brier_loss.item()
 
             if (step + 1) % args.grad_accum == 0 or (step + 1) == len(train_loader):
                 torch.nn.utils.clip_grad_norm_(trainable_params, args.max_grad_norm)
@@ -358,9 +429,10 @@ def train_cross_encoder(args):
 
                 if global_step % args.log_interval == 0:
                     lr = scheduler.get_last_lr()[0]
+                    brier_msg = f" | Brier: {epoch_brier_loss / (step + 1):.4f}" if getattr(args, "brier_weight", 0.0) > 0.0 else ""
                     print(
                         f"Epoch {epoch+1}/{args.epochs} | Step {global_step}/{total_steps} | "
-                        f"Loss: {epoch_loss / (step + 1):.4f} | LR: {lr:.2e} | "
+                        f"Loss: {epoch_loss / (step + 1):.4f}{brier_msg} | LR: {lr:.2e} | "
                         f"Speed: {(step + 1) * args.batch_size / (time.time() - t0):.1f} samples/s",
                         flush=True,
                     )
@@ -426,7 +498,8 @@ def train_cross_encoder(args):
                   "train_path": train_path, "val_path": val_path,
                   "test_file": args.test_file,
                   "qat_applied": bool(getattr(args, "qat", False) or getattr(args, "target_quant", "none") != "none"),
-                  "target_quant": getattr(args, "target_quant", "none")}
+                  "target_quant": getattr(args, "target_quant", "none"),
+                  "brier_weight": getattr(args, "brier_weight", 0.0)}
     for cfg_dir in (args.out_dir, os.path.join(args.out_dir, "best")):
         if os.path.isdir(cfg_dir):
             with open(os.path.join(cfg_dir, "train_config.json"), "w") as f:
@@ -532,9 +605,16 @@ def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str,
         labels = batch["labels"]
         sources = batch["sources"]
         all_ids.extend(batch["ids"])
+        pixel_values = batch["pixel_values"].to(device) if "pixel_values" in batch else None
+        image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_position_ids=image_position_ids,
+            )
             logits = outputs.logits.float().cpu().numpy()
             probs = torch.softmax(outputs.logits.float(), dim=-1).cpu().numpy()
 
@@ -607,6 +687,12 @@ if __name__ == "__main__":
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
+    parser.add_argument(
+        "--brier-weight",
+        type=float,
+        default=0.0,
+        help="Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5 based on von-1.0 and research report 08)",
+    )
     parser.add_argument("--log-interval", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()

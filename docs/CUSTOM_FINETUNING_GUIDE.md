@@ -188,3 +188,46 @@ python export_w4a16.py \
     --group-size 32
 ```
 This produces a unified `model.safetensors` and `quantization_config.json` compatible with vLLM, TensorRT-LLM, and ExLlamaV2/Marlin runtimes with ~4x memory reduction and zero accuracy degradation.
+
+---
+
+## 7. Advanced SOTA Training Techniques
+
+### Deterministic Token-Bucket Batching
+Variable-length sequences cause severe padding overhead and GPU memory spikes. Pass `--use-token-bucketing` to group sequences into discrete length buckets ($64 \le L \le 131,072$) and bound total tokens per batch:
+```bash
+python finetune.py \
+    --data my_data.jsonl \
+    --use-token-bucketing \
+    --max-tokens-per-batch 8192 \
+    --out-dir ./ckpt/my_domain_bucketed
+```
+
+### Post-Hoc Temperature Calibration ($T^*$)
+At the conclusion of fine-tuning, the engine automatically fits scalar temperature $T^*$ on validation logits using L-BFGS to minimize validation NLL without modifying $\arg\max$ predictions. It exports `calibration.json` to the output checkpoint directory:
+```json
+{
+  "optimal_temperature": 1.1420,
+  "val_ece_before": 0.0572,
+  "val_ece_after": 0.0241,
+  "val_brier_before": 0.2315,
+  "val_brier_after": 0.2189
+}
+```
+`Gemma4CrossEncoder` automatically detects and applies `calibration.json` at inference time.
+
+### Multi-Class Proper-Scoring Brier Loss ($\lambda \cdot \text{Brier}$)
+In addition to standard cross-entropy, penalize uncalibrated confidence probabilities directly during training via `--brier-weight 0.5`:
+```bash
+python finetune.py \
+    --data my_data.jsonl \
+    --brier-weight 0.5 \
+    --out-dir ./ckpt/my_domain_calibrated
+```
+
+### Multimodal Fine-Tuning
+If your dataset contains visual evidence (e.g. document images, UI screenshots, or camera frames), specify the image path in the `image` column:
+```json
+{"premise": "Customer invoice dated 2026-03-15.", "image": "images/invoice_001.jpg", "hypothesis": "Total due is $1,240.50.", "label": "entailment"}
+```
+`CustomNLICollator` automatically loads the image with PIL, extracts SigLIP visual patch features via `Gemma4ImageProcessorPil`, dynamically allocates soft tokens in `input_ids`, and passes `pixel_values` and `image_position_ids` directly to the model.

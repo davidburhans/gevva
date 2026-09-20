@@ -39,7 +39,7 @@ from build_arms import build_arms, export_validated_synthetic  # noqa: E402
 
 RUN_ID = "run_20260919_223701"
 JUDGE1 = "qwen-3.6-27b-q4"
-TOTAL = 7515
+TOTAL = 7515  # Target ok-verdict threshold for Judge 1 pilot gate (raw queue may exceed this as SOTA modes expand)
 QUEUE_LOG = REPO / "results" / "tonight_chain.log"
 STATUS = REPO / "results" / "tonight_chain_status.json"
 ALERT = REPO / "results" / "committee_alert.json"

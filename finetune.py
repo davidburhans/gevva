@@ -51,8 +51,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from peft import LoraConfig, PeftModel, get_peft_model
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import AutoConfig, AutoTokenizer, get_cosine_schedule_with_warmup
+from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
 
 from gemma4_cross_encoder import (
     CONTRADICTION,
@@ -234,12 +236,15 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
             skipped_labels[str(raw_label)] += 1
             continue
 
-        normalized_data.append({
+        item = {
             "premise": premise,
             "hypothesis": hypothesis,
             "label": norm_label,
             "source": r.get("source", "custom_dataset"),
-        })
+        }
+        if "image" in r and r["image"]:
+            item["image"] = r["image"]
+        normalized_data.append(item)
 
     if skipped_labels:
         print(f"  Warning: Skipped {sum(skipped_labels.values())} rows with unmappable labels: {dict(skipped_labels)}")
@@ -300,23 +305,62 @@ class CustomNLICollator:
         max_length: int = 512,
         template: str = DEFAULT_NLI_TEMPLATE,
         pad_to_multiple_of: int = 8,
+        image_processor: Optional[Any] = None,
+        image_root: str = "./data",
+        is_gemma: bool = True,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.template = template
         self.pad_to_multiple_of = pad_to_multiple_of
+        self.image_root = image_root
         self.tokenizer.padding_side = "right"
+        if image_processor is None and is_gemma:
+            try:
+                self.image_processor = Gemma4ImageProcessorPil()
+            except Exception:
+                self.image_processor = None
+        else:
+            self.image_processor = image_processor
 
-    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        batch_input_ids = [
-            tokenize_nli_pair_safe(
-                tokenizer=self.tokenizer,
-                premise=r["premise"],
-                hypothesis=r["hypothesis"],
-                max_length=self.max_length,
-            )
-            for r in batch
-        ]
+    def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        batch_input_ids = []
+        pixel_values_list = []
+        image_pos_ids_list = []
+
+        for r in batch:
+            img_field = r.get("image")
+            resolved_path = None
+            if img_field and self.image_processor is not None:
+                p_with_root = os.path.join(self.image_root, img_field)
+                if os.path.exists(p_with_root):
+                    resolved_path = p_with_root
+                elif os.path.exists(img_field):
+                    resolved_path = img_field
+
+            if resolved_path is not None:
+                img = Image.open(resolved_path).convert("RGB")
+                feat = self.image_processor(img, return_tensors="pt")
+                n_soft = int(feat["num_soft_tokens_per_image"][0])
+                ids = tokenize_nli_pair_safe(
+                    tokenizer=self.tokenizer,
+                    premise=r["premise"],
+                    hypothesis=r["hypothesis"],
+                    max_length=self.max_length,
+                    image_soft_tokens=n_soft,
+                )
+                pixel_values_list.append(feat["pixel_values"][0])
+                image_pos_ids_list.append(feat["image_position_ids"][0])
+            else:
+                ids = tokenize_nli_pair_safe(
+                    tokenizer=self.tokenizer,
+                    premise=r["premise"],
+                    hypothesis=r["hypothesis"],
+                    max_length=self.max_length,
+                    image_soft_tokens=0,
+                )
+            batch_input_ids.append(ids)
+
         labels = [r["label"] for r in batch]
         sources = [r.get("source", "custom") for r in batch]
 
@@ -332,12 +376,17 @@ class CustomNLICollator:
             padded_ids.append(ids + [pad_id] * pad_len)
             attn_masks.append([1] * len(ids) + [0] * pad_len)
 
-        return {
+        res = {
             "input_ids": torch.tensor(padded_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attn_masks, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
             "sources": sources,
         }
+        if pixel_values_list:
+            res["pixel_values"] = torch.stack(pixel_values_list)
+            res["image_position_ids"] = torch.stack(image_pos_ids_list)
+
+        return res
 
 
 # -----------------------------------------------------------------------------
@@ -495,6 +544,24 @@ def fit_temperature_scaling(
     return t_opt, ece_before, ece_after, brier_before, brier_after
 
 
+
+def compute_brier_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Computes multi-class Brier calibration loss.
+
+    Formula:
+        probs = torch.softmax(logits, dim=-1)
+        one_hot = torch.zeros_like(probs).scatter_(1, labels.unsqueeze(1), 1.0)
+        brier_loss = torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1))
+
+    Attribution:
+        Proper-scoring Brier calibration loss inspired by von-1.0, research report 08,
+        and Brier (1950).
+    """
+    probs = torch.softmax(logits, dim=-1)
+    one_hot = torch.zeros_like(probs).scatter_(1, labels.unsqueeze(1), 1.0)
+    return torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1))
+
+
 # -----------------------------------------------------------------------------
 # Evaluation Helper
 # -----------------------------------------------------------------------------
@@ -508,10 +575,17 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"]
         sources = batch["sources"]
+        pixel_values = batch["pixel_values"].to(device) if "pixel_values" in batch else None
+        image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
 
         amp_device = "cuda" if "cuda" in str(device) else "cpu"
         with torch.amp.autocast(amp_device, dtype=torch.bfloat16):
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_position_ids=image_position_ids,
+            )
             logits = outputs.logits.float().cpu().numpy()
             probs = torch.softmax(outputs.logits.float(), dim=-1).cpu().numpy()
 
@@ -586,6 +660,7 @@ def finetune_custom_data(
     lora_r: int = 64,
     lora_alpha: int = 128,
     label_smoothing: float = 0.05,
+    brier_weight: float = 0.0,
     val_ratio: float = 0.15,
     qat: bool = True,
     target_quant: str = "nvfp4",
@@ -593,6 +668,8 @@ def finetune_custom_data(
     qat_group_size: int = 32,
     use_token_bucketing: bool = False,
     max_tokens_per_batch: int = 2048,
+    image_root: str = "./data",
+    image_processor: Optional[Any] = None,
     seed: int = 42,
     device: str = "cuda",
 ) -> Dict[str, Any]:
@@ -612,6 +689,7 @@ def finetune_custom_data(
         lora_r: LoRA rank.
         lora_alpha: LoRA alpha scaling factor.
         label_smoothing: Label smoothing coefficient for calibration.
+        brier_weight: Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5).
         val_ratio: Validation split fraction when val_data is not provided.
         seed: Random seed.
         device: PyTorch device ('cuda' or 'cpu').
@@ -739,7 +817,19 @@ def finetune_custom_data(
     model.print_trainable_parameters()
 
     # 4. DataLoaders
-    collator = CustomNLICollator(tokenizer, max_length=max_length)
+    is_gemma = "gemma" in base_model_id.lower()
+    if image_processor is None and is_gemma:
+        try:
+            image_processor = Gemma4ImageProcessorPil()
+        except Exception:
+            image_processor = None
+    collator = CustomNLICollator(
+        tokenizer,
+        max_length=max_length,
+        image_processor=image_processor,
+        image_root=image_root,
+        is_gemma=is_gemma,
+    )
     use_pin = (device != "cpu" and torch.cuda.is_available())
     if use_token_bucketing:
         print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={max_tokens_per_batch})...")
@@ -791,6 +881,7 @@ def finetune_custom_data(
             train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
+        epoch_brier_loss = 0.0
         t0 = time.time()
         optimizer.zero_grad()
 
@@ -798,14 +889,32 @@ def finetune_custom_data(
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
+            pixel_values = batch["pixel_values"].to(device) if "pixel_values" in batch else None
+            image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
 
             amp_device = "cuda" if "cuda" in str(device) else "cpu"
             with torch.amp.autocast(amp_device, dtype=torch.bfloat16):
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                loss = loss_fn(outputs.logits, labels) / grad_accum
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    image_position_ids=image_position_ids,
+                )
+                ce_loss = loss_fn(outputs.logits, labels)
+                if brier_weight > 0.0:
+                    probs = torch.softmax(outputs.logits, dim=-1)
+                    one_hot = torch.zeros_like(probs).scatter_(1, labels.unsqueeze(1), 1.0)
+                    brier_loss = torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1))
+                    total_loss = ce_loss + brier_weight * brier_loss
+                else:
+                    brier_loss = None
+                    total_loss = ce_loss
+                loss = total_loss / grad_accum
 
             loss.backward()
             epoch_loss += loss.item() * grad_accum
+            if brier_loss is not None:
+                epoch_brier_loss += brier_loss.item()
 
             if (step + 1) % grad_accum == 0 or (step + 1) == len(train_loader):
                 torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
@@ -818,9 +927,10 @@ def finetune_custom_data(
                     curr_lr = scheduler.get_last_lr()[0]
                     avg_loss = epoch_loss / (step + 1)
                     speed = (step + 1) * batch_size / (time.time() - t0)
+                    brier_msg = f" | Brier: {epoch_brier_loss / (step + 1):.4f}" if brier_weight > 0.0 else ""
                     print(
                         f"Epoch {epoch+1}/{epochs} | Step {global_step}/{total_steps} | "
-                        f"Loss: {avg_loss:.4f} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
+                        f"Loss: {avg_loss:.4f}{brier_msg} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
                         flush=True,
                     )
 
@@ -921,6 +1031,13 @@ def main():
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")
     parser.add_argument("--token-bucketing", action="store_true", help="Enable deterministic token-bucket batching (decider style)")
     parser.add_argument("--max-tokens-per-batch", type=int, default=2048, help="Token budget per batch when using token bucketing")
+    parser.add_argument(
+        "--brier-weight",
+        type=float,
+        default=0.0,
+        help="Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5 based on von-1.0 and research report 08)",
+    )
+    parser.add_argument("--image-root", default="./data", help="Root directory for multimodal images")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -937,6 +1054,7 @@ def main():
         max_length=args.max_length,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
+        brier_weight=args.brier_weight,
         val_ratio=args.val_ratio,
         qat=args.qat,
         target_quant=args.target_quant,
@@ -944,6 +1062,7 @@ def main():
         qat_group_size=args.qat_group_size,
         use_token_bucketing=args.token_bucketing,
         max_tokens_per_batch=args.max_tokens_per_batch,
+        image_root=args.image_root,
         seed=args.seed,
     )
 

@@ -12,9 +12,11 @@ $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neut
 
 - **100% Drop-In Jev & OpenJEV API Parity**: Full signature and return-type compatibility with [`AlexWortega/openjev`](https://huggingface.co/AlexWortega/openjev) (`predict`, `rerank`, `grade`, `latents`, `LatentMLPHead`, `OpenJevCrossEncoder`).
 - **Production W4A16 Quantized Model**: Merged INT4 Group-32 weights (`model.safetensors`, 7.04 GB) with zero-VRAM-spike host-to-device streaming, **14.3 ms P50 latency** (≈69.9 decisions/sec, artifact: `results/benchmark_comparison_100.json`; 5.1 GB VRAM / 1.84 s load are dev measurements, not persisted artifacts).
-- **Strong Calibration**: ECE **0.0790** on a 100-example MNLI-matched slice (Jev 0.246 / Laya 0.081 are quoted publication figures; cross-dataset ECE ratios are not protocol-identical, and MNLI is in-distribution for our curriculum).
-- **1-Command Custom Data Fine-Tuning**: Auto-detects input formats (`.jsonl`, `.csv`, `.tsv`, `.parquet`), auto-maps column headers, normalizes string/int labels, and performs stratified auto-splitting with in-loop QAT.
-- **Multimodal & 128K Native**: Natively processes text and image tokens through Gemma 4's SigLIP vision tower with last-token sequence classification pooling.
+- **Strong Calibration**: ECE **0.0790** on a 100-example MNLI-matched slice (Jev 0.246 / Laya 0.081 are quoted publication figures; cross-dataset ECE ratios are not protocol-identical, and MNLI is in-distribution for our curriculum). Supports post-hoc validation temperature scaling ($T^*$) exported to `calibration.json`.
+- **1-Command Custom Data Fine-Tuning**: Auto-detects input formats (`.jsonl`, `.csv`, `.tsv`, `.parquet`), auto-maps column headers, normalizes string/int labels, and performs stratified auto-splitting with in-loop QAT and token-bucket batching.
+- **Multimodal & 128K Native**: Natively processes text and image tokens through Gemma 4's SigLIP vision tower with last-token sequence classification pooling and token-bucket batching.
+- **Position-Bias Invariant**: Cyclic permutation debiasing in `rerank(debias_position=True)` and diversified prompt templates eliminate choice ordering biases.
+- **Adversarial & Abstention Hardened**: Pre-trained on contrastive fact inversions (Bespoke-Nimble) and explicit unanswerable abstention samples (Mapika Decider).
 
 ---
 
@@ -175,4 +177,12 @@ sqlite3 data/validation_metrics.db "SELECT * FROM judge_performance ORDER BY run
 ## License & Attribution
 
 Apache 2.0. Base model weights inherit the [Google Gemma Terms of Use](https://ai.google.dev/gemma/terms).
-Inspired by [TypeSafe AI Jev](http://typesafe.ai/blog/introducing-system-one-models-and-jev) and [AlexWortega/openjev](https://huggingface.co/AlexWortega/openjev).
+
+This project integrates architectural patterns, synthetic data strategies, and loss formulations inspired by the following open-source projects:
+- **[TypeSafe AI Jev](http://typesafe.ai/blog/introducing-system-one-models-and-jev)** & **[Convai Laya](https://huggingface.co/convaiinnovations/laya)**: Fast non-autoregressive System 1 decision-engine paradigm and latent probe head design.
+- **[AlexWortega/openjev](https://huggingface.co/AlexWortega/openjev)** (Apache 2.0): NLI label indexing convention (0=contradiction, 1=entailment, 2=neutral) and evaluation harness structure.
+- **[Bespoke Labs Nimble-9B](https://huggingface.co/bespokelabs/Bespoke-Nimble-9B)** (Apache 2.0): Counterfactual adversarial fact inversion data generation (numeric mutation, polarity flipping, entity swapping).
+- **[Mapika/decider](https://github.com/Mapika/decider)** (Apache 2.0): Abstention augmentation (`none_augment`), negative control pairing, and temperature scaling calibration.
+- **[TheoLeeCJ/SemIf](https://github.com/TheoLeeCJ/SemIf)** (MIT): Position-bias formulation, template diversification, and Position Bias Index ($\text{PBI}$) metric.
+- **[TianyuCodings/NanoJev](https://github.com/TianyuCodings/NanoJev)** (MIT) & **[sabeel111/OpenSourceJev](https://github.com/sabeel111/OpenSourceJev)** (MIT): Deterministic token-bucket batching architecture and post-hoc temperature optimization.
+- **[von-1.0](https://github.com/jina-ai)**: Multi-class proper-scoring Brier calibration loss formulation ($\mathcal{L}_{\text{CE}} + \lambda \mathcal{L}_{\text{Brier}}$).
