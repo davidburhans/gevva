@@ -246,10 +246,12 @@ def tokenize_nli_pair_safe(
             hypothesis = hypothesis.replace(tok, "")
 
     bos_id = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
-    hyp_ids = tokenizer.encode(f"\nHypothesis: {hypothesis.strip()}\nPrediction:", add_special_tokens=False)
-    # Enforce strict budget truncation: hypothesis cannot monopolize sequence budget
-    max_hyp_len = max(32, max_length // 2)
-    hyp_ids = hyp_ids[:max_hyp_len]
+    pred_suffix_ids = tokenizer.encode("\nPrediction:", add_special_tokens=False)
+    hyp_prefix_ids = tokenizer.encode("\nHypothesis: ", add_special_tokens=False)
+    # Enforce strict budget truncation on hypothesis body: suffix '\nPrediction:' is GUARANTEED preserved!
+    max_hyp_body_len = max(16, (max_length // 2) - len(pred_suffix_ids) - len(hyp_prefix_ids))
+    hyp_body_ids = tokenizer.encode(hypothesis.strip(), add_special_tokens=False)[:max_hyp_body_len]
+    hyp_ids = hyp_prefix_ids + hyp_body_ids + pred_suffix_ids
     prem_prefix_ids = tokenizer.encode("Premise: ", add_special_tokens=False)
 
     vis_ids = []
@@ -467,7 +469,10 @@ class Gemma4CrossEncoder:
                         torch_dtype=dtype,
                     )
                 from peft import PeftModel
-                peft_model = PeftModel.from_pretrained(base_model, model_name_or_path)
+                # torch_device: peft otherwise infers CUDA and safetensors-loads the LoRA
+                # weights onto GPU 0 even when the wrapper targets CPU (breaks busy-GPU hosts).
+                peft_model = PeftModel.from_pretrained(base_model, model_name_or_path,
+                                                       torch_device=self.device)
                 head_weights_path = os.path.join(model_name_or_path, "head_weights.pt")
                 if os.path.exists(head_weights_path):
                     hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
@@ -644,6 +649,24 @@ class Gemma4CrossEncoder:
             all_logits.append(logits)
 
         return np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 3))
+
+    def count_input_tokens(self, premise: str, hypothesis: str, image: Optional[Image.Image] = None) -> int:
+        """Input token count for one pair, exactly as this wrapper tokenizes it
+        (same budget truncation as inference; the system's own reported usage).
+
+        Example:
+            >>> ce.count_input_tokens("The policy excludes seepage.", "The correct answer is: yes: Covered")
+            24
+        """
+        n_soft = 0
+        if image is not None:
+            feat = self.image_processor(image, return_tensors="pt")
+            n_soft = int(feat["num_soft_tokens_per_image"][0])
+        return len(tokenize_nli_pair_safe(
+            self.tok, premise, hypothesis, max_length=self.max_length,
+            image_soft_tokens=n_soft, boi_token=self.boi_token,
+            image_token=self.image_token, eoi_token=self.eoi_token,
+        ))
 
     @torch.no_grad()
     def extract_latents(

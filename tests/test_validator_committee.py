@@ -56,6 +56,7 @@ class FakeJudgeClient:
         self.fail = fail
         self.last_latency_ms = 42.0
         self.unload_count = 0
+        self.retry_delay = 0
         log.record("load", model)
 
     def query_chat(self, system_prompt: str, user_prompt: str, **_: Any) -> Optional[str]:
@@ -335,6 +336,7 @@ def test_offline_batch_is_retried_once():
         def __init__(self):
             self.calls = 0
             self.last_latency_ms = 5.0
+            self.retry_delay = 0.01
         def query_chat(self, system_prompt, user_prompt, **_):
             self.calls += 1
             if self.calls == 1:

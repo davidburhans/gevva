@@ -99,13 +99,13 @@ class AggregateResult:
 # Single-Judge Batch Validation (raw verdicts only; flips happen at aggregation)
 # -----------------------------------------------------------------------------
 # Per-model thinking policy for batch validation (grounded by live A/B, 2026-09-20):
-# - qwen-3.6-27b-q4: thinking emits ~9K chars of hidden reasoning that truncates the
-#   token budget before the JSON completes (89% parse_error, 20.3s/batch). Off:
-#   3.2s/batch, 100% parse.
+# - qwen-3.6-27b-q4 & qwen-3.8-125b-*: thinking emits ~9K chars of hidden reasoning
+#   that truncates the token budget before JSON completes (160s/batch, parse errors).
+#   Thinking-off: 10.6s/batch, 100% parse.
 # - deepseek-v4-flash-q3: thinking-OFF breaks batch completeness (returns 1 of 5
 #   items); its default mode delivers full batches at ~82s. Leave at vendor default.
 # - unknown models default to vendor behaviour; the watchdog alerts on failure rates.
-THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4"}
+THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4"}
 
 
 def _chat_template_kwargs(client: Any) -> Optional[Dict[str, Any]]:
@@ -133,15 +133,32 @@ def validate_batch_consensus(
     if not candidate_batch:
         return []
 
+    def _escape_xml(text: Any) -> str:
+        return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    n_items = len(candidate_batch)
+    batch_schema = {
+        "type": "array",
+        "minItems": n_items,
+        "maxItems": n_items,
+        "items": BATCH_VERDICT_SCHEMA["items"],
+    }
     response_format = {
         "type": "json_schema",
-        "json_schema": {"name": "nli_batch_verdicts", "strict": True, "schema": BATCH_VERDICT_SCHEMA},
+        "json_schema": {"name": "nli_batch_verdicts", "strict": True, "schema": batch_schema},
     }
-    user_prompt = "Pairs to classify:\n"
+    user_prompt = (
+        f"There are {n_items} candidate pairs to classify (IDs 0 to {n_items - 1}). "
+        f"You MUST evaluate all {n_items} pairs and return a JSON array with exactly {n_items} objects, "
+        f"one for each ID in order.\n\nPairs to classify:\n"
+    )
     for idx, c in enumerate(candidate_batch):
-        user_prompt += f'<candidate id="{idx}"><premise>{c["premise"]}</premise><hypothesis>{c["hypothesis"]}</hypothesis></candidate>\n\n'
-    user_prompt += "JSON Array Output:"
+        p_esc = _escape_xml(c.get("premise", ""))
+        h_esc = _escape_xml(c.get("hypothesis", ""))
+        user_prompt += f'<candidate id="{idx}"><premise>{p_esc}</premise><hypothesis>{h_esc}</hypothesis></candidate>\n\n'
+    user_prompt += f"Output a JSON array of {n_items} objects:"
 
+    t0 = time.monotonic()
     response = client.query_chat(
         system_prompt=VALIDATOR_SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -155,7 +172,7 @@ def validate_batch_consensus(
         # budget before the JSON completes on affected models (89% parse_error measured).
         chat_template_kwargs=_chat_template_kwargs(client),
     )
-    latency = getattr(client, "last_latency_ms", None) or 0.0
+    latency = (time.monotonic() - t0) * 1000.0
     if not response:
         return [JudgeVerdict(None, "validator_offline_or_empty", STATUS_OFFLINE, latency) for _ in candidate_batch]
 
@@ -235,14 +252,22 @@ def run_validator_committee(
     return ctx.committee
 
 
+# Models in llama-server configured with --parallel >= 2
+PARALLEL_JUDGES = {
+    "qwen-3.8-125b-q3": 2,
+    "qwen-3.8-125b-q4": 2,
+    "qwen-3.6-27b-q4": 2,
+}
+
+
 def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
                       judge_idx: int, num_judges: int, ctx: CommitteeContext) -> None:
     if ctx.db is not None:
         # WHY: hygiene at judge start - failed rows (offline/parse) from a previous
         # run must be regenerated, never baked into the done-set (audit MEDIUM).
-        purged = ctx.db.purge_non_ok(judge_model)
+        purged = ctx.db.purge_non_ok(judge_model, run_id=ctx.run_id)
         if purged:
-            log_line = f"  [{judge_model}] purged {purged} stale failed verdicts at resume"
+            log_line = f"  [{judge_model}] purged {purged} stale failed verdicts at resume (run={ctx.run_id})"
             print(log_line, flush=True)
     done = (ctx.db.persisted_verdicts(ctx.run_id, judge_model, [s["id"] for s in ctx.samples])
             if ctx.db else {})
@@ -262,8 +287,33 @@ def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
     # WHY: the client is constructed lazily so a fully-persisted judge never even loads.
     client = factory(judge_model)
     total_batches = (len(ctx.samples) + ctx.batch_size - 1) // ctx.batch_size
-    for b_idx in range(0, len(ctx.samples), ctx.batch_size):
-        _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
+    concurrency = PARALLEL_JUDGES.get(judge_model, 1)
+
+    batch_indices = list(range(0, len(ctx.samples), ctx.batch_size))
+    # Restore any fully persisted batches first (fast in-memory)
+    for b_idx in batch_indices:
+        chunk = ctx.samples[b_idx:b_idx + ctx.batch_size]
+        if all(s["id"] in done for s in chunk):
+            for offset, sample in enumerate(chunk):
+                ctx.committee[b_idx + offset][judge_model] = _verdict_from_row(done[sample["id"]])
+
+    pending_batches = [
+        b_idx for b_idx in batch_indices
+        if not all(s["id"] in done for s in ctx.samples[b_idx:b_idx + ctx.batch_size])
+    ]
+
+    if concurrency > 1 and len(pending_batches) > 1:
+        import concurrent.futures
+
+        def _worker(b_idx: int) -> None:
+            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            list(executor.map(_worker, pending_batches))
+    else:
+        for b_idx in pending_batches:
+            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
+
     print(f"  Unloading {judge_model} after its final batch to free 100% VRAM for the next judge...")
     client.unload_model()
     _write_checkpoint(ctx)
@@ -282,7 +332,9 @@ def _validate_batch_or_restore(client: Any, judge_model: str, b_idx: int, total_
     # otherwise permanently bake STATUS_OFFLINE verdicts for a whole batch (audit
     # finding: no-retry silently shrinks real judge coverage on multi-day runs).
     if all(v.status == STATUS_OFFLINE for v in verdicts):
-        time.sleep(30)
+        retry_delay = getattr(client, "retry_delay", 30)
+        if retry_delay > 0:
+            time.sleep(retry_delay)
         verdicts = validate_batch_consensus(client, chunk)
     latency = getattr(client, "last_latency_ms", None) or 0.0
     if ctx.db is not None:

@@ -1,0 +1,36 @@
+{
+  "scoring_rule": "margin",
+  "provenance": {
+    "model_path": "ckpt/gemma-4-e2b-nli-w4a16-stage2",
+    "limit_per_task": 100,
+    "shuffle_seed": 0,
+    "generated_at": "2026-09-21T10:06:41Z",
+    "competitor_columns": "quoted published reference constants (REFERENCE_BENCHMARKS), not local runs",
+    "scoring_note": "margin/contrastive are post-hoc variants; openjev's documented protocol is raw entailment",
+    "contamination_guard": "MNLI/latency/ECE slices exclude pairs present in data/train.jsonl or data/val.jsonl"
+  },
+  "mnli_m": 0.8620689655172413,
+  "mnli_mm": 0.92,
+  "arc_easy_rerank": 0.75,
+  "arc_challenge_rerank": 0.5,
+  "mmlu_rerank": 0.53,
+  "winogrande_rerank": 0.59,
+  "arc_easy_grade_acc": 0.970074812967581,
+  "arc_easy_grade_f1": 0.9387755102040817,
+  "arc_challenge_grade_acc": 0.9502487562189055,
+  "arc_challenge_grade_f1": 0.8969072164948454,
+  "mmlu_grade_acc": 0.92,
+  "mmlu_grade_f1": 0.8532110091743119,
+  "boolq": 0.88,
+  "ag_news": 0.84,
+  "dair_emotion": 0.49,
+  "p50_latency_ms": "13.96 ms",
+  "latency_stats": {
+    "p50_ms": 13.95597297232598,
+    "p90_ms": 15.768004395067692,
+    "p99_ms": 17.890889858826995,
+    "mean_ms": 14.285495095276113
+  },
+  "ece_score": 0.09926743685514076,
+  "brier_score": 0.2010257989168167
+}

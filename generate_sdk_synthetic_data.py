@@ -1144,10 +1144,11 @@ ABSTAIN_HYPOTHESES = [
 
 
 def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Dict[str, Any]]:
-    """Generates abstention (none_augment) pairs:
-    75% negative control (valid premise, abstain hypothesis -> NEUTRAL).
-    25% adversarial distractor replacement (unrelated distractor -> CONTRADICTION/NEUTRAL,
-    abstain hypothesis -> ENTAILMENT).
+    """Generates semantically coherent abstention (none_augment) pairs:
+    1. Positive Control (Option A is gold, Option C 'None of the above' is false -> CONTRADICTION / ENTAILMENT).
+    2. Negative Abstention (Options A/B are irrelevant distractors -> Option C 'None of the above' is ENTAILMENT).
+    3. Unverifiable Claims (Unmentioned factual claims -> NEUTRAL, strictly adhering to project rule).
+    4. Meta-claim Contradiction (Claiming context confirms an unmentioned fact -> CONTRADICTION).
 
     Attribution:
         Abstention augmentation (none_augment) inspired by Mapika/decider (Apache 2.0 License).
@@ -1155,6 +1156,7 @@ def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Di
     """
     rng = random.Random(seed)
     samples: List[Dict[str, Any]] = []
+    seen_pairs: Dict[Tuple[str, str], int] = {}
     sample_id = 0
 
     unrelated_distractors = [
@@ -1164,89 +1166,114 @@ def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Di
         "Water molecules are completely nonpolar and repel all ionic substances.",
         "Deoxygenated blood returns directly to the left atrium of the heart.",
         "The ozone layer is entirely located within Earth's molten liquid core.",
+        "The software package requires Linux kernel 6.12 or higher with glibc 2.38.",
+        "The patient was prescribed 500mg amoxicillin twice daily for ten days.",
+        "The quarterly earnings report indicated a 14% drop in commercial real estate revenue.",
+        "Photosynthesis takes place primarily in the mitochondria of mammalian muscle cells.",
     ]
 
     while len(samples) < n_target:
+        item = rng.choice(RAG_CONTEXTS)
+        ctx = item["context"]
+        gold_ent = rng.choice(item["entailments"])
+        d1, d2 = rng.sample(unrelated_distractors, 2)
         roll = rng.random()
-        abstain_hyp = rng.choice(ABSTAIN_HYPOTHESES)
 
-        if roll < 0.75:
-            # 75% Negative Control: Context has evidence, so claiming "none of the above" is NEUTRAL
-            item = rng.choice(RAG_CONTEXTS)
-            ctx = item["context"]
-            gold_ent = rng.choice(item["entailments"])
+        if roll < 0.40:
+            # Positive control with explicit options: Option A is supported, Option C (None) is CONTRADICTION
+            premise = (
+                f"Document:\n{ctx}\n\n"
+                f"Candidate statements:\n"
+                f"Option A: {gold_ent}\n"
+                f"Option B: {d1}\n"
+                f"Option C: None of the above options are supported by the document."
+            )
+            # Two complementary hypotheses for the same multi-choice premise:
+            hyp_gold = "The statement supported by the document is Option A."
+            hyp_none = "The statement supported by the document is Option C (None of the above)."
 
-            samples.append({
-                "id": f"sdk_abstain_{sample_id:06d}",
-                "premise": ctx,
-                "hypothesis": gold_ent,
-                "label": ENTAILMENT,
-                "source": "sdk_abstention_augmentation",
-                "language": "en",
-                "image": "",
-                "metadata": {
-                    "technique": "none_augment",
-                    "attribution": "Mapika/decider (Apache 2.0)",
-                    "abstention_type": "control_gold",
-                },
-            })
-            sample_id += 1
+            for hyp, lbl, sub in [(hyp_gold, ENTAILMENT, "control_gold_entailed"),
+                                  (hyp_none, CONTRADICTION, "control_none_contradicted")]:
+                pair_k = (premise, hyp)
+                if pair_k not in seen_pairs and len(samples) < n_target:
+                    seen_pairs[pair_k] = lbl
+                    samples.append({
+                        "id": f"sdk_abstain_{sample_id:06d}",
+                        "premise": premise,
+                        "hypothesis": hyp,
+                        "label": lbl,
+                        "source": "sdk_abstention_augmentation",
+                        "language": "en",
+                        "image": "",
+                        "metadata": {
+                            "technique": "none_augment",
+                            "attribution": "Mapika/decider (Apache 2.0)",
+                            "abstention_type": sub,
+                        },
+                    })
+                    sample_id += 1
 
-            if len(samples) < n_target:
-                samples.append({
-                    "id": f"sdk_abstain_{sample_id:06d}",
-                    "premise": ctx,
-                    "hypothesis": abstain_hyp,
-                    "label": NEUTRAL,
-                    "source": "sdk_abstention_augmentation",
-                    "language": "en",
-                    "image": "",
-                    "metadata": {
-                        "technique": "none_augment",
-                        "attribution": "Mapika/decider (Apache 2.0)",
-                        "abstention_type": "control_abstain",
-                    },
-                })
-                sample_id += 1
+        elif roll < 0.70:
+            # Negative abstention: Options A and B are both irrelevant distractors -> Option C IS ENTAILED
+            premise = (
+                f"Document:\n{ctx}\n\n"
+                f"Candidate statements:\n"
+                f"Option A: {d1}\n"
+                f"Option B: {d2}\n"
+                f"Option C: None of the above options are supported by the document."
+            )
+            hyp_none = "The statement supported by the document is Option C (None of the above)."
+            hyp_dist = f"The statement supported by the document is Option A ({d1})."
+
+            for hyp, lbl, sub in [(hyp_none, ENTAILMENT, "abstain_none_entailed"),
+                                  (hyp_dist, NEUTRAL, "abstain_distractor_unverified")]:
+                pair_k = (premise, hyp)
+                if pair_k not in seen_pairs and len(samples) < n_target:
+                    seen_pairs[pair_k] = lbl
+                    samples.append({
+                        "id": f"sdk_abstain_{sample_id:06d}",
+                        "premise": premise,
+                        "hypothesis": hyp,
+                        "label": lbl,
+                        "source": "sdk_abstention_augmentation",
+                        "language": "en",
+                        "image": "",
+                        "metadata": {
+                            "technique": "none_augment",
+                            "attribution": "Mapika/decider (Apache 2.0)",
+                            "abstention_type": sub,
+                        },
+                    })
+                    sample_id += 1
+
         else:
-            # 25% Adversarial Distractor Replacement:
-            item = rng.choice(RAG_CONTEXTS)
-            ctx = item["context"]
-            distractor = rng.choice(unrelated_distractors)
+            # Direct text grounding abstention:
+            # - Bare unmentioned fact is NEUTRAL (unverifiable by context)
+            # - False meta-claim that context verifies it is CONTRADICTION
+            premise = f"Reference text:\n{ctx}"
+            hyp_unverified = d1
+            hyp_meta_false = f"The reference text provides sufficient evidence to verify that: {d1}"
 
-            samples.append({
-                "id": f"sdk_abstain_{sample_id:06d}",
-                "premise": ctx,
-                "hypothesis": distractor,
-                "label": CONTRADICTION,
-                "source": "sdk_abstention_augmentation",
-                "language": "en",
-                "image": "",
-                "metadata": {
-                    "technique": "none_augment",
-                    "attribution": "Mapika/decider (Apache 2.0)",
-                    "abstention_type": "adversarial_distractor",
-                },
-            })
-            sample_id += 1
-
-            if len(samples) < n_target:
-                # With all options irrelevant, the abstain hypothesis IS ENTAILMENT
-                samples.append({
-                    "id": f"sdk_abstain_{sample_id:06d}",
-                    "premise": ctx,
-                    "hypothesis": abstain_hyp,
-                    "label": ENTAILMENT,
-                    "source": "sdk_abstention_augmentation",
-                    "language": "en",
-                    "image": "",
-                    "metadata": {
-                        "technique": "none_augment",
-                        "attribution": "Mapika/decider (Apache 2.0)",
-                        "abstention_type": "adversarial_abstain_entailed",
-                    },
-                })
-                sample_id += 1
+            for hyp, lbl, sub in [(hyp_unverified, NEUTRAL, "direct_unverifiable_neutral"),
+                                  (hyp_meta_false, CONTRADICTION, "direct_false_meta_contradiction")]:
+                pair_k = (premise, hyp)
+                if pair_k not in seen_pairs and len(samples) < n_target:
+                    seen_pairs[pair_k] = lbl
+                    samples.append({
+                        "id": f"sdk_abstain_{sample_id:06d}",
+                        "premise": premise,
+                        "hypothesis": hyp,
+                        "label": lbl,
+                        "source": "sdk_abstention_augmentation",
+                        "language": "en",
+                        "image": "",
+                        "metadata": {
+                            "technique": "none_augment",
+                            "attribution": "Mapika/decider (Apache 2.0)",
+                            "abstention_type": sub,
+                        },
+                    })
+                    sample_id += 1
 
     rng.shuffle(samples)
     return samples[:n_target]
@@ -1258,7 +1285,7 @@ def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Di
 # -----------------------------------------------------------------------------
 # Validation Committee Stage Orchestration
 # -----------------------------------------------------------------------------
-DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,deepseek-v4-flash-q3,qwen-3.8-125b-q4,qwen-3.8-125b-q3"
+DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,qwen-3.8-125b-q3,qwen-3.8-125b-q4,deepseek-v4-flash-q3"
 CHECKPOINT_FILENAME = "sdk_synthetic_raw.jsonl"
 VALIDATION_CHECKPOINT_FILENAME = "sdk_synthetic_validation_checkpoint.jsonl"
 
@@ -1537,7 +1564,7 @@ if __name__ == "__main__":
     parser.add_argument("--teacher-url", default=None, help="Optional OpenAI-compatible URL for teacher model (e.g. http://localhost:8080/v1)")
     parser.add_argument("--teacher-model", default="gemma-4-31b-q4", help="Teacher model alias (e.g. gemma-4-31b-q4, gemma-4-12b-q4)")
     parser.add_argument("--validator-url", default=None, help="Optional OpenAI-compatible URL for validator model (e.g. http://localhost:8080/v1)")
-    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,deepseek-v4-flash-q3,qwen-3.8-125b-q4,qwen-3.8-125b-q3)")
+    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,qwen-3.8-125b-q3,qwen-3.8-125b-q4,deepseek-v4-flash-q3)")
     parser.add_argument("--metrics-db", default=None, help="SQLite path for judge metrics (default: <out-dir>/validation_metrics.db)")
     parser.add_argument("--batch-size", type=int, default=5, help="Samples per validator batch call")
     parser.add_argument("--validator-timeout", type=int, default=600, help="Per-call timeout (s) for validator batches (reasoning models may exceed 180)")

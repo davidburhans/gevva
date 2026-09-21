@@ -138,12 +138,6 @@ def _dedupe_split(
         seen.add(key)
         clean_val.append(row)
     return clean_train, clean_val, dropped_train, dropped_val
-    if isinstance(val, str):
-        cleaned = val.strip().lower()
-        canonical = SYNONYMS.get(cleaned)
-        if canonical:
-            return LABEL2ID[canonical]
-    return None
 
 
 # -----------------------------------------------------------------------------
@@ -159,7 +153,7 @@ def build_haystack_samples(
 ) -> List[Dict[str, Any]]:
     """Builds synthetic long-document NLI pairs:
     - 40% Entailment (premise needle embedded at random depth)
-    - 30% Contradiction (fact corrupted via entity / number mutation)
+    - 30% Contradiction (fact corrupted via entity / number mutation strictly on entailment needles)
     - 30% Neutral (needle dropped entirely -> unsupported in document)
     """
     rng = random.Random(seed)
@@ -181,9 +175,10 @@ def build_haystack_samples(
             doc = "\n\n".join(fillers)
             label = NEUTRAL
             sub_source = "haystack_drop_neutral"
-        elif dice < 0.60:
-            # Corrupted needle -> Contradiction
-            # Mutate numbers or insert negation
+        elif dice < 0.60 and orig_label == ENTAILMENT:
+            # Corrupted needle -> Contradiction.
+            # Strictly applied ONLY when original relation was ENTAILMENT, ensuring
+            # factual corruption genuinely refutes the hypothesis.
             mutated_premise = re.sub(
                 r"\b(\d+)\b",
                 lambda m: str(int(m.group(1)) + rng.choice([5, 10, 100])),
@@ -191,13 +186,27 @@ def build_haystack_samples(
                 count=1,
             )
             if mutated_premise == premise_needle:
-                # If no numbers, insert negation
-                words = premise_needle.split()
-                if len(words) > 3:
-                    words.insert(2, "never")
-                    mutated_premise = " ".join(words)
-                else:
-                    mutated_premise = "It is completely false that " + premise_needle
+                # Antonym directional flips if numbers not present
+                antonyms = [
+                    (r"\bincreased\b", "decreased"),
+                    (r"\bdecreased\b", "increased"),
+                    (r"\bapproved\b", "rejected"),
+                    (r"\brejected\b", "approved"),
+                    (r"\bbefore\b", "after"),
+                    (r"\bafter\b", "before"),
+                    (r"\ballowed\b", "forbidden"),
+                    (r"\bsupported\b", "opposed"),
+                ]
+                flipped = False
+                for pattern, repl in antonyms:
+                    if re.search(pattern, mutated_premise, flags=re.IGNORECASE):
+                        mutated_premise = re.sub(pattern, repl, mutated_premise, count=1, flags=re.IGNORECASE)
+                        flipped = True
+                        break
+                if not flipped:
+                    # Grammatical prefix negation (avoids ungrammatical insertion shortcuts)
+                    clean_needle = premise_needle[0].lower() + premise_needle[1:] if premise_needle else ""
+                    mutated_premise = f"Contrary to verified reports, it is not the case that {clean_needle}"
 
             pos = rng.randrange(len(fillers) + 1)
             doc_paragraphs = fillers[:pos] + [mutated_premise] + fillers[pos:]
@@ -260,7 +269,13 @@ class LocalTeacherClient:
 # -----------------------------------------------------------------------------
 # Main Dataset Compiler
 # -----------------------------------------------------------------------------
-def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
+def compile_dataset(
+    out_dir: str,
+    mode: str = "quick",
+    seed: int = 42,
+    include_typed_decisions: bool = False,
+    typed_decisions_cases: Optional[int] = None,
+):
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
     rng = random.Random(seed)
@@ -562,11 +577,16 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
     # WHY pair-disjoint: val haystack rows are built ONLY from source pairs held out
     # of training (their plain NLI rows also went to val), so haystack_drop/embedded
     # val accuracies can never reward memorized needles (audit finding).
-    print("Generating Synthetic Haystack Pairs...")
+    # WHY disjoint filler pools (audit M5b): val haystacks use distinct filler paragraphs
+    # from train haystacks, eliminating filler text familiarity across splits.
     n_val_haystack = int(N_HAYSTACK * HAYSTACK_VAL_FRACTION)
+    n_train_fillers = max(1, int(len(filler_pool) * 0.8))
+    train_fillers = filler_pool[:n_train_fillers]
+    val_fillers = filler_pool[n_train_fillers:] if len(filler_pool) > n_train_fillers else filler_pool
+
     train_haystack = build_haystack_samples(
         pairs_for_haystack,
-        filler_pool,
+        train_fillers,
         n_samples=N_HAYSTACK - n_val_haystack,
         min_fillers=6,
         max_fillers=18,
@@ -574,7 +594,7 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
     )
     val_haystack = build_haystack_samples(
         val_haystack_pairs,
-        filler_pool,
+        val_fillers,
         n_samples=n_val_haystack + 50,
         min_fillers=6,
         max_fillers=18,
@@ -669,6 +689,25 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
                 if line.strip():
                     val_samples.append(json.loads(line))
 
+    # 8. Typed Decisions Synthetic (Hmm / System One Format: n4ze3m/typed-decisions-synth)
+    # Attribution: Muhammed Nazeem (2026), MIT License. DeepSeek V4.1 Flash soft-labeled.
+    if include_typed_decisions or mode in ("stage2", "full"):
+        print("Loading Typed Decisions Synthetic Dataset (n4ze3m/typed-decisions-synth)...")
+        try:
+            from research.adapters.typed_decisions_adapter import convert_typed_decisions_to_nli
+            td_train = convert_typed_decisions_to_nli(
+                split="train", max_cases=typed_decisions_cases, seed=seed
+            )
+            td_val_cases = max(50, int((typed_decisions_cases or 1000) * 0.1)) if typed_decisions_cases else None
+            td_val = convert_typed_decisions_to_nli(
+                split="validation", max_cases=td_val_cases, seed=seed + 1
+            )
+            train_samples.extend(td_train)
+            val_samples.extend(td_val)
+            print(f"  Typed Decisions loaded: {len(td_train):,} train / {len(td_val):,} val pairs (MIT License, Muhammed Nazeem 2026)")
+        except Exception as e:
+            print(f"  Typed Decisions load skipped or failed: {e}")
+
     # Contamination guard: drop verbatim pair duplicates within train and across the
     # val boundary (audit finding: 218 val rows duplicated train rows verbatim).
     train_samples, val_samples, dup_train, dup_val = _dedupe_split(train_samples, val_samples)
@@ -679,11 +718,26 @@ def compile_dataset(out_dir: str, mode: str = "quick", seed: int = 42):
     rng.shuffle(train_samples)
     rng.shuffle(val_samples)
 
-    # Carve the report-only TEST split out of the selection pool (audit A1: test is
-    # never trained on and never used for checkpoint selection; written once here).
-    n_test = int(len(val_samples) * TEST_FRACTION_OF_VAL)
-    test_samples = val_samples[:n_test]
-    val_samples = val_samples[n_test:]
+    # Carve the report-only TEST split out of the selection pool using premise-level
+    # grouping (audit M5a: guarantees all hypotheses for a given premise stay strictly
+    # in val or test, eliminating cross-split premise leakage).
+    premise_map = defaultdict(list)
+    for r in val_samples:
+        prem_k = r.get("premise", "").strip()
+        premise_map[prem_k].append(r)
+
+    grouped_keys = list(premise_map.keys())
+    rng.shuffle(grouped_keys)
+
+    n_test_target = int(len(val_samples) * TEST_FRACTION_OF_VAL)
+    test_samples, remaining_val = [], []
+    for k in grouped_keys:
+        group = premise_map[k]
+        if len(test_samples) < n_test_target:
+            test_samples.extend(group)
+        else:
+            remaining_val.extend(group)
+    val_samples = remaining_val
     print(f"Split: train={len(train_samples):,} val(selection)={len(val_samples):,} test(report)={len(test_samples):,}")
 
     # Write output jsonl files
@@ -736,6 +790,17 @@ if __name__ == "__main__":
     parser.add_argument("--stage2", action="store_true", help="Build Stage 2 production dataset (~370k pairs)")
     parser.add_argument("--full", action="store_true", help="Build full-scale production dataset (~650k pairs)")
     parser.add_argument("--quick", action="store_true", help="Build quick prototype dataset (~40k pairs)")
+    parser.add_argument(
+        "--include-typed-decisions",
+        action="store_true",
+        help="Ingest n4ze3m/typed-decisions-synth (Hmm System 1 decisions, MIT License)",
+    )
+    parser.add_argument(
+        "--typed-decisions-cases",
+        type=int,
+        default=None,
+        help="Max raw cases to ingest from typed-decisions-synth (default: all)",
+    )
     args = parser.parse_args()
 
     mode = "quick"
@@ -748,4 +813,9 @@ if __name__ == "__main__":
     elif args.quick:
         mode = "quick"
 
-    compile_dataset(args.out_dir, mode=mode)
+    compile_dataset(
+        args.out_dir,
+        mode=mode,
+        include_typed_decisions=args.include_typed_decisions,
+        typed_decisions_cases=args.typed_decisions_cases,
+    )

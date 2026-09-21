@@ -143,7 +143,7 @@ uv run python eval_downstream_decisions.py --model-path ./ckpt/gemma-4-e2b-nli-w
 | Component | Detail |
 | :--- | :--- |
 | Teacher (generator) | `gemma-4-31b-q4` via GBNF-constrained JSON schemas |
-| Judges (validators) | `qwen-3.6-27b-q4` · `deepseek-v4-flash-q3` · `qwen-3.8-125b-q4` · `qwen-3.8-125b-q3` |
+| Judges (validators) | `qwen-3.6-27b-q4` · `qwen-3.8-125b-q3` · `qwen-3.8-125b-q4` · `deepseek-v4-flash-q3` |
 | Reliability | Judge-by-judge batching (zero model thrashing on single-model llama-swap), per-batch SQLite commits, per-judge checkpoint file, `--resume-run auto` |
 | Disagreements | Non-unanimous / failed / overridden samples → `data/sdk_synthetic_disagreements.jsonl` (`review.status="pending"`) for human or cloud-LLM adjudication |
 | Metrics | `data/validation_metrics.db` — `judge_performance` view (success rate, generator/consensus agreement, latency) per judge per run |

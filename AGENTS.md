@@ -100,21 +100,23 @@ Hypothesis: {hypothesis}
 └── research/
     ├── openjev/                   # Downloaded reference scripts from AlexWortega/openjev
     ├── laya/                      # Reference implementations from Convai Laya
-    ├── adapters/                  # Data adapters & collators
-    └── reports/                   # Technical deep dives (Reports 01 through 05)
+    ├── adapters/                  # Data adapters & collators (multimodal_nli_adapter, typed_decisions_adapter)
+    └── reports/                   # Technical deep dives (Reports 01 through 08)
 ```
 
 ---
 
 ## 5. Training Curriculum & Data Mixtures
 
-1. **Stage 1: Core Text & Visual NLI (Context up to 4K)**
+1. **Stage 1: Core Text, Visual & Decision NLI (Context up to 4K)**
    - Text NLI: SNLI, MNLI, ANLI (R1, R2, R3), WANLI, FEVER.
    - Multimodal NLI: SNLI-VE, converted VQA v2, GQA, DocVQA, spatial coordinate claims.
    - Multilingual: XNLI (15 languages), Flores-200.
-2. **Stage 2: Mid-Context & Document Grounding (Context up to 32K)**
-   - DocNLI multi-page document pairs.
-   - Medium synthetic haystack verification (retrieved passage validation).
+   - SDK-Aligned Decisions: 8,515 consensus-filtered pairs (tool routing, search rerank, cloze, grading, RAG).
+2. **Stage 2: Mid-Context, Enterprise Decisions & Document Grounding (Context up to 32K)**
+   - System 1 Decisions: `n4ze3m/typed-decisions-synth` (25,859 enterprise questions, 149 workflows, MIT license, Muhammed Nazeem 2026) with DeepSeek V4.1 Flash calibrated soft labels.
+   - DocNLI multi-page document pairs (average 800–3,500 tokens).
+   - Medium synthetic haystack verification (retrieved passage validation up to 32K).
 3. **Stage 3: Full 128K Needle-in-a-Haystack & Enterprise Verification (Context up to 128K)**
    - Long synthetic haystack (evidence injected vs dropped/neutral vs corrupted/contradiction).
    - Long-context RAG citation verification and repository-level code diff claims.

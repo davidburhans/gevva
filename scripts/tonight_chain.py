@@ -270,13 +270,18 @@ def main() -> None:
         set_stage("compile", "done")
 
         set_stage("train-armA", "running")
-        rc = run([sys.executable, "-u", "train_cross_encoder.py", "--data-dir", "./data",
-                  "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_A",
-                  "--target-quant", "none", "--epochs", "3"], "armA_train.log", timeout_s=12 * 3600)
-        if rc != 0:
-            set_stage("train-armA", "failed", f"rc={rc}")
-            raise SystemExit(1)
-        set_stage("train-armA", "done")
+        shakedown_a_metrics = REPO / "ckpt" / "shakedown_A" / "test_metrics.json"
+        if shakedown_a_metrics.exists():
+            log("ckpt/shakedown_A already verified on held-out test split; reusing baseline")
+            set_stage("train-armA", "done", "reused existing clean baseline")
+        else:
+            rc = run([sys.executable, "-u", "train_cross_encoder.py", "--data-dir", "./data",
+                      "--test-file", "data/test.jsonl", "--out-dir", "ckpt/shakedown_A",
+                      "--target-quant", "none", "--epochs", "3"], "armA_train.log", timeout_s=12 * 3600)
+            if rc != 0:
+                set_stage("train-armA", "failed", f"rc={rc}")
+                raise SystemExit(1)
+            set_stage("train-armA", "done")
 
         set_stage("export", "running")
         staged_dir = REPO / "data" / "staged"

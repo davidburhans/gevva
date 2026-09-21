@@ -67,6 +67,11 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
     tokenize_nli_pair_safe,
 )
+from research.adapters.grouped_decision_collator import (
+    GroupedDecisionCollator,
+    GroupedTokenBucketBatchSampler,
+    compute_cross_option_loss,
+)
 
 # -----------------------------------------------------------------------------
 # Column & Label Normalization Constants
@@ -166,19 +171,27 @@ def detect_columns(sample_dict: Dict[str, Any]) -> Tuple[str, str, str]:
     return premise_key, hyp_key, label_key
 
 
-def parse_raw_label(raw_val: Any) -> Optional[int]:
-    """Maps raw label (string, int, or float) to 0, 1, or 2."""
+def parse_raw_label(raw_val: Any, convention: str = "ours") -> Optional[int]:
+    """Maps raw label (string, int, or float) to 0, 1, or 2.
+
+    Conventions:
+    - 'ours' (default): 0=contradiction, 1=entailment, 2=neutral (OpenJEV / ModernCE convention).
+    - 'native': 0=entailment, 1=neutral, 2=contradiction (Stanford SNLI / NYU MNLI convention).
+    """
     if raw_val is None:
         return None
     if isinstance(raw_val, (int, np.integer)):
-        if int(raw_val) in (0, 1, 2):
-            return int(raw_val)
+        iv = int(raw_val)
+        if iv in (0, 1, 2):
+            if convention == "native":
+                return {0: 1, 1: 2, 2: 0}[iv]
+            return iv
     str_val = str(raw_val).strip().lower()
     return LABEL_STRING_MAP.get(str_val, None)
 
 
-def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
-    """Loads records from JSONL, CSV, TSV, or JSON file."""
+def load_custom_file(file_path: str, convention: str = "ours") -> List[Dict[str, Any]]:
+    """Loads records from JSONL, CSV, TSV, Parquet, or JSON file."""
     p = Path(file_path)
     if not p.exists():
         raise FileNotFoundError(f"Custom data file does not exist: {file_path}")
@@ -210,8 +223,16 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
             for r in reader:
                 rows.append(dict(r))
 
+    elif suffix in (".parquet", ".pq"):
+        try:
+            import pandas as pd
+            df = pd.read_parquet(p)
+            rows = df.to_dict(orient="records")
+        except ImportError:
+            raise ImportError(f"Reading parquet files requires 'pandas' and 'pyarrow'. Please install them or provide .jsonl/.csv.")
+
     else:
-        raise ValueError(f"Unsupported file format '{suffix}'. Please provide .jsonl, .csv, .tsv, or .json")
+        raise ValueError(f"Unsupported file format '{suffix}'. Please provide .jsonl, .csv, .tsv, .parquet, or .json")
 
     if not rows:
         raise ValueError(f"File {file_path} contained 0 rows.")
@@ -219,7 +240,7 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
     # Detect keys and normalize
     p_key, h_key, l_key = detect_columns(rows[0])
     print(f"Loaded {len(rows):,} raw rows from {file_path}")
-    print(f"  Detected mapping: Premise='{p_key}', Hypothesis='{h_key}', Label='{l_key}'")
+    print(f"  Detected mapping: Premise='{p_key}', Hypothesis='{h_key}', Label='{l_key}' (convention: {convention})")
 
     normalized_data = []
     skipped_labels = Counter()
@@ -228,7 +249,7 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
         premise = str(r.get(p_key, "")).strip()
         hypothesis = str(r.get(h_key, "")).strip()
         raw_label = r.get(l_key)
-        norm_label = parse_raw_label(raw_label)
+        norm_label = parse_raw_label(raw_label, convention=convention)
 
         if not premise or not hypothesis:
             continue
@@ -244,6 +265,16 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
         }
         if "image" in r and r["image"]:
             item["image"] = r["image"]
+        if "group_id" in r and r["group_id"] is not None:
+            item["group_id"] = str(r["group_id"])
+        if "is_gold" in r:
+            item["is_gold"] = bool(r["is_gold"])
+        if "soft_target" in r:
+            item["soft_target"] = float(r["soft_target"])
+        elif "teacher_prob" in r:
+            item["soft_target"] = float(r["teacher_prob"])
+        elif "soft_labels" in r:
+            item["soft_labels"] = r["soft_labels"]
         normalized_data.append(item)
 
     if skipped_labels:
@@ -261,10 +292,54 @@ def load_custom_file(file_path: str) -> List[Dict[str, Any]]:
 def stratified_split(
     data: List[Dict[str, Any]], val_ratio: float = 0.15, seed: int = 42
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Splits data into train and validation sets while preserving label proportions."""
+    """Splits data into train and validation sets while preserving label proportions.
+    If items contain group_id, guarantees that all items belonging to the same group_id
+    land in the SAME split, preventing train/val data leakage."""
     random.seed(seed)
-    by_label = defaultdict(list)
+
+    # Check if dataset has grouped items
+    has_groups = any(r.get("group_id") for r in data)
+    if has_groups:
+        groups = defaultdict(list)
+        singletons = []
+        for r in data:
+            gid = r.get("group_id")
+            if gid:
+                groups[gid].append(r)
+            else:
+                singletons.append(r)
+
+        all_units = list(groups.values()) + [[s] for s in singletons]
+        random.shuffle(all_units)
+
+        n_val_units = max(1, int(len(all_units) * val_ratio))
+        val_units = all_units[:n_val_units]
+        train_units = all_units[n_val_units:]
+
+        train_set = [item for unit in train_units for item in unit]
+        val_set = [item for unit in val_units for item in unit]
+
+        random.shuffle(train_set)
+        random.shuffle(val_set)
+        print(f"Group-aware split: {len(train_units):,} train groups ({len(train_set):,} items), {len(val_units):,} val groups ({len(val_set):,} items).")
+        return train_set, val_set
+
+    # Standard pair-level stratified split
+    seen = set()
+    deduped = []
+    dropped_dupes = 0
     for r in data:
+        k = (str(r.get("premise", "")).strip(), str(r.get("hypothesis", "")).strip())
+        if k in seen:
+            dropped_dupes += 1
+            continue
+        seen.add(k)
+        deduped.append(r)
+    if dropped_dupes:
+        print(f"Stratified split: dropped {dropped_dupes} duplicate rows before splitting to prevent train/val leakage.")
+
+    by_label = defaultdict(list)
+    for r in deduped:
         by_label[r["label"]].append(r)
 
     train_set, val_set = [], []
@@ -569,6 +644,7 @@ def compute_brier_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tens
 def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     model.eval()
     all_preds, all_probs, all_logits, all_golds, all_sources = [], [], [], [], []
+    all_group_ids, all_is_gold = [], []
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
@@ -577,6 +653,13 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
         sources = batch["sources"]
         pixel_values = batch["pixel_values"].to(device) if "pixel_values" in batch else None
         image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
+
+        if "group_ids" in batch and batch["group_ids"] is not None:
+            all_group_ids.append(batch["group_ids"].cpu().numpy())
+            if "is_gold" in batch and batch["is_gold"] is not None:
+                all_is_gold.append(batch["is_gold"].cpu().numpy())
+            else:
+                all_is_gold.append(np.zeros(len(labels)))
 
         amp_device = "cuda" if "cuda" in str(device) else "cpu"
         with torch.amp.autocast(amp_device, dtype=torch.bfloat16):
@@ -601,6 +684,27 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     golds = np.concatenate(all_golds, axis=0) if all_golds else np.empty((0,))
 
     acc = float(np.mean(preds == golds)) if len(golds) > 0 else 0.0
+
+    # Decision accuracy (group-level argmax over scores = z_ent - z_con)
+    decision_acc = None
+    if all_group_ids:
+        cat_gids = np.concatenate(all_group_ids, axis=0)
+        cat_is_gold = np.concatenate(all_is_gold, axis=0)
+        valid_g = cat_gids >= 0
+        if np.any(valid_g):
+            scores_eval = logits[:, ENTAILMENT] - logits[:, CONTRADICTION]
+            u_gids = np.unique(cat_gids[valid_g])
+            corr_dec = 0
+            n_dec = 0
+            for ug in u_gids:
+                u_idx = np.where(cat_gids == ug)[0]
+                if len(u_idx) > 1:
+                    pred_best = u_idx[np.argmax(scores_eval[u_idx])]
+                    if cat_is_gold[pred_best] > 0.5:
+                        corr_dec += 1
+                    n_dec += 1
+            if n_dec > 0:
+                decision_acc = round(corr_dec / n_dec, 4)
 
     # Brier score
     N = len(golds)
@@ -632,7 +736,7 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
             "support": int(np.sum(gold_c)),
         }
 
-    return {
+    res = {
         "accuracy": round(acc, 4),
         "brier": round(brier, 4),
         "ece": round(ece, 4),
@@ -641,6 +745,9 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
         "logits": logits,
         "golds": golds,
     }
+    if decision_acc is not None:
+        res["decision_accuracy"] = decision_acc
+    return res
 
 
 # -----------------------------------------------------------------------------
@@ -661,6 +768,9 @@ def finetune_custom_data(
     lora_alpha: int = 128,
     label_smoothing: float = 0.05,
     brier_weight: float = 0.0,
+    cross_option_weight: float = 1.0,
+    nli_aux_weight: float = 0.15,
+    decision_temp: float = 1.0,
     val_ratio: float = 0.15,
     qat: bool = True,
     target_quant: str = "nvfp4",
@@ -670,13 +780,14 @@ def finetune_custom_data(
     max_tokens_per_batch: int = 2048,
     image_root: str = "./data",
     image_processor: Optional[Any] = None,
+    label_convention: str = "ours",
     seed: int = 42,
     device: str = "cuda",
 ) -> Dict[str, Any]:
     """High-level Python API to fine-tune Gemma 4 Cross-Encoder on custom data.
 
     Args:
-        train_data: File path (.jsonl, .csv, .tsv, .json) or in-memory list of dicts.
+        train_data: File path (.jsonl, .csv, .tsv, .parquet, .json) or in-memory list of dicts.
         val_data: Optional separate validation file or list. If None, auto-splits train_data.
         output_dir: Directory to save best checkpoint, adapters, and eval reports.
         base_model_id: HuggingFace foundation model ID (default: google/gemma-4-E2B).
@@ -691,6 +802,7 @@ def finetune_custom_data(
         label_smoothing: Label smoothing coefficient for calibration.
         brier_weight: Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5).
         val_ratio: Validation split fraction when val_data is not provided.
+        label_convention: 'ours' (0=contradiction, 1=entailment, 2=neutral) or 'native' (0=entailment, 1=neutral, 2=contradiction).
         seed: Random seed.
         device: PyTorch device ('cuda' or 'cpu').
 
@@ -713,13 +825,13 @@ def finetune_custom_data(
 
     # 1. Ingest Data
     if isinstance(train_data, str):
-        raw_records = load_custom_file(train_data)
+        raw_records = load_custom_file(train_data, convention=label_convention)
     else:
         raw_records = train_data
 
     if val_data is not None:
         if isinstance(val_data, str):
-            val_records = load_custom_file(val_data)
+            val_records = load_custom_file(val_data, convention=label_convention)
         else:
             val_records = val_data
         train_records = raw_records
@@ -823,20 +935,40 @@ def finetune_custom_data(
             image_processor = Gemma4ImageProcessorPil()
         except Exception:
             image_processor = None
-    collator = CustomNLICollator(
-        tokenizer,
-        max_length=max_length,
-        image_processor=image_processor,
-        image_root=image_root,
-        is_gemma=is_gemma,
-    )
+
+    has_groups = any(r.get("group_id") is not None for r in train_records)
+    has_val_groups = any(r.get("group_id") is not None for r in val_records)
+
+    if has_groups or has_val_groups:
+        collator = GroupedDecisionCollator(
+            tokenizer,
+            max_length=max_length,
+            image_processor=image_processor,
+            image_root=image_root,
+        )
+    else:
+        collator = CustomNLICollator(
+            tokenizer,
+            max_length=max_length,
+            image_processor=image_processor,
+            image_root=image_root,
+            is_gemma=is_gemma,
+        )
+
     use_pin = (device != "cpu" and torch.cuda.is_available())
     if use_token_bucketing:
-        print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={max_tokens_per_batch})...")
         train_lengths = [max(16, min(max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_records]
-        train_sampler = TokenBucketBatchSampler(
-            train_lengths, max_tokens_per_batch=max_tokens_per_batch, shuffle=True, seed=seed
-        )
+        if has_groups:
+            print(f"Using Grouped Token-Bucket Batching (P1 cross-option, max_tokens_per_batch={max_tokens_per_batch})...")
+            train_gids = [r.get("group_id") for r in train_records]
+            train_sampler = GroupedTokenBucketBatchSampler(
+                train_lengths, group_ids=train_gids, max_tokens_per_batch=max_tokens_per_batch, shuffle=True, seed=seed
+            )
+        else:
+            print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={max_tokens_per_batch})...")
+            train_sampler = TokenBucketBatchSampler(
+                train_lengths, max_tokens_per_batch=max_tokens_per_batch, shuffle=True, seed=seed
+            )
         train_loader = DataLoader(
             CustomNLIDataset(train_records),
             batch_sampler=train_sampler,
@@ -881,6 +1013,7 @@ def finetune_custom_data(
             train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
+        epoch_xopt_loss = 0.0
         epoch_brier_loss = 0.0
         t0 = time.time()
         optimizer.zero_grad()
@@ -901,18 +1034,44 @@ def finetune_custom_data(
                     image_position_ids=image_position_ids,
                 )
                 ce_loss = loss_fn(outputs.logits, labels)
+
+                # Cross-option loss (P1)
+                xopt_loss = None
+                xopt_meta = {"xopt_loss": 0.0, "xopt_accuracy": 0.0, "n_groups": 0}
+                if "group_ids" in batch and cross_option_weight > 0.0:
+                    group_ids = batch["group_ids"].to(device)
+                    is_gold = batch["is_gold"].to(device)
+                    soft_targets = batch.get("soft_targets")
+                    if soft_targets is not None:
+                        soft_targets = soft_targets.to(device)
+                    # Candidate score: z_ent - z_con (neutral-invariant logit-odds)
+                    scores = outputs.logits[:, ENTAILMENT] - outputs.logits[:, CONTRADICTION]
+                    xopt_loss, xopt_meta = compute_cross_option_loss(
+                        scores=scores,
+                        group_ids=group_ids,
+                        is_gold=is_gold,
+                        soft_targets=soft_targets,
+                        temperature=decision_temp,
+                    )
+
+                if xopt_loss is not None and xopt_meta.get("n_groups", 0) > 0:
+                    total_loss = cross_option_weight * xopt_loss + nli_aux_weight * ce_loss
+                else:
+                    total_loss = ce_loss
+
                 if brier_weight > 0.0:
                     probs = torch.softmax(outputs.logits, dim=-1)
                     one_hot = torch.zeros_like(probs).scatter_(1, labels.unsqueeze(1), 1.0)
                     brier_loss = torch.mean(torch.sum((probs - one_hot) ** 2, dim=-1))
-                    total_loss = ce_loss + brier_weight * brier_loss
+                    total_loss = total_loss + brier_weight * brier_loss
                 else:
                     brier_loss = None
-                    total_loss = ce_loss
                 loss = total_loss / grad_accum
 
             loss.backward()
             epoch_loss += loss.item() * grad_accum
+            if xopt_loss is not None:
+                epoch_xopt_loss += xopt_loss.item()
             if brier_loss is not None:
                 epoch_brier_loss += brier_loss.item()
 
@@ -927,10 +1086,14 @@ def finetune_custom_data(
                     curr_lr = scheduler.get_last_lr()[0]
                     avg_loss = epoch_loss / (step + 1)
                     speed = (step + 1) * batch_size / (time.time() - t0)
-                    brier_msg = f" | Brier: {epoch_brier_loss / (step + 1):.4f}" if brier_weight > 0.0 else ""
+                    extra_msg = ""
+                    if has_groups and cross_option_weight > 0.0:
+                        extra_msg += f" | XOpt: {epoch_xopt_loss / (step + 1):.4f}"
+                    if brier_weight > 0.0:
+                        extra_msg += f" | Brier: {epoch_brier_loss / (step + 1):.4f}"
                     print(
                         f"Epoch {epoch+1}/{epochs} | Step {global_step}/{total_steps} | "
-                        f"Loss: {avg_loss:.4f}{brier_msg} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
+                        f"Loss: {avg_loss:.4f}{extra_msg} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
                         flush=True,
                     )
 
@@ -938,17 +1101,21 @@ def finetune_custom_data(
         print(f"\n--- Validation (Epoch {epoch+1}/{epochs}) ---", flush=True)
         val_metrics = evaluate_dataset(model, val_loader, device)
         acc = val_metrics["accuracy"]
-        print(f"Accuracy: {acc*100:.2f}% | Brier Score: {val_metrics['brier']:.4f}")
+        dec_acc = val_metrics.get("decision_accuracy")
+        dec_msg = f" | Decision Acc: {dec_acc*100:.2f}%" if dec_acc is not None else ""
+        print(f"Accuracy: {acc*100:.2f}%{dec_msg} | Brier Score: {val_metrics['brier']:.4f}")
         for cls_name, m in val_metrics["per_class"].items():
             print(f"  [{cls_name:13s}] Prec: {m['precision']:.3f} | Rec: {m['recall']:.3f} | F1: {m['f1']:.3f} (n={m['support']})")
 
-        # Save best checkpoint
-        if acc > best_val_acc:
-            best_val_acc = acc
+        # Save best checkpoint: prioritize decision_accuracy if available, else standard accuracy
+        primary_metric = dec_acc if dec_acc is not None else acc
+        if primary_metric > best_val_acc:
+            best_val_acc = primary_metric
             best_metrics = val_metrics
             best_dir = os.path.join(output_dir, "best")
             os.makedirs(best_dir, exist_ok=True)
-            print(f"-> New best accuracy ({best_val_acc*100:.2f}%)! Saving checkpoint to {best_dir}...")
+            metric_name = "decision accuracy" if dec_acc is not None else "accuracy"
+            print(f"-> New best {metric_name} ({best_val_acc*100:.2f}%)! Saving checkpoint to {best_dir}...")
             model.save_pretrained(best_dir)
             # Explicitly save classification head and norm weights (unwrapping any PEFT wrappers)
             raw_model = model.base_model.model if hasattr(model, "base_model") else model
@@ -1037,7 +1204,31 @@ def main():
         default=0.0,
         help="Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5 based on von-1.0 and research report 08)",
     )
+    parser.add_argument(
+        "--label-convention",
+        default="ours",
+        choices=["ours", "native"],
+        help="Label convention for integer labels: 'ours' (0=contradiction, 1=entailment, 2=neutral) or 'native' (0=entailment, 1=neutral, 2=contradiction)",
+    )
     parser.add_argument("--image-root", default="./data", help="Root directory for multimodal images")
+    parser.add_argument(
+        "--cross-option-weight",
+        type=float,
+        default=1.0,
+        help="Weight for P1 cross-option softmax loss across competing candidate options (default: 1.0)",
+    )
+    parser.add_argument(
+        "--nli-aux-weight",
+        type=float,
+        default=0.15,
+        help="Weight for auxiliary pointwise 3-class NLI anchor loss (default: 0.15)",
+    )
+    parser.add_argument(
+        "--decision-temp",
+        type=float,
+        default=1.0,
+        help="Temperature for cross-option softmax competition (default: 1.0)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1055,7 +1246,11 @@ def main():
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         brier_weight=args.brier_weight,
+        cross_option_weight=args.cross_option_weight,
+        nli_aux_weight=args.nli_aux_weight,
+        decision_temp=args.decision_temp,
         val_ratio=args.val_ratio,
+        label_convention=args.label_convention,
         qat=args.qat,
         target_quant=args.target_quant,
         qat_bits=args.qat_bits,

@@ -244,15 +244,22 @@ def test_counterfactual_inverter_reverses_entailment_to_contradiction():
 
 
 def test_none_augment_abstention_samples():
-    """none_augment generates calibrated neutral control and abstention entailment."""
-    from generate_sdk_synthetic_data import generate_abstention_samples, ENTAILMENT, NEUTRAL
-    samples = generate_abstention_samples(n_target=50, seed=42)
-    assert len(samples) == 50
+    """none_augment generates calibrated abstention pairs with zero contradictory collisions."""
+    from generate_sdk_synthetic_data import generate_abstention_samples, ENTAILMENT, NEUTRAL, CONTRADICTION
+    samples = generate_abstention_samples(n_target=200, seed=42)
+    assert len(samples) == 200
     labels = {s["label"] for s in samples}
     assert ENTAILMENT in labels
     assert NEUTRAL in labels
-    types = {s["metadata"]["abstention_type"] for s in samples}
-    assert "control_gold" in types or "control_abstain" in types
+    assert CONTRADICTION in labels
+
+    # CRITICAL C1 assertion: verify no identical (premise, hypothesis) exists with different labels!
+    seen = {}
+    for s in samples:
+        k = (s["premise"], s["hypothesis"])
+        if k in seen:
+            assert seen[k] == s["label"], f"Conflicting labels for identical pair: {k} -> {seen[k]} vs {s['label']}"
+        seen[k] = s["label"]
 
 
 def test_position_bias_template_diversification():
@@ -415,7 +422,12 @@ def test_multimodal_collator_and_forward():
     assert batch["input_ids"].shape[0] == 2
     assert batch["attention_mask"].shape[0] == 2
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Check for sufficient free VRAM (>6GB); otherwise run hermetically on CPU
+    try:
+        free_vram = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 0
+    except Exception:
+        free_vram = 0
+    device = "cuda" if free_vram > 6 * 1024**3 else "cpu"
     cfg = AutoConfig.from_pretrained("google/gemma-4-E2B")
     cfg.num_labels = 3
     model = Gemma4ForSequenceClassification.from_pretrained(

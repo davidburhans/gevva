@@ -1,0 +1,17 @@
+{
+  "gate": "synthetic_data_inclusion",
+  "decision_rule": "acc_B > acc_A AND McNemar p < 0.05 AND ece_B <= ece_A + 0.01 AND pbi_B <= pbi_A + 0.02",
+  "passed": false,
+  "n_paired": 3113,
+  "acc_armA_clean": 0.8718,
+  "acc_armB_synthetic": 0.8644,
+  "ece_armA": 0.0679,
+  "ece_armB": 0.0751,
+  "pbi_armA": 0.0387,
+  "pbi_armB": 0.0357,
+  "pbi_passed": true,
+  "discordant_aRight_bWrong": 131,
+  "discordant_aWrong_bRight": 108,
+  "mcnemar_p": 0.154718,
+  "alpha": 0.05
+}

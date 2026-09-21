@@ -177,26 +177,26 @@ class DataCollatorNLI:
 
         labels = [r["label"] for r in batch]
         sources = [r["source"] for r in batch]
-        ids = [r.get("id", f"row_{i}") for i, r in enumerate(batch)]
+        sample_ids = [r.get("id", f"row_{i}") for i, r in enumerate(batch)]
 
-        max_len = max(len(ids) for ids in batch_input_ids)
+        max_len = max(len(tok_ids) for tok_ids in batch_input_ids)
         if self.pad_to_multiple_of > 0 and max_len % self.pad_to_multiple_of != 0:
             max_len = ((max_len // self.pad_to_multiple_of) + 1) * self.pad_to_multiple_of
 
         pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
         padded_ids = []
         attn_masks = []
-        for ids in batch_input_ids:
-            pad_len = max_len - len(ids)
-            padded_ids.append(ids + [pad_id] * pad_len)
-            attn_masks.append([1] * len(ids) + [0] * pad_len)
+        for tok_ids in batch_input_ids:
+            pad_len = max_len - len(tok_ids)
+            padded_ids.append(tok_ids + [pad_id] * pad_len)
+            attn_masks.append([1] * len(tok_ids) + [0] * pad_len)
 
         res = {
             "input_ids": torch.tensor(padded_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attn_masks, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
             "sources": sources,
-            "ids": ids,
+            "ids": sample_ids,
         }
         if pixel_values_list:
             res["pixel_values"] = torch.stack(pixel_values_list)
@@ -294,9 +294,10 @@ def train_cross_encoder(args):
         model.print_trainable_parameters()
 
     target_quant = getattr(args, "target_quant", "none")
-    if getattr(args, "qat", False) or (target_quant and target_quant != "none"):
+    use_qat = getattr(args, "qat", False) or (target_quant and target_quant != "none")
+    if use_qat:
         from gemma4_cross_encoder import apply_quantization_aware_training
-        fmt = target_quant if target_quant != "none" else "w4a16"
+        fmt = target_quant if (target_quant and target_quant != "none") else "nvfp4"
         print(f"Applying Quantization-Aware Training (QAT): Format='{fmt}' (group_size={args.qat_group_size})...")
         model = apply_quantization_aware_training(
             model,
@@ -306,16 +307,29 @@ def train_cross_encoder(args):
         )
 
     # Enable gradient checkpointing to safely fit in RTX 5090 VRAM
-    if hasattr(model, "gradient_checkpointing_enable"):
+    raw_lm = None
+    if hasattr(model, "base_model") and hasattr(model.base_model, "model"):
+        inner = model.base_model.model
+        raw_lm = getattr(inner, "model", inner)
+        if hasattr(raw_lm, "language_model"):
+            raw_lm = raw_lm.language_model
+    elif hasattr(model, "model") and hasattr(model.model, "language_model"):
+        raw_lm = model.model.language_model
+    elif hasattr(model, "language_model"):
+        raw_lm = model.language_model
+
+    if raw_lm is not None and hasattr(raw_lm, "gradient_checkpointing_enable"):
+        raw_lm.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        print("Enabled gradient checkpointing on language model backbone.")
+    elif hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         print("Enabled gradient checkpointing on model.")
     else:
-        raw_lm = getattr(model, "base_model", model)
-        if hasattr(raw_lm, "gradient_checkpointing_enable"):
-            raw_lm.gradient_checkpointing_enable()
-            print("Enabled gradient checkpointing on raw backbone.")
+        print("Warning: Could not enable gradient checkpointing on backbone.")
 
     model.to(device)
 
@@ -323,7 +337,7 @@ def train_cross_encoder(args):
     # WHY: --train-file lets the A/B shakedown arms swap training mixes without
     # duplicating loaders; val stays the selection split, test the report-only split.
     train_path = args.train_file or os.path.join(args.data_dir, "train.jsonl")
-    val_path = os.path.join(args.data_dir, "val.jsonl")
+    val_path = args.val_file or os.path.join(args.data_dir, "val.jsonl")
 
     train_ds = NLIDataset(train_path, max_samples=args.max_train_samples)
     val_ds = NLIDataset(val_path, max_samples=args.max_val_samples)
@@ -593,6 +607,19 @@ def _reload_best_for_eval(args, tokenizer, save_dir):
             _load_into_module(raw.score, hw["score"])
         if "norm" in hw and hasattr(raw, "norm"):
             _load_into_module(raw.norm, hw["norm"])
+
+    target_quant = getattr(args, "target_quant", "none")
+    use_qat = getattr(args, "qat", False) or (target_quant and target_quant != "none")
+    if use_qat:
+        from gemma4_cross_encoder import apply_quantization_aware_training
+        fmt = target_quant if (target_quant and target_quant != "none") else "nvfp4"
+        print(f"Re-applying QAT parametrization to reloaded model for evaluation parity: Format='{fmt}'...")
+        model = apply_quantization_aware_training(
+            model,
+            quant_format=fmt,
+            num_bits=args.qat_bits,
+            group_size=args.qat_group_size,
+        )
     return model
 
 
@@ -646,7 +673,9 @@ def evaluate(model, dataloader, device, return_items: bool = False) -> Dict[str,
         "brier": calib["brier"],
         "by_source": by_source_acc,
         "n_samples": len(golds),
-        "label_dist": dict(Counter(preds.tolist())),
+        "pred_label_dist": dict(Counter(preds.tolist())),
+        "gold_label_dist": dict(Counter(golds.tolist())),
+        "label_dist": dict(Counter(preds.tolist())),  # backward compatibility alias
         "logits": logits,
         "golds": golds,
         **({"items": [
@@ -662,6 +691,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="google/gemma-4-E2B", help="Base Gemma 4 model path")
     parser.add_argument("--data-dir", default="./data", help="Path to compiled dataset directory")
     parser.add_argument("--train-file", default=None, help="Override train.jsonl path (A/B arm datasets)")
+    parser.add_argument("--val-file", default=None, help="Override val.jsonl path")
     parser.add_argument("--test-file", default=None, help="Report-only test jsonl; evaluated once on the reloaded best checkpoint")
     parser.add_argument("--out-dir", default="./ckpt/gemma-4-e2b-nli", help="Output directory")
     parser.add_argument("--epochs", type=int, default=3)
@@ -672,18 +702,18 @@ if __name__ == "__main__":
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--label-smoothing", type=float, default=0.05)
-    parser.add_argument("--lora", action="store_true", default=True, help="Use LoRA fine-tuning")
+    parser.add_argument("--lora", default=True, action=argparse.BooleanOptionalAction, help="Use LoRA fine-tuning (or --no-lora)")
     parser.add_argument("--lora-r", type=int, default=64, help="LoRA rank (default: 64)")
     parser.add_argument("--lora-alpha", type=int, default=128, help="LoRA alpha scaling (default: 128)")
-    parser.add_argument("--lora-all-projections", action="store_true", default=True, help="Target all 7 linear projections")
+    parser.add_argument("--lora-all-projections", default=True, action=argparse.BooleanOptionalAction, help="Target all 7 linear projections (or --no-lora-all-projections)")
     parser.add_argument("--token-bucketing", action="store_true", help="Enable deterministic token-bucket batching (decider style)")
     parser.add_argument("--max-tokens-per-batch", type=int, default=2048, help="Token budget per batch when using token bucketing")
-    parser.add_argument("--qat", action="store_true", default=False, help="Enable Quantization-Aware Training (QAT)")
+    parser.add_argument("--qat", default=False, action=argparse.BooleanOptionalAction, help="Enable Quantization-Aware Training (QAT)")
     parser.add_argument(
         "--target-quant",
-        default="nvfp4",
+        default="none",
         choices=["nvfp4", "w4a16", "q4_k_m", "none"],
-        help="Target quantization format for QAT (default: nvfp4 for native Blackwell FP4; w4a16 for compressed-tensors; q4_k_m for GGUF)",
+        help="Target quantization format for QAT (default: none for pure unquantized baseline; pass nvfp4, w4a16, or q4_k_m to activate QAT)",
     )
     parser.add_argument("--qat-bits", type=int, default=4, help="QAT weight bit-width (default: 4)")
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")

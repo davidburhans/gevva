@@ -1,0 +1,144 @@
+{
+  "history": [
+    {
+      "stage": "ensure-committee",
+      "state": "running",
+      "detail": "",
+      "at": "14:24:10"
+    },
+    {
+      "stage": "ensure-committee",
+      "state": "done",
+      "detail": "pid=131537",
+      "at": "14:24:55"
+    },
+    {
+      "stage": "wait-judge1",
+      "state": "running",
+      "detail": "",
+      "at": "14:24:55"
+    },
+    {
+      "stage": "ensure-committee",
+      "state": "running",
+      "detail": "",
+      "at": "14:28:22"
+    },
+    {
+      "stage": "ensure-committee",
+      "state": "done",
+      "detail": "pid=140106",
+      "at": "14:29:07"
+    },
+    {
+      "stage": "wait-judge1",
+      "state": "running",
+      "detail": "",
+      "at": "14:29:07"
+    },
+    {
+      "stage": "pause",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:07"
+    },
+    {
+      "stage": "pause",
+      "state": "done",
+      "detail": "purged 1 non-ok rows; GPU drained",
+      "at": "14:57:24"
+    },
+    {
+      "stage": "compile",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:24"
+    },
+    {
+      "stage": "compile",
+      "state": "done",
+      "detail": "",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "train-armA",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "train-armA",
+      "state": "done",
+      "detail": "reused existing clean baseline",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "export",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "export",
+      "state": "done",
+      "detail": "{\"validated_rows\": 7554, \"excluded_rows\": 961, \"train_rows\": 6799, \"val_holdback_rows\": 755, \"judge_model\": \"qwen-3.6-27b-q4\", \"run_id\": \"run_20260919_223701\", \"single_judge\": true}",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "arms",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:43"
+    },
+    {
+      "stage": "arms",
+      "state": "done",
+      "detail": "{\"seed\": 42, \"synthetic_frac_cap\": 0.125, \"synthetic_available\": 6799, \"armA_rows\": 39494, \"armB_rows\": 39698, \"armB_synthetic_rows\": 204, \"armB_synthetic_frac_actual\": 0.0051}",
+      "at": "14:57:44"
+    },
+    {
+      "stage": "train-armB",
+      "state": "running",
+      "detail": "",
+      "at": "14:57:44"
+    },
+    {
+      "stage": "train-armB",
+      "state": "done",
+      "detail": "",
+      "at": "16:15:20"
+    },
+    {
+      "stage": "gate",
+      "state": "running",
+      "detail": "",
+      "at": "16:15:20"
+    },
+    {
+      "stage": "gate",
+      "state": "done",
+      "detail": "passed=False (single-judge pilot gate; flagship mixing requires the multi-judge gate)",
+      "at": "16:15:20"
+    },
+    {
+      "stage": "resume-committee",
+      "state": "running",
+      "detail": "",
+      "at": "16:15:20"
+    },
+    {
+      "stage": "resume-committee",
+      "state": "done",
+      "detail": "committee pid=295160; watchdog pid=295161",
+      "at": "16:15:20"
+    },
+    {
+      "stage": "chain",
+      "state": "completed",
+      "detail": "",
+      "at": "16:15:20"
+    }
+  ],
+  "current_stage": "chain",
+  "state": "completed"
+}

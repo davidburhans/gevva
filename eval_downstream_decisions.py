@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -86,7 +86,19 @@ def load_fine_tuned_cross_encoder(
     peft_model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-    return Gemma4CrossEncoder(model=peft_model, tokenizer=tokenizer, device=device)
+    ce = Gemma4CrossEncoder(model=peft_model, tokenizer=tokenizer, device=device)
+
+    calib_path = os.path.join(adapter_path, "calibration.json")
+    if os.path.exists(calib_path):
+        try:
+            with open(calib_path, "r", encoding="utf-8") as f:
+                calib = json.load(f)
+                temp = float(calib.get("temperature", 1.0))
+                ce.temperature = temp
+                print(f"Applied fitted post-hoc calibration temperature T* = {temp:.4f} from {calib_path}")
+        except Exception as e:
+            print(f"Warning: Could not load calibration temperature: {e}")
+    return ce
 
 
 def compute_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 10) -> float:

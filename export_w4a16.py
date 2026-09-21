@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """export_w4a16.py
 ==================
-Production W4A16 (4-bit Weights, 16-bit Activations) Model Exporter for Gemma 4 Cross-Encoder.
+Standalone W4A16 (INT4 Group-32 Weights) Checkpoint Exporter for Gemma 4 Cross-Encoder.
 
-Takes a base Gemma 4 model and fine-tuned QAT LoRA adapter, merges them,
-and packs target linear layers into standard INT4 (Group-32 symmetric) format
-compatible with `compressed-tensors`, vLLM, TensorRT-LLM, and ExLlamaV2/Marlin runtimes.
+Takes a base Gemma 4 model and fine-tuned LoRA adapter, merges them,
+and packs target linear layers into an INT4 (Group-32 symmetric) compressed weight format.
 
-Hardened Architectural Principles:
+Format Specification:
 1. Merges LoRA adapters directly into base weights before discretization.
-2. In-Features 2D Group Partitioning (dim=1) strictly with group_size=32.
-3. Standard Offset-Binary [0, 15] INT4 Packing: 8 signed 4-bit integers with +8 bias packed into 1 INT32 word ((w_u4 << (4*k))) for vLLM, Marlin, and compressed-tensors compatibility.
-4. Preserves 16-bit fidelity on MQA projections (k_proj, v_proj for single-KV-head models).
-5. Preserves 16-bit fidelity on SigLIP vision tower and classification head (norm, score).
-6. Outputs standard `quantization_config.json` adhering to compressed-tensors specification.
+2. In-Features 2D Group Partitioning (dim=1) with group_size=32.
+3. Offset-Binary [0, 15] INT4 Packing: 8 signed 4-bit integers with +8 bias packed into 1 INT32 word.
+4. Preserves 16-bit fidelity on MQA projections (k_proj, v_proj), SigLIP vision tower, and classification head.
+5. Reduces checkpoint disk footprint by ~72% (from ~18 GB to ~5.1 GB).
+6. Note: Dequantizes to BF16 in VRAM at inference time via this repository's native loader;
+   it is an optimized weight-storage format, not an external runtime kernel (vLLM/TensorRT).
 """
 
 from __future__ import annotations
@@ -276,6 +276,13 @@ def export_model_w4a16(
     config.label2id = LABEL2ID
     config.quantization_config = quant_config
     config.save_pretrained(output_dir)
+
+    # Copy calibration and evaluation metadata if present
+    for meta_file in ["calibration.json", "eval_metrics.json", "train_config.json"]:
+        src_meta = os.path.join(adapter_path, meta_file)
+        if os.path.exists(src_meta):
+            shutil.copy2(src_meta, os.path.join(output_dir, meta_file))
+            print(f"  Copied {meta_file} from adapter to {output_dir}.")
 
     # 6. Verification & Dequantization Self-Test
     if verify:

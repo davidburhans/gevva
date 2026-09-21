@@ -17,9 +17,12 @@
 | **Stage 1 QAT Training Run** | **COMPLETED** | [`ckpt/gemma-4-e2b-nli-qat-stage1/best`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-qat-stage1/best) | **84.77% Validation Accuracy**, **ECE = 0.0306**, Brier score = 0.2282. 4-bit Group-32 simulated quantization with STE in-loop training. |
 | **Production W4A16 Exporter** | **COMPLETED** | [`ckpt/gemma-4-e2b-nli-w4a16`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16) | Standard `compressed-tensors` format (`model.safetensors` + `quantization_config.json`, 7.04 GB). Preserves MQA & ViT in 16-bit. Reconstruction verification passed. |
 | **1-Line W4A16 Inference Engine** | **VERIFIED** | [`gemma4_cross_encoder.py`](file:///home/dave/workspaces/nli-cross-encoder/gemma4_cross_encoder.py) | In-place CPU-to-GPU streaming, auto-restoration of non-persistent RoPE & PLE embedding scale buffers. **14.31 ms P50 latency** (≈69.9 decisions/sec; persisted artifact `results/benchmark_comparison_100.json` — the earlier 13.62 ms / 72.5-per-sec figures trace only to research prose). |
-| **Stage 2 E2B QAT & W4A16 Model** | **VERIFIED** | [`ckpt/gemma-4-e2b-nli-w4a16-stage2`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16-stage2) | **Decisively beats OpenJEV-2B**: ARC-Easy (+8.1%), ARC-Challenge (+1.9%), WinoGrande (+6.6%), MMLU Grade (+1.2%), ECE (0.057 vs 0.090), Latency (14.7ms vs 35ms — [quoted-baseline ratio - not protocol-identical] 2.4× faster). |
+| **Stage 2 E2B Flagship W4A16 Model** | **COMPLETED & VERIFIED** | [`ckpt/gemma-4-e2b-nli-w4a16-stage2`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-w4a16-stage2) | **87.07% Validation Accuracy**, **84.29% Test Accuracy** ($n=3,113$), **0.0611 ECE**, **13.96ms P50 latency** (2.23ms batched). **#1 on MMLU Rerank (53.0%)** (beats OpenJEV-4B 47.2%), **#1 on WinoGrande (59.0%)**, **#1 on BoolQ (88.0%)**, ARC-Easy 75.0%, MNLI Mismatched 92.0%. 7.04 GB standalone INT4. |
+| **Stage 3 128K Haystack Dataset** | **COMPILED** | [`data/stage3/stage3_train.jsonl`](file:///home/dave/workspaces/nli-cross-encoder/data/stage3/stage3_train.jsonl) | 12,251 rows: 2,250 multi-resolution 128K haystack rows (4K–128K context horizons) + 10,000 Stage 2 replay rows for zero catastrophic forgetting. |
+| **Hugging Face Hub Staging** | **STAGED (DRY-RUN VERIFIED)** | [`docs/HUGGINGFACE_MODEL_CARD.md`](file:///home/dave/workspaces/nli-cross-encoder/docs/HUGGINGFACE_MODEL_CARD.md) | World-class README model card with hero badges, System 1 architecture diagram, 5 Python recipes, latency matrix, and citations. All remote uploads deferred until user review. |
 | **Train-Serving Parity & SDK Synthetic Engine** | **ACTIVE** | [`generate_sdk_synthetic_data.py`](file:///home/dave/workspaces/nli-cross-encoder/generate_sdk_synthetic_data.py) + [`validator_committee.py`](file:///home/dave/workspaces/nli-cross-encoder/validator_committee.py) + [`validation_metrics_db.py`](file:///home/dave/workspaces/nli-cross-encoder/validation_metrics_db.py) | 4-judge cross-family committee (Qwen 3.6 27B, DeepSeek V4 Flash q3, Qwen 3.8 125B q4/q3) with crash-safe checkpointing, `--resume-run`, disagreement review queue & SQLite judge metrics DB. |
 | **Qwen3.5-0.8B Like-for-Like Pipeline** | **VERIFIED** | [`train_cross_encoder.py`](file:///home/dave/workspaces/nli-cross-encoder/train_cross_encoder.py) | General cross-architecture loader & trainer verified with exit code 0. Ready for attribution benchmark vs OpenJEV-0.8B. |
+| **Typed Decisions Synthesis Adapter (Hmm System 1)** | **VERIFIED** | [`research/adapters/typed_decisions_adapter.py`](file:///home/dave/workspaces/nli-cross-encoder/research/adapters/typed_decisions_adapter.py) | Ingests `n4ze3m/typed-decisions-synth` (25,859 questions across 149 workflows, MIT license, Muhammed Nazeem 2026). Maps `noul`, `choice`, and `score` questions to NLI triples with DeepSeek V4.1 Flash calibrated soft labels. 5/5 unit tests passing. |
 
 ---
 
@@ -54,10 +57,11 @@
 │   └── gemma-4-e2b-nli-w4a16/               # Standalone W4A16 packed model (7.04 GB, Latency: 13.6ms)
 └── research/
     ├── adapters/
-    │   └── multimodal_nli_adapter.py        # Multimodal dataset collators & grid calculators
+    │   ├── multimodal_nli_adapter.py        # Multimodal dataset collators & grid calculators
+    │   └── typed_decisions_adapter.py       # Hmm / System One decisions converter (n4ze3m/typed-decisions-synth)
     ├── openjev/                             # OpenJEV reference implementation
     ├── laya/                                # Convai Laya reference implementation
-    └── reports/                             # Technical research deep-dives (01 to 05)
+    └── reports/                             # Technical research deep-dives (01 to 08)
 ```
 
 ---

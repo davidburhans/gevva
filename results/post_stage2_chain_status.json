@@ -1,0 +1,78 @@
+{
+  "stage2_wait": {
+    "state": "done",
+    "updated_at": "2026-09-21 00:20:26",
+    "details": {
+      "accuracy": 0.8429168005139737,
+      "ece": 0.061055651430604235,
+      "brier": 0.23877522349357605,
+      "by_source": {
+        "fever_dev": 0.7647,
+        "haystack_corrupted_con": 0.8333,
+        "haystack_drop_neutral": 1.0,
+        "haystack_embedded": 0.7333,
+        "mnli_train": 0.8622,
+        "mnli_validation_matched": 0.8388,
+        "multimodal_synth": 0.65,
+        "qnli_validation": 0.9112,
+        "scitail_validation": 0.9415,
+        "snli_train": 0.8494,
+        "snli_validation": 0.8889,
+        "xnli_ar": 0.9091,
+        "xnli_de": 0.8182,
+        "xnli_es": 0.8704,
+        "xnli_fr": 0.871,
+        "xnli_hi": 0.8333,
+        "xnli_ru": 0.76,
+        "xnli_sw": 0.9259,
+        "xnli_vi": 0.7778,
+        "xnli_zh": 0.8649
+      },
+      "n_samples": 3113,
+      "pred_label_dist": {
+        "0": 865,
+        "1": 1027,
+        "2": 1221
+      },
+      "gold_label_dist": {
+        "0": 884,
+        "2": 1168,
+        "1": 1061
+      },
+      "label_dist": {
+        "0": 865,
+        "1": 1027,
+        "2": 1221
+      },
+      "test_sha": "b34d2685f1d469db"
+    }
+  },
+  "w4a16_export": {
+    "state": "done",
+    "updated_at": "2026-09-21 00:21:55",
+    "details": "Export & Verification 100% passed"
+  },
+  "downstream_benchmarks": {
+    "state": "failed",
+    "updated_at": "2026-09-21 00:22:00",
+    "details": "rc=2"
+  },
+  "stage3_compilation": {
+    "state": "done",
+    "updated_at": "2026-09-21 00:22:03",
+    "details": {
+      "train_rows": 12251,
+      "val_rows": 1251
+    }
+  },
+  "stage3_training": {
+    "state": "failed",
+    "updated_at": "2026-09-21 05:06:15",
+    "details": "Stage 3 failed with code 1"
+  },
+  "hf_staging": {
+    "state": "done",
+    "updated_at": "2026-09-21 05:06:17",
+    "details": "Model card & dataset card staged successfully"
+  }
+}
