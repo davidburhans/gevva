@@ -289,6 +289,9 @@ def launch_stage3_training(train_file: str) -> bool:
         "--lr", "5e-5",
         "--grad-accum", "8",
         "--log-interval", "20",
+        # Interrupt insurance (2026-09-21): step-level durability + exact resume.
+        "--checkpoint-interval", "100",
+        "--resume-auto",
     ]
     log(f"Stage 3 Command: {' '.join(cmd)}")
     # 2 epochs measured ~4.7h/epoch on the RTX 5090; 17h covers both plus test eval.

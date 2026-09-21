@@ -306,6 +306,12 @@ wait for committee → stage sdk files → clean recompile (train/val/**test**) 
 
 **Verification**: GPU smoke run (100 train / 300 val rows incl. 16K haystack rows) — training (peak 23.8 GiB), bucketed epoch-end validation (no OOM, steady memory), reload+test path re-verified after fix 3. Full stage-3 relaunch: `uv run python scripts/run_post_stage2_chain.py --resume`.
 
+**Follow-up hardening (same day, landed while stage-3 rerun trains — on-disk edits don't affect the in-memory process)**: mid-epoch resume checkpointing closes the 4.7h-granularity durability gap.
+- `--checkpoint-interval N` (optimizer steps, default 100; chain stage-3 cmd passes 100): atomically rotates `<out>/resume/` (adapter + head + optimizer + scheduler + torch/python/cuda RNG + `meta.json` stamped `complete:true` LAST, tmp+rename rotation; a crashed save is never trusted).
+- `--resume-auto`: restores epoch/step-exact state when the fingerprint (args + train/val file hashes) matches; mismatch or incompleteness → clean fresh start with a printed reason. Exact mid-epoch tail replay via `SkipPrefixBatchSampler` (bucketed) / `_TailLoader` (shuffled).
+- Resume state retired only after training AND one-shot test eval fully succeed → a test-eval crash reruns no training (epoch==epochs ⇒ loop no-ops into test).
+- Tests: `tests/test_resume_checkpointing.py` (8/8, CPU-only, duck-typed models). `tests/test_sdk_parity.py` shows 19/20 **while stage-3 training holds the GPU** (multimodal forward needs 4.4 GiB) — environmental contention, verified 20/20 on idle GPU.
+
 ---
 
 ## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)

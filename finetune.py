@@ -543,6 +543,37 @@ class TokenBucketBatchSampler(Sampler[List[int]]):
         self.epoch = epoch
 
 
+class SkipPrefixBatchSampler(Sampler[List[int]]):
+    """Wraps a deterministic batch sampler and yields only batches after the first `skip`.
+
+    Used for exact mid-epoch training resume: the base sampler (same seed + epoch)
+    regenerates the identical batch sequence, and this wrapper replays only the
+    not-yet-trained tail without re-running the collator on completed batches.
+
+    Example:
+        >>> base = TokenBucketBatchSampler([8, 8, 512], max_tokens_per_batch=512, shuffle=True, seed=0)
+        >>> tail = SkipPrefixBatchSampler(base, skip=1)
+        >>> len(tail) == len(base) - 1
+        True
+    """
+
+    def __init__(self, base_sampler: Sampler[List[int]], skip: int):
+        if skip < 0:
+            raise ValueError(f"skip must be >= 0, got {skip}")
+        self.base_sampler = base_sampler
+        self.skip = skip
+
+    def __iter__(self):
+        iterator = iter(self.base_sampler)
+        for _ in range(self.skip):
+            next(iterator)
+        for batch in iterator:
+            yield batch
+
+    def __len__(self) -> int:
+        return max(0, len(self.base_sampler) - self.skip)
+
+
 # -----------------------------------------------------------------------------
 # Post-Hoc Validation Temperature Calibration (OpenSourceJev Style)
 # -----------------------------------------------------------------------------

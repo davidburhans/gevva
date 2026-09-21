@@ -20,14 +20,16 @@ from __future__ import annotations
 import argparse
 import gc
 import hashlib
+import itertools
 import json
 import math
 import os
 import random
+import shutil
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 # WHY: stage-3 long-context training OOM'd (2026-09-21) with 3.5 GiB reserved-but-
 # unallocated allocator fragmentation; expandable segments let short and 16K-token
@@ -60,7 +62,12 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
     tokenize_nli_pair_safe,
 )
-from finetune import TokenBucketBatchSampler, fit_temperature_scaling, compute_brier_loss
+from finetune import (
+    SkipPrefixBatchSampler,
+    TokenBucketBatchSampler,
+    compute_brier_loss,
+    fit_temperature_scaling,
+)
 
 # -----------------------------------------------------------------------------
 # Calibration Metrics
@@ -143,6 +150,195 @@ def compute_token_lengths(rows: List[Dict[str, Any]], tokenizer: Any, max_length
     n_p = [len(x) for x in tokenizer(premises, add_special_tokens=False)["input_ids"]]
     n_h = [len(x) for x in tokenizer(hypotheses, add_special_tokens=False)["input_ids"]]
     return [min(max_length, TEMPLATE_TOKEN_OVERHEAD + p + h) for p, h in zip(n_p, n_h)]
+
+
+class _TailLoader:
+    """Wraps a DataLoader, skipping the first `skip` batches (non-bucketed resume).
+
+    RNG state is restored on resume, so the base loader's shuffle reproduces the
+    original batch order; skipped batches are drained without training on them.
+    """
+
+    def __init__(self, base_loader: DataLoader, skip: int):
+        self.base_loader = base_loader
+        self.skip = skip
+
+    def __iter__(self):
+        return itertools.islice(iter(self.base_loader), self.skip, None)
+
+    def __len__(self) -> int:
+        return max(0, len(self.base_loader) - self.skip)
+
+
+def _retire_resume_state(out_dir: str) -> None:
+    """Removes resume checkpoints once training AND test eval fully completed."""
+    for name in ("resume", "resume_tmp", "resume_old"):
+        path = os.path.join(out_dir, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+            print(f"Retired resume checkpoint: {path}")
+
+
+# -----------------------------------------------------------------------------
+# Mid-Epoch Resume Checkpointing
+
+class ResumeContext(NamedTuple):
+    """Training coordinates restored from a resume checkpoint."""
+
+    epoch: int                 # next epoch to run (0-based)
+    steps_done_in_epoch: int   # completed micro-steps within that epoch
+    best_val_acc: float
+    global_step: int           # completed optimizer steps
+
+
+def _extract_head_state(model: Any) -> Dict[str, Any]:
+    """Score-head + norm state, unwrapped from PEFT modules_to_save wrappers."""
+    raw_model = model.base_model.model if hasattr(model, "base_model") else model
+
+    def clean_state(mod: Any) -> Dict[str, torch.Tensor]:
+        if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+            return mod.modules_to_save["default"].state_dict()
+        return mod.state_dict()
+
+    head_dict = {"score": clean_state(raw_model.score)}
+    if hasattr(raw_model, "norm"):
+        head_dict["norm"] = clean_state(raw_model.norm)
+    return head_dict
+
+
+def resume_fingerprint(args_dict: Dict[str, Any], train_path: str, val_path: str) -> str:
+    """Binds a resume checkpoint to the exact data files + training hyperparameters.
+
+    Any change to the data or recipe must invalidate stale resume state rather than
+    silently continuing a different run.
+    """
+    payload = json.dumps({"args": args_dict, "train": train_path, "val": val_path}, sort_keys=True)
+    digest = hashlib.sha256(payload.encode("utf-8"))
+    for path in (train_path, val_path):
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                digest.update(hashlib.sha256(f.read()).digest())
+    return digest.hexdigest()[:16]
+
+
+def save_resume_state(
+    out_dir: str,
+    model: Any,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    meta: Dict[str, Any],
+) -> str:
+    """Atomically rotate a full mid-training resume checkpoint into `<out_dir>/resume/`.
+
+    Writes to `resume_tmp/`, rotates the previous snapshot aside, and stamps
+    `meta.json` (with complete=true) LAST so a crash mid-save is never trusted.
+    """
+    tmp_dir = os.path.join(out_dir, "resume_tmp")
+    if os.path.isdir(tmp_dir):
+        shutil.rmtree(tmp_dir)
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    model.save_pretrained(tmp_dir)
+    # Plain (non-PEFT) models: save_pretrained may not write an adapter file; add a
+    # duck-typed fallback so save/load round-trips work for any torch module.
+    if not any(f.startswith("adapter_model") for f in os.listdir(tmp_dir)):
+        torch.save(model.state_dict(), os.path.join(tmp_dir, "model_state.pt"))
+    torch.save(_extract_head_state(model), os.path.join(tmp_dir, "head_weights.pt"))
+    torch.save(optimizer.state_dict(), os.path.join(tmp_dir, "optimizer.pt"))
+    torch.save(scheduler.state_dict(), os.path.join(tmp_dir, "scheduler.pt"))
+    rng = {"torch": torch.get_rng_state(), "python": random.getstate()}
+    if torch.cuda.is_available():
+        rng["cuda"] = torch.cuda.get_rng_state_all()
+    torch.save(rng, os.path.join(tmp_dir, "rng.pt"))
+
+    resume_dir = os.path.join(out_dir, "resume")
+    old_dir = os.path.join(out_dir, "resume_old")
+    if os.path.isdir(old_dir):
+        shutil.rmtree(old_dir)
+    if os.path.isdir(resume_dir):
+        os.rename(resume_dir, old_dir)
+    os.rename(tmp_dir, resume_dir)
+    if os.path.isdir(old_dir):
+        shutil.rmtree(old_dir)
+
+    stamp = dict(meta)
+    stamp["complete"] = True
+    with open(os.path.join(resume_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(stamp, f, indent=2, sort_keys=True)
+    return resume_dir
+
+
+def try_load_resume_state(
+    out_dir: str,
+    model: Any,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    fingerprint: str,
+) -> Optional[ResumeContext]:
+    """Restores a complete, fingerprint-matching resume checkpoint in place.
+
+    Returns None (and prints why) when no trusted checkpoint exists so callers
+    fall back to a fresh start.
+    """
+    resume_dir = os.path.join(out_dir, "resume")
+    meta_path = os.path.join(resume_dir, "meta.json")
+    if not os.path.exists(meta_path):
+        print(f"Resume: no checkpoint at {meta_path}; starting fresh.")
+        return None
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    if not meta.get("complete"):
+        print("Resume: checkpoint incomplete (crashed mid-save); starting fresh.")
+        return None
+    if meta.get("fingerprint") != fingerprint:
+        print(
+            f"Resume: fingerprint mismatch (checkpoint={meta.get('fingerprint')} "
+            f"current={fingerprint}); data or recipe changed, starting fresh."
+        )
+        return None
+
+    adapter_file = os.path.join(resume_dir, "adapter_model.safetensors")
+    if os.path.exists(adapter_file):
+        from peft import load_peft_weights
+
+        model.load_state_dict(load_peft_weights(resume_dir), strict=False)
+    else:
+        state = torch.load(os.path.join(resume_dir, "model_state.pt"), map_location="cpu", weights_only=True)
+        model.load_state_dict(state, strict=False)
+    head_path = os.path.join(resume_dir, "head_weights.pt")
+    if os.path.exists(head_path):
+        _restore_head_weights(model, torch.load(head_path, map_location="cpu", weights_only=True))
+    optimizer.load_state_dict(torch.load(os.path.join(resume_dir, "optimizer.pt"), map_location="cpu", weights_only=True))
+    scheduler.load_state_dict(torch.load(os.path.join(resume_dir, "scheduler.pt"), map_location="cpu", weights_only=True))
+    rng = torch.load(os.path.join(resume_dir, "rng.pt"), map_location="cpu", weights_only=False)
+    torch.set_rng_state(rng["torch"])
+    random.setstate(rng["python"])
+    if "cuda" in rng and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(rng["cuda"])
+    print(
+        f"Resume: restored epoch={meta['epoch']} steps_done_in_epoch={meta['steps_done_in_epoch']} "
+        f"global_step={meta['global_step']} best_val_acc={meta['best_val_acc']:.4f}"
+    )
+    return ResumeContext(
+        epoch=int(meta["epoch"]),
+        steps_done_in_epoch=int(meta["steps_done_in_epoch"]),
+        best_val_acc=float(meta["best_val_acc"]),
+        global_step=int(meta["global_step"]),
+    )
+
+
+def _restore_head_weights(model: Any, head_state: Dict[str, Any]) -> None:
+    """Copies saved score/norm tensors back into (possibly PEFT-wrapped) modules."""
+    raw_model = model.base_model.model if hasattr(model, "base_model") else model
+    for name in ("score", "norm"):
+        state = head_state.get(name)
+        target = getattr(raw_model, name, None)
+        if state is None or target is None:
+            continue
+        if hasattr(target, "modules_to_save") and "default" in target.modules_to_save:
+            target.modules_to_save["default"].load_state_dict(state)
+        else:
+            target.load_state_dict(state)
 
 
 class DataCollatorNLI:
@@ -438,12 +634,36 @@ def train_cross_encoder(args):
 
     loss_fn = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    # 5. Training Loop
-    print(f"\nStarting training: {args.epochs} epochs, {len(train_loader)} batches/epoch, {total_steps} total update steps")
-    best_val_acc = 0.0
-    global_step = 0
+    # 4b. Mid-epoch resume (--resume-auto): restore a trusted checkpoint if present.
+    start_epoch, skip_steps, best_val_acc, global_step = 0, 0, 0.0, 0
+    if getattr(args, "resume_auto", False):
+        fingerprint = resume_fingerprint(vars(args), train_path, val_path)
+        ctx = try_load_resume_state(args.out_dir, model, optimizer, scheduler, fingerprint)
+        if ctx is not None:
+            start_epoch, skip_steps, best_val_acc, global_step = (
+                ctx.epoch, ctx.steps_done_in_epoch, ctx.best_val_acc, ctx.global_step
+            )
+            if skip_steps > 0:
+                # Exact tail replay: same seed + epoch regenerates the identical
+                # batch order; the wrapper skips completed batches without compute.
+                if train_sampler is not None:
+                    tail_sampler = SkipPrefixBatchSampler(train_sampler, skip_steps)
+                    train_loader = DataLoader(
+                        train_ds, batch_sampler=tail_sampler, collate_fn=collator, num_workers=2
+                    )
+                else:
+                    train_loader = _tail_dataloader(train_loader, skip_steps)
 
-    for epoch in range(args.epochs):
+    # 5. Training Loop
+    fp_args = {k: v for k, v in vars(args).items() if k not in ("checkpoint_interval", "resume_auto")}
+    active_fingerprint = resume_fingerprint(fp_args, train_path, val_path)
+    print(
+        f"\nStarting training: {args.epochs} epochs, {len(train_loader)} batches this epoch, "
+        f"{total_steps} total update steps"
+        + (f" (resuming at epoch {start_epoch + 1}, skipping {skip_steps} steps)" if skip_steps else "")
+    )
+
+    for epoch in range(start_epoch, args.epochs):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         model.train()
@@ -489,6 +709,16 @@ def train_cross_encoder(args):
                 optimizer.zero_grad()
                 global_step += 1
 
+                interval = getattr(args, "checkpoint_interval", 0)
+                if interval > 0 and global_step % interval == 0:
+                    save_resume_state(args.out_dir, model, optimizer, scheduler, {
+                        "epoch": epoch,
+                        "steps_done_in_epoch": step + 1,
+                        "global_step": global_step,
+                        "best_val_acc": best_val_acc,
+                        "fingerprint": active_fingerprint,
+                    })
+
                 if global_step % args.log_interval == 0:
                     lr = scheduler.get_last_lr()[0]
                     brier_msg = f" | Brier: {epoch_brier_loss / (step + 1):.4f}" if getattr(args, "brier_weight", 0.0) > 0.0 else ""
@@ -517,18 +747,7 @@ def train_cross_encoder(args):
             else:
                 torch.save(model.state_dict(), os.path.join(save_dir, "model_weights.pt"))
             # Explicitly save classification head and norm weights (unwrapping PEFT wrappers)
-            raw_model = model.base_model.model if hasattr(model, "base_model") else model
-            def clean_state(mod):
-                if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
-                    return mod.modules_to_save["default"].state_dict()
-                return mod.state_dict()
-
-            head_dict = {
-                "score": clean_state(raw_model.score),
-            }
-            if hasattr(raw_model, "norm"):
-                head_dict["norm"] = clean_state(raw_model.norm)
-            torch.save(head_dict, os.path.join(save_dir, "head_weights.pt"))
+            torch.save(_extract_head_state(model), os.path.join(save_dir, "head_weights.pt"))
             tokenizer.save_pretrained(save_dir)
 
             if "logits" in val_metrics and "golds" in val_metrics and len(val_metrics["golds"]) > 0:
@@ -550,6 +769,16 @@ def train_cross_encoder(args):
             clean_val_metrics = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
             with open(os.path.join(save_dir, "eval_metrics.json"), "w") as f:
                 json.dump(clean_val_metrics, f, indent=2)
+
+        # Epoch boundary is itself a durability point: next run resumes at epoch+1.
+        if getattr(args, "checkpoint_interval", 0) > 0:
+            save_resume_state(args.out_dir, model, optimizer, scheduler, {
+                "epoch": epoch + 1,
+                "steps_done_in_epoch": 0,
+                "global_step": global_step,
+                "best_val_acc": best_val_acc,
+                "fingerprint": active_fingerprint,
+            })
 
     print("\n" + "=" * 60)
     print(f"Training Complete! Best Validation Accuracy: {best_val_acc:.4f}")
@@ -621,6 +850,10 @@ def train_cross_encoder(args):
         print(f"TEST (report-only, n={test_out['n_samples']}): "
               f"acc={test_out['accuracy']:.4f} ece={test_out['ece']:.4f} brier={test_out['brier']:.4f}")
         print(f"  per-item log: {os.path.join(args.out_dir, 'test_items.jsonl')}")
+
+    # Training (+ optional one-shot test) fully succeeded: retire resume state.
+    # Kept alive on any earlier crash so a --resume-auto rerun never re-trains.
+    _retire_resume_state(args.out_dir)
 
 
 def _reload_best_for_eval(args, tokenizer, save_dir):
@@ -794,6 +1027,10 @@ if __name__ == "__main__":
         help="Weight for multi-class Brier calibration loss (default: 0.0, recommended: 0.5 based on von-1.0 and research report 08)",
     )
     parser.add_argument("--log-interval", type=int, default=20)
+    parser.add_argument("--checkpoint-interval", type=int, default=100,
+                        help="Optimizer steps between mid-epoch resume checkpoints (0 disables)")
+    parser.add_argument("--resume-auto", default=False, action=argparse.BooleanOptionalAction,
+                        help="Resume from <out-dir>/resume when a complete fingerprint-matching checkpoint exists")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
