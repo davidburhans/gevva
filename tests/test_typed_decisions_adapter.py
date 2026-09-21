@@ -12,13 +12,34 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from nli_labels import CONTRADICTION, ENTAILMENT, NEUTRAL
+from nli_labels import CONTRADICTION, ENTAILMENT
 from research.adapters.typed_decisions_adapter import (
     convert_case_to_nli_pairs,
+    convert_typed_decisions_to_nli,
     _format_state_premise,
     DATASET_NAME,
     DATASET_LICENSE,
+    SERVING_NOUL_TEMPLATE,
 )
+
+
+class _ServingNoulTemplateStubRng:
+    """Named stub rng that deterministically forces SERVING_NOUL_TEMPLATE.
+
+    The pointwise noul branch only calls choice() and random(), so pinning both
+    avoids depending on random.Random's internal draw order. fixed_float=0.0
+    also forces the direct serving premise (rng.random() < 0.8) and, in grouped
+    mode, the serving yes/no hypotheses (rng.random() < 0.6).
+    """
+
+    def __init__(self, fixed_float: float = 0.0):
+        self.fixed_float = fixed_float
+
+    def choice(self, seq):
+        return SERVING_NOUL_TEMPLATE
+
+    def random(self):
+        return self.fixed_float
 
 
 class TestTypedDecisionsAdapter(unittest.TestCase):
@@ -184,6 +205,189 @@ class TestTypedDecisionsAdapter(unittest.TestCase):
 
         # Premise has serving parity
         self.assertTrue(pairs[0]["premise"].startswith("Select the correct support action."))
+
+    def test_pointwise_premise_keeps_question_without_serving_parity(self):
+        """Regression: pointwise branches used to fall back to base_premise when
+        serving_parity=False, silently dropping the question instructions the
+        hypothesis still referenced."""
+        instructions_by_qid = {
+            "q_bool": "BOOLQ Determine packet loss on edge-7.",
+            "q_choice": "CHOICEQ Choose a mitigation action.",
+            "q_score": "SCOREQ Rate the incident severity.",
+        }
+        raw_case = {
+            "state_id": "case_noparity_01",
+            "domain": "net_triage",
+            "state": "Gateway latency at 800ms with packet loss on edge-7.",
+            "state_is_json": False,
+            "questions": json.dumps({
+                "q_bool": {
+                    "type": "noul",
+                    "instructions": instructions_by_qid["q_bool"],
+                    "criteria": {"true": "Lossy link", "false": "Stable link"},
+                },
+                "q_choice": {
+                    "type": "choice",
+                    "instructions": instructions_by_qid["q_choice"],
+                    "criteria": {"rollback": "Roll back the release", "restart": "Restart the gateway"},
+                },
+                "q_score": {
+                    "type": "score",
+                    "instructions": instructions_by_qid["q_score"],
+                    "criteria": ["sev3 minor", "sev1 major"],
+                },
+            }),
+            "gold": json.dumps({"q_bool": True, "q_choice": "rollback", "q_score": 0}),
+            "teacher": json.dumps({
+                "q_bool": {"noul": 0.9},
+                "q_choice": {"probabilities": {"rollback": 0.9, "restart": 0.1}},
+                "q_score": {"probabilities": {"0": 0.9, "1": 0.1}},
+            }),
+        }
+
+        for serving_parity in (False, True):
+            pairs = convert_case_to_nli_pairs(
+                raw_case,
+                serving_parity=serving_parity,
+                include_inverted_noul=False,
+            )
+            # 1 noul + (1 gold + 1 neg) choice + (1 gold + 1 alt) score
+            self.assertEqual(len(pairs), 5, f"serving_parity={serving_parity}")
+            for pair in pairs:
+                expected_instruction = instructions_by_qid[pair["metadata"]["question_id"]]
+                self.assertIn(
+                    expected_instruction,
+                    pair["premise"],
+                    f"premise lost the question (serving_parity={serving_parity}): {pair['id']}",
+                )
+                if not serving_parity:
+                    # Non-parity premise embeds the question with an explicit marker
+                    self.assertIn("Question:", pair["premise"])
+
+    def test_inverted_noul_pair_premise_keeps_question_without_serving_parity(self):
+        raw_case = {
+            "state_id": "case_noparity_inv",
+            "domain": "policy",
+            "state": "Refunds are allowed within 30 days of purchase.",
+            "state_is_json": False,
+            "questions": json.dumps({
+                "q_bool": {
+                    "type": "noul",
+                    "instructions": "INVPOLQ Determine whether the refund window is open.",
+                    "criteria": {"true": "Window open", "false": "Window closed"},
+                },
+            }),
+            "gold": json.dumps({"q_bool": True}),
+            "teacher": json.dumps({"q_bool": {"noul": 0.95}}),
+        }
+
+        pairs = convert_case_to_nli_pairs(raw_case, serving_parity=False, include_inverted_noul=True)
+        self.assertEqual(len(pairs), 2)
+        for pair in pairs:
+            self.assertIn("INVPOLQ Determine whether the refund window is open.", pair["premise"])
+
+    # ---------------------------------------------------------------------
+    # Regression: inverted-label bug in pointwise noul serving template
+    # ---------------------------------------------------------------------
+
+    def test_noul_gold_false_serving_template_asserts_yes_side(self):
+        """Regression: pointwise noul formatted the serving template with the ACTUAL
+        gold ('The correct answer is: no: {false_desc}') — a TRUE statement — and
+        labeled it CONTRADICTION. Every pointwise noul hypothesis must assert the
+        positive 'yes' side, so gold=False yields a proper hard negative.
+        """
+        raw_case = {
+            "state_id": "case_noul_flip_01",
+            "domain": "customer_support",
+            "state": "Customer requested a full refund for an opened software license.",
+            "state_is_json": False,
+            "questions": json.dumps({
+                "is_hardware": {
+                    "type": "noul",
+                    "instructions": "Determine whether the product is a physical hardware device.",
+                    "criteria": {"true": "Physical item", "false": "Software item"},
+                },
+            }),
+            "gold": json.dumps({"is_hardware": False}),
+            "teacher": json.dumps({"is_hardware": {"noul": 0.02}}),
+        }
+
+        pairs = convert_case_to_nli_pairs(
+            raw_case,
+            rng=_ServingNoulTemplateStubRng(fixed_float=0.0),
+            include_inverted_noul=False,
+        )
+        self.assertEqual(len(pairs), 1)
+        pair = pairs[0]
+        # Hypothesis asserts the yes form (val 'yes' + the TRUE description)
+        # even though gold is False...
+        self.assertEqual(
+            pair["hypothesis"],
+            SERVING_NOUL_TEMPLATE.format(val="yes", desc="Physical item"),
+        )
+        self.assertIn("yes", pair["hypothesis"])
+        self.assertIn("Physical item", pair["hypothesis"])
+        # ...so CONTRADICTION is semantically correct for gold=False.
+        self.assertEqual(pair["label"], CONTRADICTION)
+        # Soft labels / soft_target stay tied to the gold answer, not the flip.
+        self.assertEqual(pair["soft_labels"], [0.98, 0.02, 0.0])
+        self.assertEqual(pair["soft_target"], 0.98)
+        self.assertIs(pair["metadata"]["gold"], False)
+
+    def test_pointwise_noul_label_matches_grouped_yes_option(self):
+        """Grouped-vs-pointwise consistency on the same question: the pointwise
+        positive pair and the grouped 'yes' option carry the identical hypothesis
+        text and must carry the identical label — gold=False -> both
+        CONTRADICTION, gold=True -> both ENTAILMENT.
+        """
+        for gold_value, expected_label in ((False, CONTRADICTION), (True, ENTAILMENT)):
+            raw_case = {
+                "state_id": f"case_pwgrp_{int(gold_value)}",
+                "domain": "customer_support",
+                "state": "Customer requested a full refund for an opened software license.",
+                "state_is_json": False,
+                "questions": json.dumps({
+                    "is_hardware": {
+                        "type": "noul",
+                        "instructions": "Determine whether the product is a physical hardware device.",
+                        "criteria": {"true": "Physical item", "false": "Software item"},
+                    },
+                }),
+                "gold": json.dumps({"is_hardware": gold_value}),
+                "teacher": json.dumps({"is_hardware": {"noul": 0.98 if gold_value else 0.02}}),
+            }
+
+            pointwise = convert_case_to_nli_pairs(
+                raw_case,
+                rng=_ServingNoulTemplateStubRng(fixed_float=0.0),
+                include_inverted_noul=False,
+            )
+            grouped = convert_case_to_nli_pairs(
+                raw_case,
+                rng=_ServingNoulTemplateStubRng(fixed_float=0.0),
+                grouped=True,
+            )
+            self.assertEqual(len(pointwise), 1, f"gold={gold_value}")
+            self.assertEqual(len(grouped), 2, f"gold={gold_value}")
+
+            pw_positive = pointwise[0]
+            grouped_yes = next(p for p in grouped if p["metadata"]["option"] == "yes")
+
+            # Identical text in both modes must carry the identical label.
+            self.assertEqual(pw_positive["hypothesis"], grouped_yes["hypothesis"], f"gold={gold_value}")
+            self.assertEqual(pw_positive["label"], expected_label, f"gold={gold_value}")
+            self.assertEqual(grouped_yes["label"], expected_label, f"gold={gold_value}")
+
+    def test_convert_typed_decisions_to_nli_exposes_serving_parity(self):
+        """The dataset-level entry point must forward serving_parity (default True)
+        so the serving-parity layout stays opt-out at the top level too.
+        Signature-only check: never loads the Hugging Face dataset (offline test).
+        """
+        import inspect
+
+        sig = inspect.signature(convert_typed_decisions_to_nli)
+        self.assertIn("serving_parity", sig.parameters)
+        self.assertIs(sig.parameters["serving_parity"].default, True)
 
 
 if __name__ == "__main__":

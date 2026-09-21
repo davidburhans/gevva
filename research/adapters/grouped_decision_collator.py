@@ -19,24 +19,19 @@ Key Innovations:
 
 from __future__ import annotations
 
-import math
 import os
 import random
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Sampler
 
 from gemma4_cross_encoder import (
     CONTRADICTION,
     ENTAILMENT,
-    NEUTRAL,
     Gemma4ImageProcessorPil,
     tokenize_nli_pair_safe,
 )
@@ -50,19 +45,18 @@ def compute_cross_option_loss(
     is_gold: torch.Tensor,
     soft_targets: Optional[torch.Tensor] = None,
     temperature: float = 1.0,
-    scoring_mode: str = "raw",
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Computes cross-option softmax cross-entropy across grouped decision options (P1).
 
     Args:
-        scores: (N,) tensor of candidate option scores.
-                If logits (N, 3) are provided, scores can be extracted as z_ent or (z_ent - z_con).
+        scores: (N,) tensor of candidate option scores (e.g. each pair's entailment
+                logit z_ent). Extraction from (N, 3) NLI heads happens upstream in
+                the model, not here.
         group_ids: (N,) integer tensor where items sharing group_id >= 0 belong to the same question.
                    Un-grouped items (e.g. clean NLI pairs) have group_id == -1.
         is_gold: (N,) bool or float tensor indicating the true winning candidate option.
         soft_targets: Optional (N,) float tensor with teacher probabilities for each option.
         temperature: Scalar temperature for softmax competition (default: 1.0).
-        scoring_mode: String indicating scoring rule ('raw' or 'log_odds').
 
     Returns:
         total_loss: Scalar cross-option cross-entropy loss (with autograd graph preserved).
@@ -177,14 +171,19 @@ class GroupedDecisionCollator:
 
         for r in batch:
             gid_raw = r.get("group_id")
-            if gid_raw is not None and str(gid_raw).strip() != "":
+            # WHY: compute_cross_option_loss reserves group_id == -1 for un-grouped
+            # pairs (valid_mask = group_ids >= 0) and GroupedTokenBucketBatchSampler
+            # treats the string '-1' as un-grouped too. Compacting the -1 sentinels
+            # onto a batch-local id would fuse unrelated clean NLI pairs into one
+            # fake cross-option competition group.
+            if gid_raw is None or str(gid_raw).strip() in ("", "-1"):
+                batch_gid = -1
+            else:
                 gid_key = str(gid_raw)
                 if gid_key not in group_map:
                     group_map[gid_key] = next_gid
                     next_gid += 1
                 batch_gid = group_map[gid_key]
-            else:
-                batch_gid = -1
             raw_group_ids.append(batch_gid)
 
             # Extract gold flag and soft targets
@@ -267,6 +266,10 @@ class GroupedTokenBucketBatchSampler(Sampler[List[int]]):
 
     Ensures that for any question group g, all candidate option indices {i_1, ..., i_K}
     land in the EXACT same batch, while respecting total token limits (max_tokens_per_batch).
+
+    Batch composition is fixed once in __init__ (deterministic greedy packing);
+    with shuffle=True only the batch ORDER varies per epoch (set_epoch), so
+    len() always equals the number of batches __iter__ yields.
     """
 
     def __init__(
@@ -279,14 +282,22 @@ class GroupedTokenBucketBatchSampler(Sampler[List[int]]):
         seed: int = 42,
     ):
         super().__init__()
-        # Flexible argument resolution
-        if isinstance(records_or_lengths[0], dict):
+        # WHY: an empty corpus raised a bare IndexError on the records_or_lengths[0]
+        # probe, and the lengths-first form raised on lengths_or_records[0] when the
+        # second positional was []. An empty input set must yield a zero-batch
+        # sampler so DataLoaders over empty shards iterate cleanly; an empty second
+        # positional is treated exactly like omitting the argument.
+        if len(records_or_lengths) == 0:
+            self.records = []
+            self.lengths = []
+            raw_gids = []
+        elif isinstance(records_or_lengths[0], dict):
             self.records = records_or_lengths
-            self.lengths = lengths_or_records if lengths_or_records is not None else [512] * len(self.records)
+            self.lengths = lengths_or_records if lengths_or_records else [512] * len(self.records)
             raw_gids = [r.get("group_id") for r in self.records]
         else:
             self.lengths = records_or_lengths
-            self.records = lengths_or_records if (lengths_or_records is not None and isinstance(lengths_or_records[0], dict)) else []
+            self.records = lengths_or_records if (lengths_or_records and isinstance(lengths_or_records[0], dict)) else []
             raw_gids = group_ids if group_ids is not None else [r.get("group_id") for r in self.records] if self.records else []
 
         self.max_tokens_per_batch = max_tokens_per_batch
@@ -315,24 +326,31 @@ class GroupedTokenBucketBatchSampler(Sampler[List[int]]):
         for s_idx in singletons:
             self.units.append([s_idx])
 
-    def __iter__(self):
-        rng = random.Random(self.seed + self.epoch)
-        cur_units = list(self.units)
-        if self.shuffle:
-            rng.shuffle(cur_units)
+        # Precompute deterministic batch composition once; iteration only reorders
+        # these batches (shuffle seed), so __len__ always matches what __iter__ yields.
+        self._batches: List[List[int]] = self._pack_units(self.units)
 
+    def _unit_max_length(self, unit: List[int]) -> int:
+        """Max sequence length inside one atomic scheduling unit (group or singleton)."""
+        return max(self.lengths[i] for i in unit)
+
+    def _pack_units(self, units: List[List[int]]) -> List[List[int]]:
+        """Greedy token-bucket packing of atomic units into batches.
+
+        Units are sorted by descending max length (tie-break: first index) so the
+        composition is independent of dict/insertion order. A unit whose own token
+        footprint exceeds max_tokens_per_batch still gets its own batch: group
+        atomicity outranks the token budget.
+        """
+        ordered_units = sorted(units, key=lambda u: (-self._unit_max_length(u), u[0]))
         batches: List[List[int]] = []
         current_batch: List[int] = []
-        current_tokens = 0
         current_max_len = 0
 
-        for unit in cur_units:
-            unit_len = max(self.lengths[i] for i in unit)
-            unit_count = len(unit)
-
-            # Potential batch stats if we add this unit
+        for unit in ordered_units:
+            unit_len = self._unit_max_length(unit)
             cand_max_len = max(current_max_len, unit_len)
-            cand_count = len(current_batch) + unit_count
+            cand_count = len(current_batch) + len(unit)
             cand_total_tokens = cand_max_len * cand_count
 
             if current_batch and cand_total_tokens > self.max_tokens_per_batch:
@@ -346,19 +364,19 @@ class GroupedTokenBucketBatchSampler(Sampler[List[int]]):
 
         if current_batch:
             batches.append(current_batch)
+        return batches
 
+    def __iter__(self):
+        batches = list(self._batches)
         if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
             rng.shuffle(batches)
 
-        for b in batches:
-            yield b
+        for batch in batches:
+            yield batch
 
     def __len__(self) -> int:
-        # Approximate batch count
-        total_items = sum(len(u) for u in self.units)
-        avg_len = sum(self.lengths) / max(1, len(self.lengths))
-        items_per_batch = max(1, int(self.max_tokens_per_batch // max(32, avg_len)))
-        return max(1, (total_items + items_per_batch - 1) // items_per_batch)
+        return len(self._batches)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

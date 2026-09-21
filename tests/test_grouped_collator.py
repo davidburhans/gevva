@@ -1,10 +1,18 @@
+import hashlib
+import json
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import torch
-from transformers import AutoTokenizer
+from typing import List
 
+import torch
+
+from data_engine import (
+    MAX_STANDARD_OPTIONS,
+    CanonicalDecision,
+    InContextPermutationCollator,
+)
 from research.adapters.grouped_decision_collator import (
     GroupedDecisionCollator,
     GroupedTokenBucketBatchSampler,
@@ -68,6 +76,137 @@ def test_compute_cross_option_loss_soft_targets():
     assert scores.grad is not None
 
 
+def _decision_options(k: int) -> List[dict]:
+    """k options with unique keys and unique texts."""
+    return [{"key": f"K{i}", "text": f"option text {i}"} for i in range(k)]
+
+
+def test_canonical_decision_rejects_too_many_options():
+    opts = _decision_options(MAX_STANDARD_OPTIONS + 1)
+    try:
+        CanonicalDecision(id="overfull", domain="t", context="c", question="q", options=opts, gold_index=0)
+    except ValueError as exc:
+        assert "21" in str(exc) and str(MAX_STANDARD_OPTIONS) in str(exc), str(exc)
+    else:
+        raise AssertionError(f"expected ValueError for {len(opts)} options")
+
+
+def test_canonical_decision_rejects_gold_index_out_of_bounds():
+    opts = _decision_options(3)
+    for bad_gold in (-1, 3, 7):
+        try:
+            CanonicalDecision(id="oob", domain="t", context="c", question="q", options=opts, gold_index=bad_gold)
+        except ValueError as exc:
+            assert str(bad_gold) in str(exc) and "[0, 2]" in str(exc), str(exc)
+        else:
+            raise AssertionError(f"expected ValueError for gold_index={bad_gold}")
+
+
+def test_canonical_decision_rejects_duplicate_option_texts():
+    opts = [
+        {"key": "K0", "text": "same text"},
+        {"key": "K1", "text": "same text"},
+        {"key": "K2", "text": "different text"},
+    ]
+    try:
+        CanonicalDecision(id="dupes", domain="t", context="c", question="q", options=opts, gold_index=0)
+    except ValueError as exc:
+        assert "same text" in str(exc), str(exc)
+    else:
+        raise AssertionError("expected ValueError for duplicate option texts")
+
+
+def test_canonical_decision_gold_key_derived_safely():
+    # gold_key derived from the gold option's own key, never raw key-table indexing
+    opts = [{"key": "X1", "text": "a"}, {"key": "X2", "text": "b"}]
+    dec = CanonicalDecision(id="safekey", domain="t", context="c", question="q", options=opts, gold_index=1)
+    assert dec.gold_key == "X2"
+
+
+def test_from_dict_id_is_deterministic():
+    d = {
+        "domain": "t",
+        "context": "c",
+        "question": "q",
+        "options": [{"key": "A", "text": "a"}, {"key": "B", "text": "b"}],
+        "gold_index": 1,
+    }
+    first = CanonicalDecision.from_dict(d)
+    second = CanonicalDecision.from_dict(dict(d))
+    expected_hash = hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+    assert first.id == second.id == f"decision_{expected_hash}"
+    # Explicit ids still win over the content hash
+    assert CanonicalDecision.from_dict({**d, "id": "custom"}).id == "custom"
+
+
+def test_to_cyclic_permutations_rejects_non_positive_shifts():
+    dec = CanonicalDecision(
+        id="shifts", domain="t", context="c", question="q",
+        options=_decision_options(3), gold_index=0,
+    )
+    try:
+        dec.to_cyclic_permutations(num_shifts=0)
+    except ValueError as exc:
+        assert "num_shifts=0" in str(exc), str(exc)
+    else:
+        raise AssertionError("expected ValueError for num_shifts=0")
+
+
+class BosAwareTokenizer:
+    """Deterministic mock tokenizer that prepends BOS like real causal tokenizers."""
+
+    pad_token_id = 0
+    eos_token_id = 1
+    bos_token_id = 2
+    padding_side = "right"
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
+        tokens = [ord(c) % 100 + 3 for c in text]
+        return ([self.bos_token_id] + tokens) if add_special_tokens else tokens
+
+
+def _collator_decision(context: str) -> CanonicalDecision:
+    return CanonicalDecision(
+        id="collator_dec", domain="t", context=context, question="Which option holds?",
+        options=[{"key": "A", "text": "first"}, {"key": "B", "text": "second"}],
+        gold_index=1,
+    )
+
+
+def test_in_context_collator_same_epoch_determinism():
+    tok = BosAwareTokenizer()
+    items = [_collator_decision(f"context number {i} " * 3) for i in range(4)]
+    collator = InContextPermutationCollator(tok, max_length=256, permute_training=True, seed=11)
+
+    collator.set_epoch(3)
+    first = collator(items)
+    collator.set_epoch(3)  # reseed to the same epoch -> identical permutation stream
+    second = collator(items)
+
+    assert torch.equal(first["input_ids"], second["input_ids"])
+    assert torch.equal(first["labels"], second["labels"])
+    assert first["gold_indices"].tolist() == second["gold_indices"].tolist()
+
+
+def test_in_context_collator_preserves_bos_after_truncation():
+    tok = BosAwareTokenizer()
+    long_decision = _collator_decision("long context token " * 200)
+    collator = InContextPermutationCollator(tok, max_length=64, permute_training=False)
+    out = collator([long_decision])
+
+    ids = out["input_ids"][0].tolist()
+    labels = out["labels"][0].tolist()
+
+    assert len(ids) <= 64, f"sequence exceeded max_length: {len(ids)}"
+    assert ids[0] == tok.bos_token_id, f"BOS was stripped by left-truncation, first id={ids[0]}"
+
+    supervised = [l for l in labels if l != -100]
+    assert len(supervised) == 1, f"expected exactly one supervised token, got {supervised}"
+    # The surviving supervised token is the gold decision slot 'B' (gold_index=1)
+    assert supervised[0] == collator.key_to_token_id["B"]
+    assert out["gold_indices"].tolist() == [1]
+
+
 def test_grouped_token_bucket_sampler():
     records = [
         {"group_id": "q1", "premise": "p1", "hypothesis": "h1"},
@@ -90,6 +229,102 @@ def test_grouped_token_bucket_sampler():
 
         q2_in_b = [idx in b for idx in [3, 4]]
         assert all(q2_in_b) or not any(q2_in_b), f"q2 was split across batches! Batch: {b}"
+
+
+def _sampler_fixture():
+    records = [
+        {"group_id": "q1", "premise": "p1", "hypothesis": "h1"},
+        {"group_id": "q1", "premise": "p1", "hypothesis": "h2"},
+        {"group_id": "q1", "premise": "p1", "hypothesis": "h3"},
+        {"group_id": "q2", "premise": "p2", "hypothesis": "h1"},
+        {"group_id": "q2", "premise": "p2", "hypothesis": "h2"},
+        {"group_id": "", "premise": "p_single", "hypothesis": "h_single"},
+        {"group_id": "q3", "premise": "p3", "hypothesis": "h1"},
+        {"group_id": "q3", "premise": "p3", "hypothesis": "h2"},
+        {"group_id": "q3", "premise": "p3", "hypothesis": "h3"},
+    ]
+    lengths = [100, 100, 100, 200, 200, 50, 80, 80, 80]
+    return records, lengths
+
+
+def _assert_group_atomicity(batches, records):
+    """Every record index appears exactly once and groups are never split."""
+    flat = sorted(idx for batch in batches for idx in batch)
+    assert flat == list(range(len(records))), f"coverage mismatch: {flat}"
+    groups = {}
+    for idx, r in enumerate(records):
+        gid = r["group_id"]
+        if gid:
+            groups.setdefault(gid, []).append(idx)
+    for batch in batches:
+        batch_set = set(batch)
+        for gid, indices in groups.items():
+            inside = sum(1 for i in indices if i in batch_set)
+            assert inside in (0, len(indices)), f"group {gid} split across batches: {batch}"
+
+
+def test_sampler_len_matches_yielded_batch_count():
+    records, lengths = _sampler_fixture()
+    for shuffle in (False, True):
+        sampler = GroupedTokenBucketBatchSampler(
+            records, lengths, max_tokens_per_batch=450, shuffle=shuffle, seed=7,
+        )
+        batches = list(sampler)
+        assert len(sampler) == len(batches), \
+            f"len={len(sampler)} != yielded={len(batches)} (shuffle={shuffle})"
+        _assert_group_atomicity(batches, records)
+
+
+def test_sampler_batch_composition_is_epoch_invariant():
+    records, lengths = _sampler_fixture()
+    sampler = GroupedTokenBucketBatchSampler(
+        records, lengths, max_tokens_per_batch=450, shuffle=True, seed=7,
+    )
+    sampler.set_epoch(0)
+    epoch0 = list(sampler)
+    sampler.set_epoch(1)
+    epoch1 = list(sampler)
+
+    # Same composition every epoch; only the order of batches may differ
+    assert sorted(map(sorted, epoch0)) == sorted(map(sorted, epoch1))
+    assert len(epoch0) == len(epoch1) == len(sampler)
+    _assert_group_atomicity(epoch1, records)
+
+
+def test_sampler_never_splits_oversized_group():
+    # One group whose token footprint alone exceeds the bucket: it must still
+    # arrive as a single atomic batch (atomicity outranks the token budget).
+    records = [{"group_id": "big", "premise": "p"} for _ in range(4)]
+    lengths = [500, 500, 500, 500]
+    sampler = GroupedTokenBucketBatchSampler(records, lengths, max_tokens_per_batch=1000, shuffle=False)
+    batches = list(sampler)
+    assert batches == [[0, 1, 2, 3]], f"oversized group was split: {batches}"
+    assert len(sampler) == 1
+
+
+def test_sampler_empty_inputs_yield_zero_batches():
+    """Regression: empty corpora and empty paired lists crashed with a bare
+    IndexError on the records_or_lengths[0] / lengths_or_records[0] probes.
+    An empty input set must yield len == 0 and no batches."""
+    empty = GroupedTokenBucketBatchSampler([])
+    assert len(empty) == 0, f"expected len 0 for empty input, got {len(empty)}"
+    assert list(empty) == []
+
+    no_lengths = GroupedTokenBucketBatchSampler([], group_ids=[])
+    assert len(no_lengths) == 0, f"expected len 0, got {len(no_lengths)}"
+    assert list(no_lengths) == []
+
+    empty_pair = GroupedTokenBucketBatchSampler([], [])
+    assert len(empty_pair) == 0, f"expected len 0, got {len(empty_pair)}"
+    assert list(empty_pair) == []
+
+    # An empty second positional in the lengths-first form is equivalent to
+    # omitting the argument: the lengths still define the items, so the usual
+    # singleton packing applies (byte-identical to the non-empty behavior).
+    with_empty_second = GroupedTokenBucketBatchSampler([100, 100], [])
+    without_second = GroupedTokenBucketBatchSampler([100, 100])
+    assert list(with_empty_second) == list(without_second) == [[0, 1]]
+    assert len(with_empty_second) == len(without_second) == 1
 
 
 def test_grouped_decision_collator():
@@ -119,9 +354,66 @@ def test_grouped_decision_collator():
     assert g_ids[4] == -1
 
 
+def test_collator_ungrouped_sentinels_stay_out_of_competition_groups():
+    """Regression: group_id sentinels -1 (int), '-1' (str), None, '' and
+    whitespace-only must collate to -1. compute_cross_option_loss reserves
+    group_id == -1 for un-grouped clean NLI pairs (valid_mask = group_ids >= 0);
+    compacting sentinels onto real ids fused unrelated pairs into one fake
+    competition group and corrupted the cross-option objective."""
+    tok = DummyTokenizer()
+    collator = GroupedDecisionCollator(tok, max_length=128, is_gemma=False)
+    batch_items = [
+        {"group_id": "qA", "premise": "p", "hypothesis": "option a gold", "is_gold": True, "label": 1},
+        {"group_id": "qA", "premise": "p", "hypothesis": "option a distractor", "is_gold": False, "label": 0},
+        {"group_id": "qB", "premise": "p", "hypothesis": "option b gold", "is_gold": True, "label": 1},
+        {"group_id": "qB", "premise": "p", "hypothesis": "option b distractor", "is_gold": False, "label": 0},
+        {"group_id": -1, "premise": "A man sleeps.", "hypothesis": "A person rests.", "is_gold": True, "label": 1},
+        {"group_id": "-1", "premise": "A man walks.", "hypothesis": "A person moves.", "is_gold": True, "label": 1},
+        {"group_id": None, "premise": "It rains.", "hypothesis": "Water falls.", "is_gold": True, "label": 1},
+        {"group_id": "", "premise": "Dogs bark.", "hypothesis": "Animals vocalize.", "is_gold": True, "label": 1},
+        {"group_id": "   ", "premise": "Birds fly.", "hypothesis": "Animals travel.", "is_gold": True, "label": 1},
+    ]
+
+    out = collator(batch_items)
+    gids = out["group_ids"].tolist()
+    assert gids[0] == gids[1] == 0, f"qA must compact to batch id 0: {gids}"
+    assert gids[2] == gids[3] == 1, f"qB must compact to batch id 1: {gids}"
+    for i in range(4, len(gids)):
+        expected = batch_items[i]["group_id"]
+        assert gids[i] == -1, f"sentinel row {i} (group_id={expected!r}) collated to {gids[i]}"
+
+    # Cross-option loss sees only the 2 real competition groups; the ungrouped
+    # rows must receive zero xopt gradient (mirrors the hard-loss test above).
+    scores = torch.tensor([3.0, 0.1, 2.5, 0.2, 9.0, 9.0, 9.0, 9.0, 9.0], requires_grad=True)
+    loss, metrics = compute_cross_option_loss(scores, out["group_ids"], out["is_gold"])
+    assert metrics["n_groups"] == 2, f"expected only the 2 real groups, got {metrics}"
+    loss.backward()
+    grad = scores.grad
+    assert grad is not None, "no gradient flowed back to scores"
+    assert grad[0].item() < 0.0  # qA gold logit pushed UP
+    assert grad[1].item() > 0.0  # qA distractor pushed DOWN
+    assert grad[2].item() < 0.0  # qB gold logit pushed UP
+    assert grad[3].item() > 0.0  # qB distractor pushed DOWN
+    for i in range(4, len(grad)):
+        assert grad[i].item() == 0.0, f"ungrouped row {i} received xopt gradient {grad[i].item()}"
+
+
 if __name__ == "__main__":
     test_compute_cross_option_loss_hard()
     test_compute_cross_option_loss_soft_targets()
     test_grouped_token_bucket_sampler()
+    test_sampler_len_matches_yielded_batch_count()
+    test_sampler_batch_composition_is_epoch_invariant()
+    test_sampler_never_splits_oversized_group()
+    test_sampler_empty_inputs_yield_zero_batches()
     test_grouped_decision_collator()
+    test_collator_ungrouped_sentinels_stay_out_of_competition_groups()
+    test_canonical_decision_rejects_too_many_options()
+    test_canonical_decision_rejects_gold_index_out_of_bounds()
+    test_canonical_decision_rejects_duplicate_option_texts()
+    test_canonical_decision_gold_key_derived_safely()
+    test_from_dict_id_is_deterministic()
+    test_to_cyclic_permutations_rejects_non_positive_shifts()
+    test_in_context_collator_same_epoch_determinism()
+    test_in_context_collator_preserves_bos_after_truncation()
     print("All grouped decision collator tests passed successfully!")

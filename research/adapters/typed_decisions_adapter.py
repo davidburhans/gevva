@@ -38,9 +38,9 @@ from __future__ import annotations
 import json
 import logging
 import random
-from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from nli_labels import CONTRADICTION, ENTAILMENT, NEUTRAL
+from nli_labels import CONTRADICTION, ENTAILMENT
 
 logger = logging.getLogger(__name__)
 
@@ -232,13 +232,25 @@ def convert_case_to_nli_pairs(
             else:
                 # Pointwise mode (backward-compatible)
                 tpl = rng.choice(NOUL_TEMPLATES)
-                hyp = tpl.format(instruction=instructions, val="yes" if is_true else "no", desc=true_desc if is_true else false_desc)
+                # WHY: always assert the POSITIVE ('yes') side, never the actual
+                # gold value. Formatting the serving template with val='no' for a
+                # gold=False question produced a TRUE statement ("The correct
+                # answer is: no: {false_desc}") yet labeled it CONTRADICTION,
+                # poisoning the serving-parity slice and contradicting grouped
+                # mode, which labels the identical 'no' assertion ENTAILMENT.
+                # With a uniform yes-assertion, gold=False becomes a proper hard
+                # negative and the label rule holds for every template.
+                hyp = tpl.format(instruction=instructions, val="yes", desc=true_desc)
                 label = ENTAILMENT if is_true else CONTRADICTION
                 soft = [round(1.0 - p_true, 4), round(p_true, 4), 0.0]
 
                 pairs.append({
                     "id": f"typed_decisions_{state_id}_{q_id}_pos_{pair_counter:02d}",
-                    "premise": q_premise if serving_parity else base_premise,
+                    # WHY: q_premise unconditionally — the old
+                    # `q_premise if serving_parity else base_premise` dropped the
+                    # question instructions from the premise when serving_parity
+                    # was False, while the hypothesis still referenced them.
+                    "premise": q_premise,
                     "hypothesis": hyp,
                     "label": label,
                     "group_id": group_id_val,
@@ -266,7 +278,8 @@ def convert_case_to_nli_pairs(
                     inv_soft = [soft[1], soft[0], 0.0]
                     pairs.append({
                         "id": f"typed_decisions_{state_id}_{q_id}_inv_{pair_counter:02d}",
-                        "premise": q_premise if serving_parity else base_premise,
+                        # Same parity defect as the positive noul pair above.
+                        "premise": q_premise,
                         "hypothesis": inv_hyp,
                         "label": inv_label,
                         "group_id": f"{group_id_val}_inv",
@@ -528,6 +541,7 @@ def convert_typed_decisions_to_nli(
     seed: int = 42,
     max_negatives_per_choice: int = 2,
     grouped: bool = False,
+    serving_parity: bool = True,
 ) -> List[Dict[str, Any]]:
     """Loads `n4ze3m/typed-decisions-synth` from Hugging Face and converts to NLI pairs.
 
@@ -537,6 +551,7 @@ def convert_typed_decisions_to_nli(
         seed: Random seed for deterministic generation.
         max_negatives_per_choice: Max distractors per choice question.
         grouped: If True, extract all K candidate options per question with group_id.
+        serving_parity: If True, uses '{instructions}\\n\\n{state}' matching the JevBench / SDK serving layout.
 
     Returns:
         List of NLI pair dictionaries ready for training or evaluation.
@@ -560,6 +575,7 @@ def convert_typed_decisions_to_nli(
             rng=rng,
             max_negatives_per_choice=max_negatives_per_choice,
             grouped=grouped,
+            serving_parity=serving_parity,
         )
         all_pairs.extend(pairs)
 
