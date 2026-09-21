@@ -1,5 +1,7 @@
 # Heavy artifacts - never in git
 data/
+# bare 'data' also matches the data symlink ('data/' matches directories only)
+data
 ckpt/
 .venv/
 __pycache__/

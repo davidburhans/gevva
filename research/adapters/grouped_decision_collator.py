@@ -171,14 +171,19 @@ class GroupedDecisionCollator:
 
         for r in batch:
             gid_raw = r.get("group_id")
-            if gid_raw is not None and str(gid_raw).strip() != "":
+            # WHY: compute_cross_option_loss reserves group_id == -1 for un-grouped
+            # pairs (valid_mask = group_ids >= 0) and GroupedTokenBucketBatchSampler
+            # treats the string '-1' as un-grouped too. Compacting the -1 sentinels
+            # onto a batch-local id would fuse unrelated clean NLI pairs into one
+            # fake cross-option competition group.
+            if gid_raw is None or str(gid_raw).strip() in ("", "-1"):
+                batch_gid = -1
+            else:
                 gid_key = str(gid_raw)
                 if gid_key not in group_map:
                     group_map[gid_key] = next_gid
                     next_gid += 1
                 batch_gid = group_map[gid_key]
-            else:
-                batch_gid = -1
             raw_group_ids.append(batch_gid)
 
             # Extract gold flag and soft targets
@@ -277,14 +282,22 @@ class GroupedTokenBucketBatchSampler(Sampler[List[int]]):
         seed: int = 42,
     ):
         super().__init__()
-        # Flexible argument resolution
-        if isinstance(records_or_lengths[0], dict):
+        # WHY: an empty corpus raised a bare IndexError on the records_or_lengths[0]
+        # probe, and the lengths-first form raised on lengths_or_records[0] when the
+        # second positional was []. An empty input set must yield a zero-batch
+        # sampler so DataLoaders over empty shards iterate cleanly; an empty second
+        # positional is treated exactly like omitting the argument.
+        if len(records_or_lengths) == 0:
+            self.records = []
+            self.lengths = []
+            raw_gids = []
+        elif isinstance(records_or_lengths[0], dict):
             self.records = records_or_lengths
-            self.lengths = lengths_or_records if lengths_or_records is not None else [512] * len(self.records)
+            self.lengths = lengths_or_records if lengths_or_records else [512] * len(self.records)
             raw_gids = [r.get("group_id") for r in self.records]
         else:
             self.lengths = records_or_lengths
-            self.records = lengths_or_records if (lengths_or_records is not None and isinstance(lengths_or_records[0], dict)) else []
+            self.records = lengths_or_records if (lengths_or_records and isinstance(lengths_or_records[0], dict)) else []
             raw_gids = group_ids if group_ids is not None else [r.get("group_id") for r in self.records] if self.records else []
 
         self.max_tokens_per_batch = max_tokens_per_batch

@@ -302,6 +302,31 @@ def test_sampler_never_splits_oversized_group():
     assert len(sampler) == 1
 
 
+def test_sampler_empty_inputs_yield_zero_batches():
+    """Regression: empty corpora and empty paired lists crashed with a bare
+    IndexError on the records_or_lengths[0] / lengths_or_records[0] probes.
+    An empty input set must yield len == 0 and no batches."""
+    empty = GroupedTokenBucketBatchSampler([])
+    assert len(empty) == 0, f"expected len 0 for empty input, got {len(empty)}"
+    assert list(empty) == []
+
+    no_lengths = GroupedTokenBucketBatchSampler([], group_ids=[])
+    assert len(no_lengths) == 0, f"expected len 0, got {len(no_lengths)}"
+    assert list(no_lengths) == []
+
+    empty_pair = GroupedTokenBucketBatchSampler([], [])
+    assert len(empty_pair) == 0, f"expected len 0, got {len(empty_pair)}"
+    assert list(empty_pair) == []
+
+    # An empty second positional in the lengths-first form is equivalent to
+    # omitting the argument: the lengths still define the items, so the usual
+    # singleton packing applies (byte-identical to the non-empty behavior).
+    with_empty_second = GroupedTokenBucketBatchSampler([100, 100], [])
+    without_second = GroupedTokenBucketBatchSampler([100, 100])
+    assert list(with_empty_second) == list(without_second) == [[0, 1]]
+    assert len(with_empty_second) == len(without_second) == 1
+
+
 def test_grouped_decision_collator():
     tok = DummyTokenizer()
     collator = GroupedDecisionCollator(tok, max_length=128, is_gemma=False)
@@ -329,6 +354,50 @@ def test_grouped_decision_collator():
     assert g_ids[4] == -1
 
 
+def test_collator_ungrouped_sentinels_stay_out_of_competition_groups():
+    """Regression: group_id sentinels -1 (int), '-1' (str), None, '' and
+    whitespace-only must collate to -1. compute_cross_option_loss reserves
+    group_id == -1 for un-grouped clean NLI pairs (valid_mask = group_ids >= 0);
+    compacting sentinels onto real ids fused unrelated pairs into one fake
+    competition group and corrupted the cross-option objective."""
+    tok = DummyTokenizer()
+    collator = GroupedDecisionCollator(tok, max_length=128, is_gemma=False)
+    batch_items = [
+        {"group_id": "qA", "premise": "p", "hypothesis": "option a gold", "is_gold": True, "label": 1},
+        {"group_id": "qA", "premise": "p", "hypothesis": "option a distractor", "is_gold": False, "label": 0},
+        {"group_id": "qB", "premise": "p", "hypothesis": "option b gold", "is_gold": True, "label": 1},
+        {"group_id": "qB", "premise": "p", "hypothesis": "option b distractor", "is_gold": False, "label": 0},
+        {"group_id": -1, "premise": "A man sleeps.", "hypothesis": "A person rests.", "is_gold": True, "label": 1},
+        {"group_id": "-1", "premise": "A man walks.", "hypothesis": "A person moves.", "is_gold": True, "label": 1},
+        {"group_id": None, "premise": "It rains.", "hypothesis": "Water falls.", "is_gold": True, "label": 1},
+        {"group_id": "", "premise": "Dogs bark.", "hypothesis": "Animals vocalize.", "is_gold": True, "label": 1},
+        {"group_id": "   ", "premise": "Birds fly.", "hypothesis": "Animals travel.", "is_gold": True, "label": 1},
+    ]
+
+    out = collator(batch_items)
+    gids = out["group_ids"].tolist()
+    assert gids[0] == gids[1] == 0, f"qA must compact to batch id 0: {gids}"
+    assert gids[2] == gids[3] == 1, f"qB must compact to batch id 1: {gids}"
+    for i in range(4, len(gids)):
+        expected = batch_items[i]["group_id"]
+        assert gids[i] == -1, f"sentinel row {i} (group_id={expected!r}) collated to {gids[i]}"
+
+    # Cross-option loss sees only the 2 real competition groups; the ungrouped
+    # rows must receive zero xopt gradient (mirrors the hard-loss test above).
+    scores = torch.tensor([3.0, 0.1, 2.5, 0.2, 9.0, 9.0, 9.0, 9.0, 9.0], requires_grad=True)
+    loss, metrics = compute_cross_option_loss(scores, out["group_ids"], out["is_gold"])
+    assert metrics["n_groups"] == 2, f"expected only the 2 real groups, got {metrics}"
+    loss.backward()
+    grad = scores.grad
+    assert grad is not None, "no gradient flowed back to scores"
+    assert grad[0].item() < 0.0  # qA gold logit pushed UP
+    assert grad[1].item() > 0.0  # qA distractor pushed DOWN
+    assert grad[2].item() < 0.0  # qB gold logit pushed UP
+    assert grad[3].item() > 0.0  # qB distractor pushed DOWN
+    for i in range(4, len(grad)):
+        assert grad[i].item() == 0.0, f"ungrouped row {i} received xopt gradient {grad[i].item()}"
+
+
 if __name__ == "__main__":
     test_compute_cross_option_loss_hard()
     test_compute_cross_option_loss_soft_targets()
@@ -336,7 +405,9 @@ if __name__ == "__main__":
     test_sampler_len_matches_yielded_batch_count()
     test_sampler_batch_composition_is_epoch_invariant()
     test_sampler_never_splits_oversized_group()
+    test_sampler_empty_inputs_yield_zero_batches()
     test_grouped_decision_collator()
+    test_collator_ungrouped_sentinels_stay_out_of_competition_groups()
     test_canonical_decision_rejects_too_many_options()
     test_canonical_decision_rejects_gold_index_out_of_bounds()
     test_canonical_decision_rejects_duplicate_option_texts()

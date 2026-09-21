@@ -148,6 +148,53 @@ class CanonicalDecision:
             metadata=d.get("metadata", {}),
         )
 
+    def shifted(self, shift: int) -> "CanonicalDecision":
+        """Single cyclic shift of the options, without building the other K-1 permutations.
+
+        Semantically identical to ``to_cyclic_permutations()[shift]``. Hot paths
+        that only need one random shift per item (InContextPermutationCollator)
+        use this to avoid materializing all K fully-validated permutations —
+        an O(K^2) allocation cost per batch item.
+
+        Example:
+            >>> dec = CanonicalDecision(id="d", domain="t", context="c", question="q",
+            ...     options=[{"key": "A", "text": "a"}, {"key": "B", "text": "b"}], gold_index=0)
+            >>> dec.shifted(1).gold_key
+            'B'
+        """
+        k = self.num_options
+        if not 0 <= shift < k:
+            raise ValueError(
+                f"shift={shift} is outside the valid range [0, {k - 1}] for "
+                f"num_options={k} (decision id={self.id!r})"
+            )
+        # Rotated option texts
+        rotated_raw = self.options[shift:] + self.options[:shift]
+        new_opts = [
+            {"key": STANDARD_OPTION_KEYS[min(i, len(STANDARD_OPTION_KEYS) - 1)], "text": opt["text"]}
+            for i, opt in enumerate(rotated_raw)
+        ]
+
+        new_gold_idx = (self.gold_index - shift) % k
+        new_gold_key = STANDARD_OPTION_KEYS[min(new_gold_idx, len(STANDARD_OPTION_KEYS) - 1)]
+
+        new_soft = None
+        if self.soft_distribution and len(self.soft_distribution) == k:
+            new_soft = self.soft_distribution[shift:] + self.soft_distribution[:shift]
+
+        return CanonicalDecision(
+            id=f"{self.id}_perm_{shift}",
+            domain=self.domain,
+            context=self.context,
+            question=self.question,
+            options=new_opts,
+            gold_index=new_gold_idx,
+            gold_key=new_gold_key,
+            soft_distribution=new_soft,
+            is_trap=self.is_trap,
+            metadata={**self.metadata, "permutation_shift": shift, "original_id": self.id},
+        )
+
     def to_cyclic_permutations(self, num_shifts: Optional[int] = None) -> List["CanonicalDecision"]:
         """Generates cyclic permutations of the options list.
 
@@ -168,39 +215,7 @@ class CanonicalDecision:
             return [self]
 
         max_shifts = k if num_shifts is None else min(num_shifts, k)
-        permutations: List[CanonicalDecision] = []
-
-        for shift in range(max_shifts):
-            # Rotated option texts
-            rotated_raw = self.options[shift:] + self.options[:shift]
-            new_opts = []
-            for i, opt in enumerate(rotated_raw):
-                new_key = STANDARD_OPTION_KEYS[min(i, len(STANDARD_OPTION_KEYS) - 1)]
-                new_opts.append({"key": new_key, "text": opt["text"]})
-
-            new_gold_idx = (self.gold_index - shift) % k
-            new_gold_key = STANDARD_OPTION_KEYS[min(new_gold_idx, len(STANDARD_OPTION_KEYS) - 1)]
-
-            new_soft = None
-            if self.soft_distribution and len(self.soft_distribution) == k:
-                new_soft = self.soft_distribution[shift:] + self.soft_distribution[:shift]
-
-            permutations.append(
-                CanonicalDecision(
-                    id=f"{self.id}_perm_{shift}",
-                    domain=self.domain,
-                    context=self.context,
-                    question=self.question,
-                    options=new_opts,
-                    gold_index=new_gold_idx,
-                    gold_key=new_gold_key,
-                    soft_distribution=new_soft,
-                    is_trap=self.is_trap,
-                    metadata={**self.metadata, "permutation_shift": shift, "original_id": self.id},
-                )
-            )
-
-        return permutations
+        return [self.shifted(shift) for shift in range(max_shifts)]
 
     def format_in_context_prompt(self, include_answer_slot: bool = True) -> Tuple[str, str]:
         """Formats the decision into a State-First Causal LM prompt.
@@ -338,7 +353,10 @@ class InContextPermutationCollator:
             # If permuting during training, pick a random cyclic shift
             if self.permute_training and dec.num_options > 1:
                 shift = self._rng.randint(0, dec.num_options - 1)
-                active_dec = dec.to_cyclic_permutations(num_shifts=dec.num_options)[shift]
+                # WHY: build only the randomly chosen shift; to_cyclic_permutations()
+                # materializes all K fully-validated permutations per item just to
+                # index one, an O(K^2) allocation hot path in the training loop.
+                active_dec = dec.shifted(shift)
             else:
                 active_dec = dec
 
@@ -442,7 +460,16 @@ class SetAttentionCollator:
 
         # Build set adjacency mask: mask[i, j] = 1 if group_ids[i] == group_ids[j] >= 0 else 0
         gids = collated["group_ids"]
-        n = len(gids)
+        if not bool((gids >= 0).any()):
+            # WHY: an all-ungrouped batch makes the adjacency mask all-False; an
+            # nn.TransformerEncoder consuming a fully-masked src_key_padding_mask
+            # emits NaN scores downstream, so the set-attention head requires at
+            # least one grouped decision / candidate set per batch.
+            raise ValueError(
+                "SetAttentionCollator requires at least one grouped decision "
+                "(group_id >= 0) per batch for the set-attention head; got "
+                f"group_ids={gids.tolist()}"
+            )
         valid_groups = gids >= 0
         adj_mask = (gids.unsqueeze(1) == gids.unsqueeze(0)) & (valid_groups.unsqueeze(1) & valid_groups.unsqueeze(0))
 

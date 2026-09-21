@@ -11,6 +11,7 @@ Tests run strictly on CPU (no network / GPU required):
 5. System1Engine Protocol Compliance across Cross-Encoder, Causal, and Set-Attention models
 6. Position Bias Index (PBI) and Decision Flip Rate Arithmetic
 7. Evaluation Suite End-to-End Smoke Test and Pareto Table Generation
+8. Train-Serving Parity: option_keys forwarding to decide() and content-based mock tie-break
 
 Run: CUDA_VISIBLE_DEVICES= uv run python tests/test_system1_framework.py
 """
@@ -43,6 +44,7 @@ from decision_engine import (
 )
 from eval_system1_suite import (
     compute_pbi_and_flip_rate,
+    evaluate_decision_dataset,
     format_pareto_markdown_table,
     run_full_suite,
     MockInvariantEngine,
@@ -167,6 +169,30 @@ class UniformRoundRobinEngine(System1Engine):
 
     def rerank(self, query: str, documents: Sequence[str], **kwargs: Any) -> RerankResult:
         return RerankResult(ranked_indices=list(range(len(documents))), items=[])
+
+
+class ParitySpyEngine(MockInvariantEngine):
+    """MockInvariantEngine subclass that records every decide() invocation.
+
+    Used to prove the evaluation harness forwards serving-parity option_keys on
+    every call (base AND cyclically shifted presentations) and that the returned
+    probabilities stay keyed on the ORIGINAL option texts.
+    """
+
+    def __init__(self) -> None:
+        self.decide_calls: List[Dict[str, Any]] = []
+
+    def decide(self, context: str, question: str, options: Sequence[str], mode: str = "fast", **kwargs: Any) -> DecisionResult:
+        result = super().decide(context, question, options, mode=mode, **kwargs)
+        self.decide_calls.append(
+            {
+                "options": list(options),
+                "option_keys": kwargs.get("option_keys"),
+                "mode": mode,
+                "result": result,
+            }
+        )
+        return result
 
 
 # -----------------------------------------------------------------------------
@@ -375,6 +401,28 @@ class TestSystem1Framework(unittest.TestCase):
         self.assertEqual(meta["num_eligible"], 2)
         self.assertEqual(flip_rate, 1.0, f"Flip rate must use only eligible (k>1) items, got {flip_rate}")
 
+    def _tie_decision(self, scenario_idx: int) -> CanonicalDecision:
+        """Decision whose two leading options tie at the maximum text length."""
+        tied_first = f"alpha one {scenario_idx}"
+        tied_second = f"bravo two {scenario_idx}"
+        if len(tied_first) != len(tied_second):
+            raise ValueError(
+                f"tie precondition violated: len({tied_first!r})={len(tied_first)} != "
+                f"len({tied_second!r})={len(tied_second)}; tied options must share the maximum length"
+            )
+        return CanonicalDecision(
+            id=f"tie_probe_{scenario_idx}",
+            domain="tie_probe",
+            context="Two candidates tie at the maximum text length.",
+            question="Which option holds?",
+            options=[
+                {"key": "A", "text": tied_first},
+                {"key": "B", "text": tied_second},
+                {"key": "C", "text": "x"},
+            ],
+            gold_index=0,
+        )
+
     def test_eval_suite_smoke_run(self):
         """Runs full evaluation suite on mock invariant engine."""
         items = [self.sample_decision, self.sample_decision]
@@ -387,6 +435,101 @@ class TestSystem1Framework(unittest.TestCase):
         table_md = format_pareto_markdown_table([res])
         self.assertIn("| Model Architecture |", table_md)
         self.assertIn("mock-invariant-engine", table_md)
+
+    def test_evaluate_decision_dataset_passes_serving_parity_option_keys(self):
+        """Regression (finding 7): the eval harness must serve option keys like training does.
+
+        Training formats choice hypotheses as 'The correct answer is: {key}: {desc}'
+        (SERVING_CHOICE_TEMPLATE, research/adapters/typed_decisions_adapter.py), but
+        evaluate_decision_dataset used to call decide() WITHOUT option_keys, serving
+        the unrepresented 'The correct answer is: {text}'.
+        """
+        items = [self.sample_decision, self._distinct_decision(0, 4)]
+        spy = ParitySpyEngine()
+
+        evaluate_decision_dataset(spy, items, mode="fast")
+
+        self.assertEqual(len(spy.decide_calls), len(items))
+        for call, item in zip(spy.decide_calls, items):
+            self.assertEqual(
+                call["option_keys"],
+                [o["key"] for o in item.options],
+                f"item {item.id!r} must be decided with its own option keys, got {call['option_keys']}",
+            )
+            self.assertEqual(call["options"], [o["text"] for o in item.options])
+            # decide() guarantees probabilities stay keyed on the ORIGINAL option texts,
+            # not on the key-prefixed serving hypotheses; the Brier bookkeeping relies on it.
+            self.assertEqual(set(call["result"].probabilities), {o["text"] for o in item.options})
+
+    def test_compute_pbi_and_flip_rate_passes_presentation_own_keys(self):
+        """Base presentation AND every cyclic shift must receive their own option keys.
+
+        Shifted presentations from to_cyclic_permutations reassign keys POSITIONALLY,
+        mirroring the training permutation curriculum; forwarding stale item-level keys
+        would mis-align the (key, text) hypotheses pairs.
+        """
+        item = self.sample_decision
+        spy = ParitySpyEngine()
+
+        compute_pbi_and_flip_rate(spy, [item], max_items=1)
+
+        perms = item.to_cyclic_permutations()
+        self.assertEqual(len(spy.decide_calls), len(perms))
+        for call, perm in zip(spy.decide_calls, perms):
+            self.assertEqual(
+                call["option_keys"],
+                [o["key"] for o in perm.options],
+                f"presentation {perm.id!r} must be decided with its own keys, got {call['option_keys']}",
+            )
+            self.assertEqual(call["options"], [o["text"] for o in perm.options])
+            self.assertEqual(set(call["result"].probabilities), {o["text"] for o in perm.options})
+        # Sanity: the shifts really present different option orders, so per-presentation
+        # key forwarding is being exercised, not one repeated base call.
+        presented_orders = {tuple(call["options"]) for call in spy.decide_calls}
+        self.assertEqual(len(presented_orders), len(perms))
+
+    def test_invariant_engine_tie_break_is_content_based(self):
+        """Regression (finding 8): maximum-length ties must not follow presentation order.
+
+        np.argmax broke length ties by first position, so rotating two tied maximum-length
+        options flipped best_option. The content-based tie-break (lexicographically
+        smallest text among maximum-length options) must return the same option under
+        every cyclic rotation.
+        """
+        item = CanonicalDecision(
+            id="tie_probe",
+            domain="tie_probe",
+            context="Two candidates tie at the maximum text length.",
+            question="Which option holds?",
+            options=[
+                {"key": "A", "text": "bravo two"},  # len 9, lexicographically larger
+                {"key": "B", "text": "alpha one"},  # len 9, lexicographically smaller
+                {"key": "C", "text": "x"},           # len 1
+            ],
+            gold_index=1,
+        )
+        self.assertEqual(len("bravo two"), len("alpha one"), "tie precondition: both candidates share the maximum length")
+
+        engine = MockInvariantEngine()
+        for perm in item.to_cyclic_permutations():
+            res = engine.decide(
+                context=perm.context,
+                question=perm.question,
+                options=[o["text"] for o in perm.options],
+            )
+            self.assertEqual(
+                res.best_option,
+                "alpha one",
+                f"rotation shift={perm.metadata['permutation_shift']} must not change the winner, got {res.best_option!r}",
+            )
+            self.assertEqual(perm.options[res.best_index]["text"], "alpha one")
+
+    def test_flip_rate_zero_on_tie_heavy_items(self):
+        """Regression (finding 8): tie-heavy items must not inflate the invariant flip rate."""
+        items = [self._tie_decision(i) for i in range(6)]
+        _, flip_rate, meta = compute_pbi_and_flip_rate(MockInvariantEngine(), items, max_items=len(items))
+        self.assertEqual(meta["num_eligible"], 6)
+        self.assertEqual(flip_rate, 0.0, f"Content-based ties must never flip, got flip_rate={flip_rate}")
 
 
 if __name__ == "__main__":

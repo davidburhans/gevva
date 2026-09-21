@@ -47,9 +47,13 @@ ENGINE_CHOICES = ("mock-invariant", "cross_encoder", "causal", "set_attention")
 class MockInvariantEngine(System1Engine):
     """Offline content-based mock engine that is invariant to option order.
 
-    Heuristic: always predicts the option with the longest text. Deterministic and
-    permutation-invariant, so the default CLI run exercises the full evaluation
-    suite (PBI, flip rate, calibration, latency) without any network or GPU.
+    Heuristic: always predicts the option with the longest text; ties at the maximum
+    length are broken by the lexicographically smallest TEXT, never by position. The
+    positional first-max tie-break (np.argmax) used to leak presentation order into
+    best_option whenever several options tied at the maximum length. Fully
+    deterministic (no RNG) and permutation-invariant, so the default CLI run
+    exercises the full evaluation suite (PBI, flip rate, calibration, latency)
+    without any network or GPU.
     """
 
     @property
@@ -61,12 +65,18 @@ class MockInvariantEngine(System1Engine):
         return "mock"
 
     def decide(self, context: str, question: str, options: Sequence[str], mode: str = "fast", **kwargs: Any) -> DecisionResult:
-        k = len(options)
-        lens = [len(opt) for opt in options]
-        best_idx = int(np.argmax(lens))
-        probs = {opt: (0.9 if i == best_idx else 0.1 / max(1, k - 1)) for i, opt in enumerate(options)}
+        opt_texts = list(options)
+        k = len(opt_texts)
+        lens = [len(opt) for opt in opt_texts]
+        # Content-based tie-break: among maximum-length options, lexicographically
+        # smallest text wins. Rotating the presentation then cannot change best_option,
+        # because the winning (length, text) pair is a property of the option SET.
+        max_len = max(lens)
+        best_text = min(opt for opt, length in zip(opt_texts, lens) if length == max_len)
+        best_idx = opt_texts.index(best_text)
+        probs = {opt: (0.9 if i == best_idx else 0.1 / max(1, k - 1)) for i, opt in enumerate(opt_texts)}
         return DecisionResult(
-            best_option=options[best_idx],
+            best_option=opt_texts[best_idx],
             best_index=best_idx,
             probabilities=probs,
             scores=[float(l) for l in lens],
@@ -133,6 +143,15 @@ def compute_pbi_and_flip_rate(
          mixed-K correct expectation (see `_position_bias_index`).
          Perfectly uniform engine -> PBI == 0.0 exactly.
          Skewed distribution (e.g. always picking 'A') -> PBI is high (>0.15).
+
+    Serving parity: every decide() call forwards option_keys taken from the
+    presentation's OWN option dicts — the base presentation uses the item's original
+    keys, and each cyclic shift uses the positionally reassigned keys from
+    `CanonicalDecision.to_cyclic_permutations`, mirroring the training permutation
+    curriculum whose choice hypotheses are formatted as
+    'The correct answer is: {key}: {desc}' (SERVING_CHOICE_TEMPLATE,
+    research/adapters/typed_decisions_adapter.py). Engines key result probabilities
+    on the ORIGINAL option texts, so best_option / slot statistics remain valid.
     """
     sample = items[:max_items]
     if not sample:
@@ -154,6 +173,7 @@ def compute_pbi_and_flip_rate(
             context=item.context,
             question=item.question,
             options=[o["text"] for o in item.options],
+            option_keys=[o["key"] for o in item.options],
             mode=mode,
         )
         base_choice = base_res.best_option
@@ -166,6 +186,7 @@ def compute_pbi_and_flip_rate(
                 context=shifted_item.context,
                 question=shifted_item.question,
                 options=[o["text"] for o in shifted_item.options],
+                option_keys=[o["key"] for o in shifted_item.options],
                 mode=mode,
             )
             # Check if chosen option text differs from base choice
@@ -197,7 +218,15 @@ def evaluate_decision_dataset(
     mode: str = "fast",
     limit: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Runs standard evaluation over a CanonicalDecision dataset."""
+    """Runs standard evaluation over a CanonicalDecision dataset.
+
+    Serving parity: each decide() call forwards option_keys from the item's OWN
+    option dicts so cross-encoder hypotheses are formatted as
+    'The correct answer is: {key}: {desc}' — the SERVING_CHOICE_TEMPLATE pattern the
+    training curriculum actually teaches — instead of the unrepresented
+    'The correct answer is: {text}'. Result probabilities stay keyed on the original
+    option texts, which the accuracy / Brier bookkeeping below relies on.
+    """
     items = dataset[:limit] if limit is not None else dataset
     total = len(items)
     if total == 0:
@@ -221,6 +250,7 @@ def evaluate_decision_dataset(
             context=item.context,
             question=item.question,
             options=opts,
+            option_keys=[o["key"] for o in item.options],
             mode=mode,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
