@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -27,6 +28,11 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+# WHY: stage-3 long-context training OOM'd (2026-09-21) with 3.5 GiB reserved-but-
+# unallocated allocator fragmentation; expandable segments let short and 16K-token
+# bucket batches share one segment pool instead of stranding holes.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import torch
@@ -109,7 +115,34 @@ class NLIDataset(Dataset):
         return len(self.rows)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        return self.rows[idx]
+        row = dict(self.rows[idx])
+        # Stable dataset index: keeps collator id fallbacks unique when bucketed
+        # batch samplers reorder rows across batches (test_items.jsonl pairing).
+        row.setdefault("dataset_idx", idx)
+        return row
+
+
+# Conservative upper bound on template wrapper tokens ("Premise: ...\nHypothesis:
+# ...\nPrediction:"). Over-estimating is safe: batches only get smaller.
+TEMPLATE_TOKEN_OVERHEAD = 32
+
+
+def compute_token_lengths(rows: List[Dict[str, Any]], tokenizer: Any, max_length: int) -> List[int]:
+    """Token-accurate capped sequence lengths for token-budget batching.
+
+    The chars//4 heuristic undercounts dense synthetic text (digits, citation ids,
+    serial numbers) by 2-4x, letting token-bucket batches silently exceed their
+    budget and OOM at long context (stage-3 incident, 2026-09-21).
+
+    Example:
+        >>> compute_token_lengths([{"premise": "a", "hypothesis": "b"}], tok, 512)
+        [34]  # 1 + 1 content tokens + template overhead, capped at 512
+    """
+    premises = [str(r.get("premise", "")) for r in rows]
+    hypotheses = [str(r.get("hypothesis", "")) for r in rows]
+    n_p = [len(x) for x in tokenizer(premises, add_special_tokens=False)["input_ids"]]
+    n_h = [len(x) for x in tokenizer(hypotheses, add_special_tokens=False)["input_ids"]]
+    return [min(max_length, TEMPLATE_TOKEN_OVERHEAD + p + h) for p, h in zip(n_p, n_h)]
 
 
 class DataCollatorNLI:
@@ -177,7 +210,7 @@ class DataCollatorNLI:
 
         labels = [r["label"] for r in batch]
         sources = [r["source"] for r in batch]
-        sample_ids = [r.get("id", f"row_{i}") for i, r in enumerate(batch)]
+        sample_ids = [r.get("id", f"row_{r.get('dataset_idx', i)}") for i, r in enumerate(batch)]
 
         max_len = max(len(tok_ids) for tok_ids in batch_input_ids)
         if self.pad_to_multiple_of > 0 and max_len % self.pad_to_multiple_of != 0:
@@ -351,7 +384,9 @@ def train_cross_encoder(args):
     )
     if getattr(args, "token_bucketing", False):
         print(f"Using Deterministic Token-Bucket Batching (max_tokens_per_batch={getattr(args, 'max_tokens_per_batch', 2048)})...")
-        train_lengths = [max(16, min(args.max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_ds.rows]
+        # WHY: chars//4 estimates undercount dense synthetic haystack text 2-4x,
+        # breaking the token budget (stage-3 OOM, 2026-09-21). Tokenizer-exact lengths.
+        train_lengths = compute_token_lengths(train_ds.rows, tokenizer, args.max_length)
         train_sampler = TokenBucketBatchSampler(
             train_lengths, max_tokens_per_batch=getattr(args, "max_tokens_per_batch", 2048), shuffle=True, seed=args.seed
         )
@@ -372,13 +407,26 @@ def train_cross_encoder(args):
             num_workers=2,
             pin_memory=True,
         )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size * 2,
-        shuffle=False,
-        collate_fn=collator,
-        num_workers=2,
-    )
+    if getattr(args, "token_bucketing", False):
+        # WHY: unbucketed val batches pack 16 truncated 128K-haystack rows -> up to
+        # 262K tokens per forward -> 4.4 GiB MLP activations -> OOM at epoch-end
+        # validation (stage-3 incident, 2026-09-21). Eval forwards are no_grad, so
+        # the training token budget is generous headroom.
+        val_lengths = compute_token_lengths(val_ds.rows, tokenizer, args.max_length)
+        val_sampler = TokenBucketBatchSampler(
+            val_lengths,
+            max_tokens_per_batch=getattr(args, "max_tokens_per_batch", 2048),
+            shuffle=False,
+        )
+        val_loader = DataLoader(val_ds, batch_sampler=val_sampler, collate_fn=collator, num_workers=2)
+    else:
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            collate_fn=collator,
+            num_workers=2,
+        )
 
     # 4. Optimizer & LR Scheduler
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -519,6 +567,16 @@ def train_cross_encoder(args):
             with open(os.path.join(cfg_dir, "train_config.json"), "w") as f:
                 json.dump(run_config, f, indent=2)
 
+    # WHY: the reloaded eval model is a second full backbone; keeping the training
+    # model + AdamW/scheduler state resident doubled weights and OOM'd the one-shot
+    # test pass at 16K-token rows (stage-3 smoke, 2026-09-21).
+    del scheduler
+    del optimizer
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Report-only test evaluation, exactly ONCE, on the RELOADED best checkpoint
     # (audit A1: test never participates in checkpoint selection).
     if args.test_file and os.path.exists(args.test_file):
@@ -537,8 +595,18 @@ def train_cross_encoder(args):
         # Test-set fingerprint: ties every reported number & row to the exact test bytes.
         test_sha = hashlib.sha256(open(args.test_file, 'rb').read()).hexdigest()[:16]
         test_ds = NLIDataset(args.test_file)
-        test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2, shuffle=False,
-                                 collate_fn=collator, num_workers=2)
+        if getattr(args, "token_bucketing", False):
+            test_lengths = compute_token_lengths(test_ds.rows, tokenizer, args.max_length)
+            test_sampler = TokenBucketBatchSampler(
+                test_lengths,
+                max_tokens_per_batch=getattr(args, "max_tokens_per_batch", 2048),
+                shuffle=False,
+            )
+            test_loader = DataLoader(test_ds, batch_sampler=test_sampler,
+                                     collate_fn=collator, num_workers=2)
+        else:
+            test_loader = DataLoader(test_ds, batch_size=args.batch_size * 2, shuffle=False,
+                                     collate_fn=collator, num_workers=2)
         test_out = evaluate(best_model, test_loader, device, return_items=True)
         items = test_out.pop("items")
         test_out.pop("logits", None)

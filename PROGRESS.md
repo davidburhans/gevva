@@ -284,6 +284,30 @@ wait for committee → stage sdk files → clean recompile (train/val/**test**) 
 
 ---
 
+## 9b. Stage 3 OOM Incident & Remediation (2026-09-21)
+
+**Incident**: Stage 3 long-context training (launched by the post-stage-2 chain, cmd: `--token-bucketing --max-tokens-per-batch 8192 --max-length 16384 --epochs 2`) failed with CUDA OOM after **4.7 h** (= exactly one epoch) at `F.linear` requesting **4.38 GiB** with 3.49 GiB reserved-but-unallocated. The chain then **falsely declared "ALL STAGES COMPLETED"** (`ckpt/gemma-4-e2b-nli-stage3/` empty). A second OOM surfaced during the fix-verification smoke run.
+
+**Root causes (all verified)**:
+1. **Unbucketed val/test loaders**: `val_loader` packed 16 rows per batch regardless of length. Stage-3 val contains 128K-haystack rows (~710K chars each) truncated to 16,384 tokens by the collator → up to **262K tokens per eval forward** → the 4.38 GiB MLP gate/up activation. Epoch 1 ended at 4.7 h → first epoch-end validation OOM'd.
+2. **chars//4 length heuristic** for train bucketing undercounts dense synthetic haystack text (citation ids, serials, decimals tokenize at ~2-3 chars/token) by **>1.5×** (empirically confirmed in `tests/test_token_bucket_lengths.py`), letting "budgeted" batches exceed budget.
+3. **Training model + optimizer never freed before the one-shot test reload**: a second full backbone loaded alongside AdamW/scheduler state → 27.4 GiB resident → OOM on 16K-token test rows at `torch.clamp`.
+4. **Allocator fragmentation**: no `expandable_segments` (3.49 GiB reserved-unallocated stranded between bucket sizes).
+5. **Chain bugs**: `eval_downstream_decisions.py` invoked with nonexistent `--out` arg (immediate failure); stage stdout not persisted (only last 10 stderr lines); stage-3 timeout 5 h < measured 9.5 h for 2 epochs; success banner printed regardless of stage failures.
+
+**Fixes landed** (`train_cross_encoder.py`, `scripts/run_post_stage2_chain.py`):
+- `compute_token_lengths()`: tokenizer-exact capped lengths replace chars//4 (TEMPLATE_TOKEN_OVERHEAD=32 bound).
+- Val AND test loaders now use `TokenBucketBatchSampler(shuffle=False)` when `--token-bucketing` (max 8,192 tokens/eval forward).
+- `del scheduler/optimizer/model + gc + empty_cache` before `_reload_best_for_eval`.
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` set default before torch import.
+- Collator id fallback now `row_<dataset_idx>` (batch-local `row_{i}` collided under bucketed batching → would corrupt test_items.jsonl McNemar pairing).
+- Chain: per-stage full logs under `results/post_stage2/*.log`, `TimeoutExpired` handling, stage-3 timeout 17 h, `--resume` (skips stages marked done), honest failure-aware final banner, `--out` arg removed.
+- Regression tests: `tests/test_token_bucket_lengths.py` (7 tests incl. >1.5× undercount proof & budget guarantee). All suites green (33/33 new+existing touched).
+
+**Verification**: GPU smoke run (100 train / 300 val rows incl. 16K haystack rows) — training (peak 23.8 GiB), bucketed epoch-end validation (no OOM, steady memory), reload+test path re-verified after fix 3. Full stage-3 relaunch: `uv run python scripts/run_post_stage2_chain.py --resume`.
+
+---
+
 ## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)
 
 Integrated and empirically gated five SOTA advancements with strict open-source attribution:

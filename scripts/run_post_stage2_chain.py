@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -29,6 +30,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 LOG_FILE = REPO_ROOT / "results" / "post_stage2_chain.log"
 STATUS_FILE = REPO_ROOT / "results" / "post_stage2_chain_status.json"
+STAGE_LOG_DIR = REPO_ROOT / "results" / "post_stage2"
 
 
 def log(msg: str) -> None:
@@ -55,12 +57,39 @@ def update_status(stage: str, state: str, details: Any = None) -> None:
     STATUS_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
 
 
+def _stage_log_path(desc: str) -> Path:
+    """Filesystem-safe per-stage log path under results/post_stage2/."""
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in desc.lower().replace(" ", "_"))
+    return STAGE_LOG_DIR / f"{safe}.log"
+
+
 def run_cmd(cmd: List[str], desc: str, timeout_s: int = 7200) -> int:
     log(f"Starting: {desc}")
     log(f"  $ {' '.join(cmd)}")
     t0 = time.time()
-    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=timeout_s)
+    try:
+        res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.time() - t0
+        log(f"  TIMED OUT after {elapsed:.0f}s (limit {timeout_s}s): {desc}")
+        stage_log = _stage_log_path(desc)
+        stage_log.parent.mkdir(parents=True, exist_ok=True)
+        stage_log.write_text(
+            f"$ {' '.join(cmd)}\n\nTIMED OUT after {elapsed:.0f}s\n\n"
+            f"--- stdout ---\n{exc.stdout or ''}\n--- stderr ---\n{exc.stderr or ''}",
+            encoding="utf-8",
+        )
+        return 124
     elapsed = time.time() - t0
+    # WHY: the 2026-09-21 stage-3 OOM lost its stdout because only the last 10
+    # stderr lines were kept. Persist every stage's full output for diagnosis.
+    stage_log = _stage_log_path(desc)
+    stage_log.parent.mkdir(parents=True, exist_ok=True)
+    stage_log.write_text(
+        f"$ {' '.join(cmd)}\n\n--- stdout ---\n{res.stdout or ''}\n--- stderr ---\n{res.stderr or ''}",
+        encoding="utf-8",
+    )
+    log(f"  Full stage output: {stage_log.relative_to(REPO_ROOT)}")
     if res.returncode == 0:
         log(f"  Completed in {elapsed:.1f}s: {desc}")
         if res.stdout:
@@ -213,8 +242,9 @@ def run_downstream_eval() -> None:
         sys.executable,
         "eval_downstream_decisions.py",
         "--model-path", "ckpt/gemma-4-e2b-nli-w4a16-stage2",
-        "--out", "results/stage2_downstream_benchmarks.json",
     ]
+    # NOTE: eval_downstream_decisions.py takes no output-path argument (it prints
+    # results); the per-stage log under results/post_stage2/ captures the output.
     rc = run_cmd(cmd, "Downstream Benchmarks", timeout_s=1800)
     if rc == 0:
         update_status("downstream_benchmarks", "done", "Benchmarks complete")
@@ -261,7 +291,8 @@ def launch_stage3_training(train_file: str) -> bool:
         "--log-interval", "20",
     ]
     log(f"Stage 3 Command: {' '.join(cmd)}")
-    rc = run_cmd(cmd, "Stage 3 Long-Context Training", timeout_s=18000)
+    # 2 epochs measured ~4.7h/epoch on the RTX 5090; 17h covers both plus test eval.
+    rc = run_cmd(cmd, "Stage 3 Long-Context Training", timeout_s=61200)
     if rc == 0:
         update_status("stage3_training", "done", "Stage 3 training completed successfully")
         return True
@@ -291,39 +322,89 @@ def export_stage3_w4a16() -> bool:
         return False
 
 
+def stage_done(stage: str) -> bool:
+    """True iff the stage is recorded as 'done' in the chain status file."""
+    if not STATUS_FILE.exists():
+        return False
+    try:
+        states = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return states.get(stage, {}).get("state") == "done"
+
+
+def report_final_banner() -> None:
+    """Honest end-of-chain summary derived from the status file (no false success)."""
+    try:
+        states = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        states = {}
+    failed = sorted(s for s, v in states.items() if isinstance(v, dict) and v.get("state") == "failed")
+    if failed:
+        log("=" * 65)
+        log(f"CHAIN FINISHED WITH FAILURES: {', '.join(failed)}")
+        log("Full per-stage output under results/post_stage2/; chain log: results/post_stage2_chain.log")
+        log("=" * 65)
+    else:
+        log("=" * 65)
+        log("ALL OVERNIGHT STAGES (STAGE 2 + STAGE 3 + W4A16 EXPORTS) COMPLETED!")
+        log("Ready for morning inspection and Hugging Face Hub upload.")
+        log("=" * 65)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Post-Stage-2 autonomous execution chain (resumable)")
+    parser.add_argument("--resume", action="store_true", help="Skip stages already marked done in the status file")
+    cli = parser.parse_args()
+
     log("=" * 65)
-    log("AUTONOMOUS OVERNIGHT EXECUTION CHAIN STARTED")
+    log(f"AUTONOMOUS EXECUTION CHAIN {'(RESUME MODE) ' if cli.resume else ''}STARTED")
     log("=" * 65)
 
     # 1. Wait for Stage 2 to complete
     metrics = wait_for_stage2()
 
     # 2. Export Stage 2 Standalone W4A16 Model & Verify
-    export_ok = export_and_verify_w4a16()
+    if cli.resume and stage_done("w4a16_export"):
+        log("Skipping Stage 2 W4A16 export (already done).")
+        export_ok = True
+    else:
+        export_ok = export_and_verify_w4a16()
 
     # 3. Downstream System 1 Benchmarks on Stage 2
-    if export_ok:
+    if export_ok and not (cli.resume and stage_done("downstream_benchmarks")):
         run_downstream_eval()
+    elif stage_done("downstream_benchmarks"):
+        log("Skipping downstream benchmarks (already done).")
 
     # 4. Compile Stage 3 Mixture (128K Haystack + Stage 2 Core Replay)
-    stage3_train_path = compile_stage3_mixture()
+    if cli.resume and stage_done("stage3_compilation"):
+        stage3_train_path = str(REPO_ROOT / "data" / "stage3" / "stage3_train.jsonl")
+        log(f"Skipping Stage 3 compilation (already done): {stage3_train_path}")
+    else:
+        stage3_train_path = compile_stage3_mixture()
 
     # 5. Execute Stage 3 Long-Context Training
-    stage3_ok = launch_stage3_training(stage3_train_path)
+    if cli.resume and stage_done("stage3_training"):
+        stage3_ok = True
+        log("Skipping Stage 3 training (already done).")
+    else:
+        stage3_ok = launch_stage3_training(stage3_train_path)
 
     # 6. Export Final Stage 3 Standalone W4A16 Model
-    if stage3_ok:
+    if stage3_ok and not (cli.resume and stage_done("stage3_w4a16_export")):
         export_stage3_w4a16()
+    elif stage_done("stage3_w4a16_export"):
+        log("Skipping Stage 3 W4A16 export (already done).")
 
     # 7. Stage Hugging Face Release Bundle (Dry-Run Preview Only; Defer upload until user review)
-    log("Staging final Hugging Face release preview (uploads deferred until user confirmation)...")
-    stage_huggingface_release()
+    if not (cli.resume and stage_done("hf_staging")):
+        log("Staging final Hugging Face release preview (uploads deferred until user confirmation)...")
+        stage_huggingface_release()
+    else:
+        log("Skipping HF staging (already done).")
 
-    log("=" * 65)
-    log("ALL OVERNIGHT STAGES (STAGE 2 + STAGE 3 + W4A16 EXPORTS) COMPLETED!")
-    log("Ready for morning inspection and Hugging Face Hub upload.")
-    log("=" * 65)
+    report_final_banner()
 
 
 if __name__ == "__main__":
