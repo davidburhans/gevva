@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -38,6 +39,12 @@ from transformers import (
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
 from transformers.models.gemma4.modeling_gemma4 import Gemma4RMSNorm
+
+try:
+    from decision_engine import System1Engine
+except ImportError:
+    class System1Engine:  # type: ignore
+        pass
 
 # -----------------------------------------------------------------------------
 # Constants & Label Mapping
@@ -288,6 +295,16 @@ def _sanitize_nli_delimiters(text: Optional[str]) -> Optional[str]:
     )
 
 
+def _find_duplicate_texts(texts: Sequence[str]) -> List[str]:
+    """Returns the texts that occur more than once, preserving first-seen order.
+
+    WHY: duplicate option/rubric texts silently collapse text-keyed probability dicts
+    (one entry is lost), so callers must be told which texts collided.
+    """
+    counts = Counter(texts)
+    return [text for text, count in counts.items() if count > 1]
+
+
 class RerankResult(int):
     """Subclass of int that preserves Jev integer index behavior while supporting score unpacking."""
     scores: List[float]
@@ -335,7 +352,7 @@ class GradeResult(str):
 # -----------------------------------------------------------------------------
 # High-Level Cross-Encoder Interface
 # -----------------------------------------------------------------------------
-class Gemma4CrossEncoder:
+class Gemma4CrossEncoder(System1Engine):
     """High-level wrapper for inference, reranking, grading, and latent extraction.
     
     Fully compatible with the TypeSafe AI / openjev cross-encoder API and options.
@@ -695,6 +712,9 @@ class Gemma4CrossEncoder:
         # Jev parameter aliases:
         question: Optional[str] = None,
         hyp_fmt: Optional[str] = None,
+        # System1Engine ABC aliases (LSP with decision_engine.System1Engine.rerank):
+        query: Optional[str] = None,
+        documents: Optional[Sequence[str]] = None,
         scoring: str = "margin",
         temperature: Optional[Union[float, str]] = None,
         debias_position: bool = False,
@@ -708,6 +728,8 @@ class Gemma4CrossEncoder:
             hyp_format: Template for candidate hypotheses, e.g. "The correct answer is: {}"
             question: Alias for premise (Jev compatibility)
             hyp_fmt: Alias for hyp_format (Jev compatibility)
+            query: Alias for premise (System1Engine ABC compatibility). `premise` wins when both are given.
+            documents: Alias for options (System1Engine ABC compatibility). Non-empty `options` win when both are given.
             scoring: Scoring rule:
                 - 'margin' (recommended): argmax (P(entailment) - P(contradiction)), robust to neutral priors
                 - 'log_odds' / 'logit_margin': argmax (z_ent - z_con), strictly invariant to neutral logit
@@ -719,8 +741,16 @@ class Gemma4CrossEncoder:
         Fully compatible with Jev: returns RerankResult which behaves as an int index,
         while supporting tuple unpacking (best_idx, scores) and .scores attribute.
         """
+        # System1Engine LSP aliases: `query` aliases `premise`, `documents` aliases `options`.
+        # Precedence: premise wins over query; non-empty options win over documents.
+        if not options and documents is not None:
+            options = documents
         if not options:
             raise ValueError("rerank requires at least one option (audit LOW-MED: empty-array crash)")
+
+        effective_query = premise if premise is not None else (question if question is not None else query)
+        if effective_query is None:
+            raise ValueError("Must provide either premise or question.")
 
         if debias_position and len(options) > 1:
             # Position-bias invariance: evaluate across cyclic permutations
@@ -730,7 +760,7 @@ class Gemma4CrossEncoder:
             for shift in range(n_opts):
                 shifted_opts = list(options[shift:]) + list(options[:shift])
                 shifted_res = self.rerank(
-                    premise=premise,
+                    premise=effective_query,
                     options=shifted_opts,
                     image=image,
                     hyp_format=hyp_format,
@@ -747,12 +777,9 @@ class Gemma4CrossEncoder:
             best_idx = int(np.argmax(avg_scores))
             return RerankResult(best_idx, avg_scores)
 
-        query = premise if premise is not None else question
-        if query is None:
-            raise ValueError("Must provide either premise or question.")
-        query = _sanitize_nli_delimiters(query)
+        safe_query = _sanitize_nli_delimiters(effective_query)
         fmt = hyp_format or hyp_fmt or "The correct answer is: {}"
-        pairs = [(query, fmt.format(_sanitize_nli_delimiters(opt))) for opt in options]
+        pairs = [(safe_query, fmt.format(_sanitize_nli_delimiters(opt))) for opt in options]
         images = [image] * len(options) if image is not None else None
 
         if scoring in ("log_odds", "logit_margin"):
@@ -827,6 +854,157 @@ class Gemma4CrossEncoder:
             "neutral": float(probs[NEUTRAL]),
         }
         return GradeResult(label_name, prob_dict)
+
+    @property
+    def model_name(self) -> str:
+        return str(getattr(self, "model_name_or_path", "gemma4-cross-encoder"))
+
+    @property
+    def paradigm(self) -> str:
+        return "cross_encoder"
+
+    def decide(
+        self,
+        context: str,
+        question: str,
+        options: Sequence[str],
+        mode: str = "fast",
+        option_keys: Optional[Sequence[str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Evaluates K options with neutral-invariant margin reranking.
+
+        Serving layout (train-serving parity with the typed-decisions curriculum):
+            premise = f"{context}\nQuestion: {question}"
+            hypothesis per option = "The correct answer is: {option}"
+            with option_keys      = "The correct answer is: {key}: {option_text}"
+                (matches SERVING_CHOICE_TEMPLATE = "The correct answer is: {key}: {desc}"
+                in research/adapters/typed_decisions_adapter.py)
+
+        The engine is called with scoring='margin' and temperature=1.0, so rerank's
+        .scores are softmax-normalized option probabilities. Consequently:
+            - `probabilities` maps each ORIGINAL option text to its normalized probability.
+            - `scores` is the SAME normalized distribution in option order (not raw margins).
+
+        Args:
+            context: Evidence / policy / document the decision must be grounded in.
+            question: Decision query appended to the context as the premise.
+            options: K unique candidate option texts.
+            mode: "fast" (single pass) or "robust" (cyclic-permutation-ensembled).
+            option_keys: Optional multiple-choice keys (e.g. ["A", "B", "C"]) prefixing each
+                hypothesis for serving parity; the result still reports the original texts.
+
+        Returns:
+            DecisionResult with chosen option, index, per-option probabilities, and scores.
+        """
+        try:
+            from decision_engine import DecisionResult
+        except ImportError:
+            DecisionResult = dict  # type: ignore
+
+        k = len(options)
+        if k == 0:
+            raise ValueError("options cannot be empty")
+        duplicated = _find_duplicate_texts(list(options))
+        if duplicated:
+            raise ValueError(
+                f"options contains duplicate texts {duplicated!r}; each option must be a unique string "
+                "so per-option probabilities map one-to-one onto option texts"
+            )
+        if mode not in ("fast", "robust"):
+            raise ValueError(f"mode must be one of ('fast', 'robust'), got {mode!r}")
+
+        rerank_options = list(options)
+        hyp_format = "The correct answer is: {}"
+        if option_keys is not None:
+            if len(option_keys) != k:
+                raise ValueError(
+                    f"option_keys has length {len(option_keys)} but options has length {k}; "
+                    "provide exactly one key per option"
+                )
+            # Serving parity: training data formats hypotheses as 'The correct answer is: {key}: {desc}'.
+            rerank_options = [f"{key}: {text}" for key, text in zip(option_keys, options)]
+
+        q_text = f"{context.strip()}\nQuestion: {question.strip()}" if question else context.strip()
+        rerank_res = self.rerank(
+            premise=q_text,
+            options=rerank_options,
+            hyp_format=hyp_format,
+            scoring="margin",  # neutral-invariant P(entailment) - P(contradiction)
+            temperature=1.0,  # softmax-normalizes .scores into option probabilities
+            debias_position=(mode == "robust"),
+        )
+        best_idx = int(rerank_res)
+        probabilities = {opt: float(score) for opt, score in zip(options, rerank_res.scores)}
+        scores_in_order = [float(score) for score in rerank_res.scores]
+
+        return DecisionResult(
+            best_option=options[best_idx],
+            best_index=best_idx,
+            probabilities=probabilities,
+            scores=scores_in_order,
+            metadata={"mode": mode, "paradigm": self.paradigm, "num_options": k},
+        )
+
+    def judge(
+        self,
+        context: str,
+        claim: str,
+        **kwargs: Any,
+    ) -> Any:
+        """Evaluates whether claim is Entailment, Contradiction, or Neutral."""
+        try:
+            from decision_engine import JudgeResult
+        except ImportError:
+            JudgeResult = dict  # type: ignore
+
+        if not claim:
+            raise ValueError(f"claim must be a non-empty string, got {claim!r}")
+        probs = self.predict([(context, claim)])[0]
+        prob_dict = {
+            "contradiction": float(probs[CONTRADICTION]),
+            "entailment": float(probs[ENTAILMENT]),
+            "neutral": float(probs[NEUTRAL]),
+        }
+        best_idx = int(np.argmax(probs))
+        verdicts = ["contradiction", "entailment", "neutral"]
+        return JudgeResult(verdict=verdicts[best_idx], probabilities=prob_dict)
+
+    def rate(
+        self,
+        context: str,
+        rubric_levels: Sequence[str],
+        level_values: Optional[Sequence[float]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Computes expected rubric score."""
+        try:
+            from decision_engine import RateResult
+        except ImportError:
+            RateResult = dict  # type: ignore
+
+        k = len(rubric_levels)
+        duplicated_levels = _find_duplicate_texts(list(rubric_levels))
+        if duplicated_levels:
+            raise ValueError(
+                f"rubric_levels contains duplicate texts {duplicated_levels!r}; each rubric level must be a "
+                "unique string so per-level probabilities map one-to-one onto level texts"
+            )
+        if level_values is not None and len(level_values) != len(rubric_levels):
+            raise ValueError(
+                f"level_values has length {len(level_values)} but rubric_levels has length {len(rubric_levels)}; "
+                "provide exactly one numeric value per rubric level"
+            )
+        values = list(level_values) if level_values is not None else [float(i) for i in range(k)]
+        dec_res = self.decide(context=context, question="Which rubric level best describes this state?", options=rubric_levels)
+        probs_array = np.array([dec_res.probabilities[lvl] for lvl in rubric_levels])
+        expected_score = float(np.sum(np.array(values) * probs_array))
+        return RateResult(
+            expected_score=expected_score,
+            level_probabilities=dec_res.probabilities,
+            predicted_level=dec_res.best_option,
+            metadata={"values": values},
+        )
 
 
 # OpenJEV drop-in alias
