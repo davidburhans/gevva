@@ -312,9 +312,24 @@ def stratified_split(
         all_units = list(groups.values()) + [[s] for s in singletons]
         random.shuffle(all_units)
 
-        n_val_units = max(1, int(len(all_units) * val_ratio))
-        val_units = all_units[:n_val_units]
-        train_units = all_units[n_val_units:]
+        # WHY: a plain group shuffle can starve minority classes in the val split -
+        # the P1 run drew 13,022 val rows with ZERO neutral support because every
+        # neutral-bearing group landed in train (2026-09-21 audit). Stratify unit
+        # selection by each group's majority label so every class present in the
+        # data contributes ~val_ratio of its units (and at least one) to val.
+        def _majority_label(unit: List[Dict[str, Any]]) -> Any:
+            return Counter(r.get("label") for r in unit).most_common(1)[0][0]
+
+        strata: Dict[Any, List[List[Dict[str, Any]]]] = defaultdict(list)
+        for unit in all_units:
+            strata[_majority_label(unit)].append(unit)
+
+        val_units: List[List[Dict[str, Any]]] = []
+        train_units: List[List[Dict[str, Any]]] = []
+        for _, units in sorted(strata.items(), key=lambda kv: str(kv[0])):  # deterministic order
+            k_val = max(1, int(round(len(units) * val_ratio)))
+            val_units.extend(units[:k_val])
+            train_units.extend(units[k_val:])
 
         train_set = [item for unit in train_units for item in unit]
         val_set = [item for unit in val_units for item in unit]
