@@ -852,6 +852,25 @@ def train_cross_encoder(args):
         if torch.cuda.is_available():
             print(f"[mem] {tag}: allocated={torch.cuda.memory_allocated() / 2**30:.2f} GiB, "
                   f"reserved={torch.cuda.memory_reserved() / 2**30:.2f} GiB", flush=True)
+            if os.environ.get("TCE_MEM_DEBUG"):
+                _dump_large_tensor_referrers(tag)
+
+    def _dump_large_tensor_referrers(tag: str) -> None:
+        """WHY: v2's cleanup freed only 0.7 of ~10 GiB - an unknown reference pins
+        the training model after del model/optimizer/scheduler/raw_lm. Print what
+        holds every large CUDA tensor so the next run identifies the culprit."""
+        import gc as _gc
+        seen = 0
+        for obj in _gc.get_objects():
+            try:
+                if isinstance(obj, torch.Tensor) and obj.is_cuda and obj.numel() > 50_000_000:
+                    refs = [type(r).__name__ for r in _gc.get_referrers(obj) if not isinstance(r, list)][:6]
+                    print(f"[mem-debug] {tag}: tensor {tuple(obj.shape)} held by {refs}", flush=True)
+                    seen += 1
+                    if seen >= 12:
+                        return
+            except Exception:
+                continue
 
     _log_gpu("after training loop")
     del scheduler, optimizer, model, raw_lm, trainable_params
