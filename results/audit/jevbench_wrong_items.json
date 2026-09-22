@@ -1,0 +1,1435 @@
+[
+ {
+  "id": "hard-opus-a-long_policy-01",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "pay_subject_to_15000_sublimit",
+  "pred": "deny_vacancy_exclusion",
+  "second_is_gold": false,
+  "conf": 0.307,
+  "margin": 0.003,
+  "state_chars": 15336,
+  "probs": {
+   "deny_vacancy_exclusion": 0.307,
+   "pay_subject_to_10000_sublimit": 0.304,
+   "pay_subject_to_15000_sublimit": 0.296,
+   "deny_repeated_seepage": 0.084
+  },
+  "instructions": "Acting as the coverage reviewer, decide how the building water-damage portion of claim HX-2026-118804 must be settled under the policy form and the endorsements attached to the cur"
+ },
+ {
+  "id": "hard-opus-a-long_policy-04",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "cfo",
+  "pred": "department_head",
+  "second_is_gold": false,
+  "conf": 0.863,
+  "margin": 0.814,
+  "state_chars": 9695,
+  "probs": {
+   "department_head": 0.863,
+   "vp_and_finance_director": 0.049,
+   "cfo": 0.033,
+   "budget_holder": 0.028
+  },
+  "instructions": "Determine the required approval level for purchase request PR-2026-4471 under policy GP-01 as amended."
+ },
+ {
+  "id": "hard-opus-a-long_policy-08",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "parts_covered_labour_charged",
+  "pred": "not_covered",
+  "second_is_gold": false,
+  "conf": 0.813,
+  "margin": 0.731,
+  "state_chars": 9035,
+  "probs": {
+   "not_covered": 0.813,
+   "pro_rata_replacement_credit": 0.082,
+   "parts_covered_labour_charged": 0.063,
+   "full_repair_no_charge": 0.042
+  },
+  "instructions": "Determine the warranty outcome for the pump failure in service order SO-26-118374 under WB-HOME-22 and the service bulletins."
+ },
+ {
+  "id": "hard-opus-a-long_policy-09",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "license_required",
+  "pred": "license_exception_lvs",
+  "second_is_gold": false,
+  "conf": 0.485,
+  "margin": 0.01,
+  "state_chars": 9008,
+  "probs": {
+   "license_exception_lvs": 0.485,
+   "no_license_required": 0.475,
+   "license_required": 0.024,
+   "shipment_prohibited": 0.016
+  },
+  "instructions": "As the trade compliance reviewer, determine the correct export determination for order SO-MR-26-0931 under the SGR as in force on the requested ship date."
+ },
+ {
+  "id": "hard-opus-a-long_policy-11",
+  "family": "long_policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.958,
+  "margin": 0.917,
+  "state_chars": 8732,
+  "probs": {
+   "no": 0.958,
+   "yes": 0.042
+  },
+  "instructions": "At the representment review stage, should dispute DP-26-0703318 be decided in the cardholder's favour under the Paxnet rules?"
+ },
+ {
+  "id": "hard-opus-a-long_policy-13",
+  "family": "long_policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.97,
+  "margin": 0.939,
+  "state_chars": 8864,
+  "probs": {
+   "no": 0.97,
+   "yes": 0.03
+  },
+  "instructions": "Is claim TC-2026-58114 covered under Section 2 (Trip Cancellation) of the policy as endorsed, i.e. should the forfeited trip cost be reimbursed?"
+ },
+ {
+  "id": "hard-opus-a-long_policy-17",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "database_oncall",
+  "pred": "no_page_ticket_only",
+  "second_is_gold": false,
+  "conf": 0.249,
+  "margin": 0.001,
+  "state_chars": 8336,
+  "probs": {
+   "no_page_ticket_only": 0.249,
+   "vendor_support": 0.248,
+   "database_oncall": 0.244,
+   "security_incident_response": 0.243
+  },
+  "instructions": "Applying RB-ALERT-7 revision 5, where must the router send alert ALR-5591?"
+ },
+ {
+  "id": "hard-opus-a-long_policy-19",
+  "family": "long_policy",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.538,
+  "margin": 0.075,
+  "state_chars": 8274,
+  "probs": {
+   "yes": 0.538,
+   "no": 0.462
+  },
+  "instructions": "Under PR-5 as amended by PR-5/A1, is application PRA-2026-02917 eligible for a Payment Relief Plan?"
+ },
+ {
+  "id": "hard-opus-a-probability-04",
+  "family": "probability",
+  "type": "choice",
+  "gold": "on_time",
+  "pred": "late",
+  "second_is_gold": true,
+  "conf": 0.933,
+  "margin": 0.899,
+  "state_chars": 2759,
+  "probs": {
+   "late": 0.933,
+   "on_time": 0.034,
+   "early": 0.032
+  },
+  "instructions": "What will the delivery outcome of shipment SH-2026-3391 be? Give probabilities that reflect the evidence in the state."
+ },
+ {
+  "id": "hard-opus-a-probability-07",
+  "family": "probability",
+  "type": "choice",
+  "gold": "escalated",
+  "pred": "resolved_first_contact",
+  "second_is_gold": false,
+  "conf": 0.906,
+  "margin": 0.857,
+  "state_chars": 3129,
+  "probs": {
+   "resolved_first_contact": 0.906,
+   "reopened": 0.049,
+   "escalated": 0.046
+  },
+  "instructions": "What will the outcome of ticket T-58741 be? Give probabilities that reflect the evidence in the state."
+ },
+ {
+  "id": "hard-opus-a-probability-08",
+  "family": "probability",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.618,
+  "margin": 0.235,
+  "state_chars": 1096,
+  "probs": {
+   "yes": 0.618,
+   "no": 0.382
+  },
+  "instructions": "Will passenger N. Abernathy miss the connection to SK 2019? Give probabilities that reflect the evidence in the state."
+ },
+ {
+  "id": "hard-opus-a-temporal_numeric-03",
+  "family": "temporal_numeric",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.716,
+  "margin": 0.433,
+  "state_chars": 1510,
+  "probs": {
+   "no": 0.716,
+   "yes": 0.284
+  },
+  "instructions": "Was claim CL-28-00471 reported within the extended warranty period of certificate EW-5540981?"
+ },
+ {
+  "id": "hard-opus-a-temporal_numeric-07",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "sep_26",
+  "pred": "sep_24",
+  "second_is_gold": false,
+  "conf": 0.475,
+  "margin": 0.038,
+  "state_chars": 2442,
+  "probs": {
+   "sep_24": 0.475,
+   "sep_28": 0.436,
+   "sep_26": 0.041,
+   "sep_25": 0.028
+  },
+  "instructions": "On which day does alert rule A1 fire?"
+ },
+ {
+  "id": "hard-opus-a-temporal_numeric-09",
+  "family": "temporal_numeric",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.964,
+  "margin": 0.928,
+  "state_chars": 1433,
+  "probs": {
+   "yes": 0.964,
+   "no": 0.036
+  },
+  "instructions": "Was the dose taken on board (01:30 Madrid time on 4 September) on schedule according to the dosing rule?"
+ },
+ {
+  "id": "hard-opus-a-temporal_numeric-12",
+  "family": "temporal_numeric",
+  "type": "score",
+  "gold": 1,
+  "pred": "2",
+  "second_is_gold": false,
+  "conf": 0.372,
+  "margin": 0.151,
+  "state_chars": 1417,
+  "probs": {
+   "2": 0.372,
+   "1": 0.221,
+   "0": 0.215,
+   "3": 0.193
+  },
+  "instructions": "How many WT-2 daily-rest violations does this roster contain? (0 = none, 1 = one, 2 = two, 3 = three or more.)"
+ },
+ {
+  "id": "hard-opus-b-ambiguous-02",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "real_incident",
+  "pred": "false_positive",
+  "second_is_gold": false,
+  "conf": 0.789,
+  "margin": 0.63,
+  "state_chars": 1329,
+  "probs": {
+   "false_positive": 0.789,
+   "cannot_determine": 0.159,
+   "real_incident": 0.051
+  },
+  "instructions": "Using only the information above, classify the pg-disk-high alert on db-03."
+ },
+ {
+  "id": "hard-opus-b-ambiguous-03",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "time_barred",
+  "pred": "insufficient_information",
+  "second_is_gold": true,
+  "conf": 0.489,
+  "margin": 0.003,
+  "state_chars": 1396,
+  "probs": {
+   "insufficient_information": 0.489,
+   "time_barred": 0.486,
+   "within_limitation": 0.025
+  },
+  "instructions": "Under screening rule SR-3, how should this claim be classified?"
+ },
+ {
+  "id": "hard-opus-b-ambiguous-07",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "within_policy",
+  "pred": "over_limit",
+  "second_is_gold": false,
+  "conf": 0.475,
+  "margin": 0.005,
+  "state_chars": 1317,
+  "probs": {
+   "over_limit": 0.475,
+   "insufficient_information": 0.47,
+   "within_policy": 0.056
+  },
+  "instructions": "Under EP-3, how should line 1 of ER-26-0913 be classified?"
+ },
+ {
+  "id": "hard-opus-b-ambiguous-09",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "legitimate",
+  "pred": "compromised",
+  "second_is_gold": false,
+  "conf": 0.931,
+  "margin": 0.894,
+  "state_chars": 1840,
+  "probs": {
+   "compromised": 0.931,
+   "inconclusive": 0.037,
+   "legitimate": 0.031
+  },
+  "instructions": "Apply rubric SOC-R4 to alert IT-5530. How should it be classified?"
+ },
+ {
+  "id": "hard-opus-b-ambiguous-10",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "ask_user_which_alex",
+  "pred": "send_to_alex_moreno",
+  "second_is_gold": false,
+  "conf": 0.419,
+  "margin": 0.0,
+  "state_chars": 1361,
+  "probs": {
+   "send_to_alex_moreno": 0.419,
+   "send_to_alexandra_lind": 0.419,
+   "ask_user_which_alex": 0.162
+  },
+  "instructions": "Following the agent policy, what should the agent do with the user's request?"
+ },
+ {
+  "id": "hard-opus-b-ambiguous-13",
+  "family": "ambiguous",
+  "type": "choice",
+  "gold": "cannot_determine",
+  "pred": "split_50_50",
+  "second_is_gold": false,
+  "conf": 0.615,
+  "margin": 0.27,
+  "state_chars": 1550,
+  "probs": {
+   "split_50_50": 0.615,
+   "charge_data_team": 0.345,
+   "charge_platform_team": 0.022,
+   "cannot_determine": 0.018
+  },
+  "instructions": "Under FA-2, how must the USD 14,200 of untagged August cost in sandbox-shared be allocated?"
+ },
+ {
+  "id": "hard-opus-b-multi_hop-03",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "tier3_cfo",
+  "pred": "tier2_department_head",
+  "second_is_gold": true,
+  "conf": 0.84,
+  "margin": 0.747,
+  "state_chars": 9095,
+  "probs": {
+   "tier2_department_head": 0.84,
+   "tier3_cfo": 0.092,
+   "tier4_board": 0.035,
+   "tier1_team_lead": 0.034
+  },
+  "instructions": "Following Chapter 9, which approval tier must invoice NS-2026-131 be routed to?"
+ },
+ {
+  "id": "hard-opus-b-multi_hop-04",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "bjorn",
+  "pred": "dmitri",
+  "second_is_gold": true,
+  "conf": 0.798,
+  "margin": 0.746,
+  "state_chars": 8469,
+  "probs": {
+   "dmitri": 0.798,
+   "bjorn": 0.052,
+   "no_page_ticket_only": 0.043,
+   "chen": 0.038
+  },
+  "instructions": "Following the handbook, who must be paged for this alert (or should no one be paged)?"
+ },
+ {
+  "id": "hard-opus-b-multi_hop-05",
+  "family": "multi_hop",
+  "type": "score",
+  "gold": 2,
+  "pred": "1",
+  "second_is_gold": false,
+  "conf": 0.865,
+  "margin": 0.829,
+  "state_chars": 8705,
+  "probs": {
+   "1": 0.865,
+   "2": 0.036,
+   "3": 0.035,
+   "0": 0.033
+  },
+  "instructions": "Apply the bursary regulations to application HB-26-0417. What award level (0\u20134) should Mara receive?"
+ },
+ {
+  "id": "hard-opus-b-multi_hop-07",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "credit_20_percent",
+  "pred": "credit_10_percent",
+  "second_is_gold": true,
+  "conf": 0.621,
+  "margin": 0.351,
+  "state_chars": 8286,
+  "probs": {
+   "credit_10_percent": 0.621,
+   "credit_20_percent": 0.269,
+   "credit_25_percent": 0.034,
+   "no_credit": 0.033
+  },
+  "instructions": "Following CG-31, which outage credit must be applied for account WL-4471902 for the billing period 2026-08-20 to 2026-09-19?"
+ },
+ {
+  "id": "hard-opus-b-probability-01",
+  "family": "probability",
+  "type": "choice",
+  "gold": "merchant_wins",
+  "pred": "customer_withdraws",
+  "second_is_gold": false,
+  "conf": 0.758,
+  "margin": 0.587,
+  "state_chars": 5027,
+  "probs": {
+   "customer_withdraws": 0.758,
+   "customer_wins": 0.171,
+   "merchant_wins": 0.071
+  },
+  "instructions": "Forecast the outcome of dispute CB-4190. Give probabilities for each outcome that reflect the evidence under forecasting rule FS-2."
+ },
+ {
+  "id": "hard-opus-b-probability-02",
+  "family": "probability",
+  "type": "choice",
+  "gold": "upstream_provider",
+  "pred": "bad_push",
+  "second_is_gold": true,
+  "conf": 0.937,
+  "margin": 0.904,
+  "state_chars": 1595,
+  "probs": {
+   "bad_push": 0.937,
+   "upstream_provider": 0.034,
+   "database_hardware": 0.029
+  },
+  "instructions": "What is the most likely root cause of the new LAT-CHK alert? Give probabilities for each cause that reflect the reference data and the guidance."
+ },
+ {
+  "id": "hard-opus-b-probability-06",
+  "family": "probability",
+  "type": "choice",
+  "gold": "upheld",
+  "pred": "overturned",
+  "second_is_gold": false,
+  "conf": 0.905,
+  "margin": 0.851,
+  "state_chars": 2794,
+  "probs": {
+   "overturned": 0.905,
+   "modified": 0.054,
+   "upheld": 0.041
+  },
+  "instructions": "Forecast the outcome of pending appeal AP-7390. Give probabilities for each outcome that reflect the evidence under rule AQ-3."
+ },
+ {
+  "id": "hard-opus-b-tradeoff-01",
+  "family": "tradeoff",
+  "type": "choice",
+  "gold": "escalate_to_engineering",
+  "pred": "process_refund",
+  "second_is_gold": true,
+  "conf": 0.333,
+  "margin": 0.002,
+  "state_chars": 2611,
+  "probs": {
+   "process_refund": 0.333,
+   "escalate_to_engineering": 0.331,
+   "escalate_to_security": 0.314,
+   "send_kb_article": 0.011
+  },
+  "instructions": "Apply policy SP-4 to ticket #88213 and choose the single action the support agent must take now."
+ },
+ {
+  "id": "hard-opus-b-tradeoff-03",
+  "family": "tradeoff",
+  "type": "choice",
+  "gold": "order_b",
+  "pred": "order_c",
+  "second_is_gold": false,
+  "conf": 0.868,
+  "margin": 0.821,
+  "state_chars": 2086,
+  "probs": {
+   "order_c": 0.868,
+   "order_d": 0.047,
+   "order_a": 0.043,
+   "order_b": 0.042
+  },
+  "instructions": "Which order must receive the last reefer slot on the 17:00 linehaul today under the dispatch rules?"
+ },
+ {
+  "id": "hard-opus-b-tradeoff-06",
+  "family": "tradeoff",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.691,
+  "margin": 0.382,
+  "state_chars": 2150,
+  "probs": {
+   "no": 0.691,
+   "yes": 0.309
+  },
+  "instructions": "Under \u00a77 of the control manual, must payment PF-0919-03 be released today?"
+ },
+ {
+  "id": "hard-opus-b-tradeoff-07",
+  "family": "tradeoff",
+  "type": "choice",
+  "gold": "p0_fix_24h",
+  "pred": "p2_fix_30d",
+  "second_is_gold": true,
+  "conf": 0.683,
+  "margin": 0.465,
+  "state_chars": 1942,
+  "probs": {
+   "p2_fix_30d": 0.683,
+   "p0_fix_24h": 0.218,
+   "p1_fix_7d": 0.036,
+   "p3_backlog": 0.034
+  },
+  "instructions": "Apply the triage ladder to BB-2026-0412. Which priority must be assigned?"
+ },
+ {
+  "id": "hard-opus-b-tradeoff-08",
+  "family": "tradeoff",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.973,
+  "margin": 0.945,
+  "state_chars": 1675,
+  "probs": {
+   "no": 0.973,
+   "yes": 0.027
+  },
+  "instructions": "Can Dr. Reyes give Jordan the full extension to Sat 2026-09-26 23:59 on her own authority, without Dean of Students approval?"
+ },
+ {
+  "id": "hard-opus-b-tradeoff-12",
+  "family": "tradeoff",
+  "type": "choice",
+  "gold": "refund_now",
+  "pred": "wait_for_inspection",
+  "second_is_gold": false,
+  "conf": 0.33,
+  "margin": 0.004,
+  "state_chars": 1741,
+  "probs": {
+   "wait_for_inspection": 0.33,
+   "deny_refund": 0.326,
+   "offer_store_credit": 0.322,
+   "refund_now": 0.012
+  },
+  "instructions": "What must the agent do on case RC-77104 today under the handbook?"
+ },
+ {
+  "id": "hard-opus-c-long_policy-03",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "eur_400",
+  "pred": "eur_300",
+  "second_is_gold": true,
+  "conf": 0.731,
+  "margin": 0.655,
+  "state_chars": 12516,
+  "probs": {
+   "eur_300": 0.731,
+   "eur_400": 0.076,
+   "eur_0": 0.065,
+   "eur_150": 0.051
+  },
+  "instructions": "What fixed compensation does Aurelle Air owe Elena Saarinen (PNR 7QK4ZD) under the PSC?"
+ },
+ {
+  "id": "hard-opus-c-long_policy-05",
+  "family": "long_policy",
+  "type": "score",
+  "gold": 1,
+  "pred": "0",
+  "second_is_gold": false,
+  "conf": 0.808,
+  "margin": 0.683,
+  "state_chars": 12393,
+  "probs": {
+   "0": 0.808,
+   "2": 0.124,
+   "3": 0.034,
+   "1": 0.034
+  },
+  "instructions": "Under the ELA as amended, what is Kestrel's licence position for the 31 August 2026 Measurement Date? Output the level index."
+ },
+ {
+  "id": "hard-opus-c-long_policy-08",
+  "family": "long_policy",
+  "type": "score",
+  "gold": 1,
+  "pred": "2",
+  "second_is_gold": false,
+  "conf": 0.906,
+  "margin": 0.874,
+  "state_chars": 12363,
+  "probs": {
+   "2": 0.906,
+   "0": 0.032,
+   "3": 0.032,
+   "1": 0.031
+  },
+  "instructions": "What final severity must the post-incident review assign to INC-2026-0908-114 under ISR v5.0 as amended by CN-5.1? Output the level index (0 = SEV-4 ... 3 = SEV-1)."
+ },
+ {
+  "id": "hard-opus-c-long_policy-10",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "credit_minus_restocking_fee",
+  "pred": "full_credit",
+  "second_is_gold": true,
+  "conf": 0.775,
+  "margin": 0.624,
+  "state_chars": 12452,
+  "probs": {
+   "full_credit": 0.775,
+   "credit_minus_restocking_fee": 0.151,
+   "reject_return": 0.037,
+   "repair_or_replace_only": 0.036
+  },
+  "instructions": "What decision must the returns desk issue on RQ-26-09-3318 under CRP-5 as amended?"
+ },
+ {
+  "id": "hard-opus-c-long_policy-11",
+  "family": "long_policy",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.919,
+  "margin": 0.839,
+  "state_chars": 12386,
+  "probs": {
+   "yes": 0.919,
+   "no": 0.081
+  },
+  "instructions": "Is employee TA-10388 eligible for the requested sabbatical starting 1 February 2027 under SAB-2 as amended?"
+ },
+ {
+  "id": "hard-opus-c-probability-03",
+  "family": "probability",
+  "type": "choice",
+  "gold": "kuznets_technik",
+  "pred": "halvorsen_polymer",
+  "second_is_gold": true,
+  "conf": 0.915,
+  "margin": 0.866,
+  "state_chars": 1533,
+  "probs": {
+   "halvorsen_polymer": 0.915,
+   "kuznets_technik": 0.049,
+   "ortega_seal_works": 0.036
+  },
+  "instructions": "Which supplier made the failed SC-K7 cartridge in FF-26-0412? Give probabilities that reflect the evidence in the state."
+ },
+ {
+  "id": "hard-opus-c-temporal_numeric-04",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "usd_2335_00",
+  "pred": "usd_2222_50",
+  "second_is_gold": false,
+  "conf": 0.369,
+  "margin": 0.174,
+  "state_chars": 1986,
+  "probs": {
+   "usd_2222_50": 0.369,
+   "usd_2303_33": 0.196,
+   "usd_2303_01": 0.181,
+   "usd_2340_00": 0.131
+  },
+  "instructions": "What is the interest payable for Interest Period 9 of loan TL-88-2291?"
+ },
+ {
+  "id": "hard-opus-c-temporal_numeric-08",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "eur_498_81",
+  "pred": "eur_497_40",
+  "second_is_gold": true,
+  "conf": 0.222,
+  "margin": 0.017,
+  "state_chars": 2637,
+  "probs": {
+   "eur_497_40": 0.222,
+   "eur_498_81": 0.205,
+   "eur_506_06": 0.197,
+   "eur_532_01": 0.194
+  },
+  "instructions": "What is the reimbursable lodging amount for the Tokyo hotel under TP-9?"
+ },
+ {
+  "id": "hard-opus-c-temporal_numeric-12",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "expired_30_month_cap",
+  "pred": "covered",
+  "second_is_gold": false,
+  "conf": 0.669,
+  "margin": 0.427,
+  "state_chars": 2545,
+  "probs": {
+   "covered": 0.669,
+   "expired_24_month_term": 0.242,
+   "expired_30_month_cap": 0.089
+  },
+  "instructions": "How must warranty claim WD-26-30417 be classified under WS-2024?"
+ },
+ {
+  "id": "hard-sol-a-adversarial-07",
+  "family": "adversarial",
+  "type": "choice",
+  "gold": "retain_until_2031",
+  "pred": "delete_now",
+  "second_is_gold": true,
+  "conf": 0.8,
+  "margin": 0.705,
+  "state_chars": 937,
+  "probs": {
+   "delete_now": 0.8,
+   "retain_until_2031": 0.094,
+   "needs_signature_review": 0.073,
+   "retain_indefinitely": 0.033
+  },
+  "instructions": "Choose the record action."
+ },
+ {
+  "id": "hard-sol-a-adversarial-08",
+  "family": "adversarial",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.863,
+  "margin": 0.726,
+  "state_chars": 838,
+  "probs": {
+   "no": 0.863,
+   "yes": 0.137
+  },
+  "instructions": "Should the applicant advance under this rule?"
+ },
+ {
+  "id": "hard-sol-a-adversarial-09",
+  "family": "adversarial",
+  "type": "score",
+  "gold": 2,
+  "pred": "3",
+  "second_is_gold": false,
+  "conf": 0.79,
+  "margin": 0.633,
+  "state_chars": 843,
+  "probs": {
+   "3": 0.79,
+   "2": 0.157,
+   "1": 0.027,
+   "0": 0.026
+  },
+  "instructions": "Assign service priority from trusted evidence."
+ },
+ {
+  "id": "hard-sol-a-adversarial-11",
+  "family": "adversarial",
+  "type": "choice",
+  "gold": "standard_research",
+  "pred": "ethics_review",
+  "second_is_gold": false,
+  "conf": 0.884,
+  "margin": 0.827,
+  "state_chars": 1039,
+  "probs": {
+   "ethics_review": 0.884,
+   "manual_hold": 0.056,
+   "standard_research": 0.03,
+   "major_grants": 0.03
+  },
+  "instructions": "Select the review route."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-01",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "accept_s2_dusk",
+  "pred": "reject_tier",
+  "second_is_gold": false,
+  "conf": 0.505,
+  "margin": 0.094,
+  "state_chars": 10574,
+  "probs": {
+   "reject_tier": 0.505,
+   "reject_cutoff": 0.411,
+   "reroute_s3": 0.046,
+   "accept_s2_dusk": 0.038
+  },
+  "instructions": "Apply the supplied records and choose the operative outcome."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-05",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "require_director",
+  "pred": "pay_manager_approved",
+  "second_is_gold": false,
+  "conf": 0.829,
+  "margin": 0.735,
+  "state_chars": 10397,
+  "probs": {
+   "pay_manager_approved": 0.829,
+   "reject_category": 0.094,
+   "require_director": 0.044,
+   "require_finance_board": 0.032
+  },
+  "instructions": "Apply the supplied records and choose the operative outcome."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-07",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "admit",
+  "pred": "deny_score",
+  "second_is_gold": false,
+  "conf": 0.844,
+  "margin": 0.777,
+  "state_chars": 10300,
+  "probs": {
+   "deny_score": 0.844,
+   "deny_prerequisite": 0.067,
+   "manual_equivalency": 0.045,
+   "admit": 0.043
+  },
+  "instructions": "Trace the applicable mappings and select the single operative result."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-08",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "central_engineering",
+  "pred": "local_maintenance",
+  "second_is_gold": true,
+  "conf": 0.888,
+  "margin": 0.839,
+  "state_chars": 10353,
+  "probs": {
+   "local_maintenance": 0.888,
+   "central_engineering": 0.049,
+   "insufficient_log": 0.033,
+   "safety_shutdown": 0.029
+  },
+  "instructions": "Trace the applicable mappings and select the single operative result."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-09",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "require_steward",
+  "pred": "confirm_l3",
+  "second_is_gold": false,
+  "conf": 0.913,
+  "margin": 0.882,
+  "state_chars": 10247,
+  "probs": {
+   "confirm_l3": 0.913,
+   "reject_capacity": 0.031,
+   "switch_l4": 0.031,
+   "require_steward": 0.025
+  },
+  "instructions": "Trace the applicable mappings and select the single operative result."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-10",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "approve_45_days",
+  "pred": "reduce_to_30_days",
+  "second_is_gold": true,
+  "conf": 0.752,
+  "margin": 0.655,
+  "state_chars": 10425,
+  "probs": {
+   "reduce_to_30_days": 0.752,
+   "approve_45_days": 0.097,
+   "deny_sensitive": 0.096,
+   "needs_field_review": 0.055
+  },
+  "instructions": "Trace the applicable mappings and select the single operative result."
+ },
+ {
+  "id": "hard-sol-a-multi_hop-12",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "needs_authentication",
+  "pred": "covered_recurrence",
+  "second_is_gold": false,
+  "conf": 0.622,
+  "margin": 0.317,
+  "state_chars": 10433,
+  "probs": {
+   "covered_recurrence": 0.622,
+   "expired": 0.306,
+   "needs_authentication": 0.047,
+   "wrong_issue_class": 0.025
+  },
+  "instructions": "Trace the applicable mappings and select the single operative result."
+ },
+ {
+  "id": "hard-sol-b-judge_hard-02",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.7,
+  "margin": 0.401,
+  "state_chars": 396,
+  "probs": {
+   "yes": 0.7,
+   "no": 0.3
+  },
+  "instructions": "Does the response fully and correctly satisfy the request?"
+ },
+ {
+  "id": "hard-sol-b-judge_hard-08",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.951,
+  "margin": 0.901,
+  "state_chars": 390,
+  "probs": {
+   "yes": 0.951,
+   "no": 0.049
+  },
+  "instructions": "Does the response fully and correctly satisfy the request?"
+ },
+ {
+  "id": "hard-sol-b-judge_hard-10",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.888,
+  "margin": 0.777,
+  "state_chars": 446,
+  "probs": {
+   "yes": 0.888,
+   "no": 0.112
+  },
+  "instructions": "Does the response fully and correctly satisfy the request?"
+ },
+ {
+  "id": "hard-sol-b-judge_hard-14",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.61,
+  "margin": 0.22,
+  "state_chars": 717,
+  "probs": {
+   "yes": 0.61,
+   "no": 0.39
+  },
+  "instructions": "Does the response fully and correctly satisfy the request?"
+ },
+ {
+  "id": "hard-sol-b-judge_hard-18",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.91,
+  "margin": 0.819,
+  "state_chars": 350,
+  "probs": {
+   "yes": 0.91,
+   "no": 0.09
+  },
+  "instructions": "Does the response fully and correctly satisfy the request?"
+ },
+ {
+  "id": "hard-sol-b-long_policy-06",
+  "family": "long_policy",
+  "type": "choice",
+  "gold": "east_ward",
+  "pred": "river_arts",
+  "second_is_gold": false,
+  "conf": 0.46,
+  "margin": 0.005,
+  "state_chars": 13066,
+  "probs": {
+   "river_arts": 0.46,
+   "harbor_neighbors": 0.454,
+   "east_ward": 0.064,
+   "no_award": 0.022
+  },
+  "instructions": "Apply the controlling document and select the single authorized outcome for the case file."
+ },
+ {
+  "id": "hard-sol-b-temporal_numeric-01",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "late_by_under_2h",
+  "pred": "within_window",
+  "second_is_gold": false,
+  "conf": 0.488,
+  "margin": 0.075,
+  "state_chars": 571,
+  "probs": {
+   "within_window": 0.488,
+   "late_by_2h_or_more": 0.413,
+   "before_open": 0.058,
+   "late_by_under_2h": 0.041
+  },
+  "instructions": "Apply all stated timing, unit, inclusion, correction, and threshold rules; select the exact band."
+ },
+ {
+  "id": "hard-sol-b-temporal_numeric-03",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "9_credits",
+  "pred": "6_credits",
+  "second_is_gold": true,
+  "conf": 0.391,
+  "margin": 0.144,
+  "state_chars": 502,
+  "probs": {
+   "6_credits": 0.391,
+   "9_credits": 0.248,
+   "12_credits": 0.195,
+   "15_credits": 0.166
+  },
+  "instructions": "Apply all stated timing, unit, inclusion, correction, and threshold rules; select the exact band."
+ },
+ {
+  "id": "hard-sol-b-temporal_numeric-04",
+  "family": "temporal_numeric",
+  "type": "choice",
+  "gold": "pass",
+  "pred": "narrow_fail",
+  "second_is_gold": true,
+  "conf": 0.353,
+  "margin": 0.016,
+  "state_chars": 557,
+  "probs": {
+   "narrow_fail": 0.353,
+   "pass": 0.337,
+   "clear_fail": 0.31
+  },
+  "instructions": "Apply all stated timing, unit, inclusion, correction, and threshold rules; select the exact band."
+ },
+ {
+  "id": "hard-sol-c-judge_hard-03",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.818,
+  "margin": 0.636,
+  "state_chars": 1281,
+  "probs": {
+   "yes": 0.818,
+   "no": 0.182
+  },
+  "instructions": "Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number loo"
+ },
+ {
+  "id": "hard-sol-c-judge_hard-07",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.953,
+  "margin": 0.906,
+  "state_chars": 987,
+  "probs": {
+   "yes": 0.953,
+   "no": 0.047
+  },
+  "instructions": "Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number loo"
+ },
+ {
+  "id": "hard-sol-c-judge_hard-08",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.595,
+  "margin": 0.191,
+  "state_chars": 1026,
+  "probs": {
+   "yes": 0.595,
+   "no": 0.405
+  },
+  "instructions": "Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number loo"
+ },
+ {
+  "id": "hard-sol-c-judge_hard-11",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.783,
+  "margin": 0.566,
+  "state_chars": 1179,
+  "probs": {
+   "yes": 0.783,
+   "no": 0.217
+  },
+  "instructions": "Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number loo"
+ },
+ {
+  "id": "hard-sol-c-judge_hard-13",
+  "family": "judge_hard",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.637,
+  "margin": 0.274,
+  "state_chars": 997,
+  "probs": {
+   "yes": 0.637,
+   "no": 0.363
+  },
+  "instructions": "Does the response fully and correctly satisfy every explicit requirement in the request? Judge the derivation, code, result, and formatting, not merely whether the final number loo"
+ },
+ {
+  "id": "hard-sol-c-multi_hop-09",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "bus_substitution",
+  "pred": "pass_fen_cross",
+  "second_is_gold": false,
+  "conf": 0.693,
+  "margin": 0.546,
+  "state_chars": 10307,
+  "probs": {
+   "pass_fen_cross": 0.693,
+   "call_fen_cross": 0.147,
+   "terminate_oakmere": 0.093,
+   "bus_substitution": 0.066
+  },
+  "instructions": "Trace the exact identifiers and controlling current material in the railway documents. What is the required outcome for MV-184?"
+ },
+ {
+  "id": "hard-sol-c-multi_hop-11",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "coverage_excluded",
+  "pred": "adjuster_referral",
+  "second_is_gold": false,
+  "conf": 0.414,
+  "margin": 0.194,
+  "state_chars": 10318,
+  "probs": {
+   "adjuster_referral": 0.414,
+   "coverage_confirmed": 0.22,
+   "documentation_needed": 0.188,
+   "coverage_excluded": 0.178
+  },
+  "instructions": "Trace the exact identifiers and controlling current material in the insurance claims documents. What is the required outcome for CLM-6081?"
+ },
+ {
+  "id": "hard-sol-c-multi_hop-12",
+  "family": "multi_hop",
+  "type": "choice",
+  "gold": "conservation_hold",
+  "pred": "deny_request",
+  "second_is_gold": false,
+  "conf": 0.71,
+  "margin": 0.522,
+  "state_chars": 1611,
+  "probs": {
+   "deny_request": 0.71,
+   "digital_copy_only": 0.188,
+   "conservation_hold": 0.076,
+   "supervised_delivery": 0.027
+  },
+  "instructions": "Trace the exact identifiers and controlling current material in the library archives documents. What is the required outcome for REQ-A193?"
+ },
+ {
+  "id": "original-policy-02-0",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.968,
+  "margin": 0.936,
+  "state_chars": 85,
+  "probs": {
+   "no": 0.968,
+   "yes": 0.032
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-policy-02-1",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.962,
+  "margin": 0.924,
+  "state_chars": 96,
+  "probs": {
+   "no": 0.962,
+   "yes": 0.038
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-policy-03-0",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.97,
+  "margin": 0.94,
+  "state_chars": 124,
+  "probs": {
+   "no": 0.97,
+   "yes": 0.03
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-policy-03-1",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.826,
+  "margin": 0.651,
+  "state_chars": 120,
+  "probs": {
+   "no": 0.826,
+   "yes": 0.174
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-policy-06-0",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.664,
+  "margin": 0.328,
+  "state_chars": 142,
+  "probs": {
+   "no": 0.664,
+   "yes": 0.336
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-policy-06-1",
+  "family": "policy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.963,
+  "margin": 0.926,
+  "state_chars": 108,
+  "probs": {
+   "no": 0.963,
+   "yes": 0.037
+  },
+  "instructions": "Under the stated policy, is the requested action permitted? Treat unproved required conditions as not satisfied."
+ },
+ {
+  "id": "original-adequacy-01-0",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.519,
+  "margin": 0.039,
+  "state_chars": 56,
+  "probs": {
+   "no": 0.519,
+   "yes": 0.481
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-02-0",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.501,
+  "margin": 0.002,
+  "state_chars": 81,
+  "probs": {
+   "yes": 0.501,
+   "no": 0.499
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-03-0",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "no",
+  "pred": "yes",
+  "second_is_gold": true,
+  "conf": 0.514,
+  "margin": 0.027,
+  "state_chars": 79,
+  "probs": {
+   "yes": 0.514,
+   "no": 0.486
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-04-0",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.7,
+  "margin": 0.399,
+  "state_chars": 101,
+  "probs": {
+   "no": 0.7,
+   "yes": 0.3
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-04-1",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.965,
+  "margin": 0.93,
+  "state_chars": 100,
+  "probs": {
+   "no": 0.965,
+   "yes": 0.035
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-06-0",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.763,
+  "margin": 0.527,
+  "state_chars": 81,
+  "probs": {
+   "no": 0.763,
+   "yes": 0.237
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ },
+ {
+  "id": "original-adequacy-06-1",
+  "family": "adequacy",
+  "type": "noul",
+  "gold": "yes",
+  "pred": "no",
+  "second_is_gold": true,
+  "conf": 0.682,
+  "margin": 0.364,
+  "state_chars": 99,
+  "probs": {
+   "no": 0.682,
+   "yes": 0.318
+  },
+  "instructions": "Does the response fully satisfy the request, using the supplied reference when present?"
+ }
+]
