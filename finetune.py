@@ -71,6 +71,7 @@ from research.adapters.grouped_decision_collator import (
     GroupedDecisionCollator,
     GroupedTokenBucketBatchSampler,
     compute_cross_option_loss,
+    compute_served_distribution_loss,
 )
 
 # -----------------------------------------------------------------------------
@@ -1276,6 +1277,12 @@ def main():
         help="Weight for P1 cross-option softmax loss across competing candidate options (default: 1.0)",
     )
     parser.add_argument(
+        "--served-dist-weight",
+        type=float,
+        default=0.0,
+        help="Weight of the served-distribution loss: CE on renormalized P(entailment) over options - Phase-1 train-serving parity (2026-09-22)",
+    )
+    parser.add_argument(
         "--nli-aux-weight",
         type=float,
         default=0.15,
@@ -1306,6 +1313,7 @@ def main():
         brier_weight=args.brier_weight,
         cross_option_weight=args.cross_option_weight,
         nli_aux_weight=args.nli_aux_weight,
+        served_dist_weight=args.served_dist_weight,
         decision_temp=args.decision_temp,
         val_ratio=args.val_ratio,
         label_convention=args.label_convention,

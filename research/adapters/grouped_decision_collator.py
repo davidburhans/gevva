@@ -36,6 +36,10 @@ from gemma4_cross_encoder import (
     tokenize_nli_pair_safe,
 )
 
+# Index of the entailment column in (N, 3) logits - identical to nli_labels.ENTAILMENT;
+# defined locally to keep this adapter module importable standalone.
+ENTAILMENT_INDEX = int(ENTAILMENT)
+
 DEFAULT_SERVING_HYP_FORMAT = "The correct answer is: {}"
 
 
@@ -120,6 +124,83 @@ def compute_cross_option_loss(
         "xopt_loss": mean_loss.item(),
         "xopt_accuracy": acc,
         "n_groups": evaluated_groups,
+    }
+
+
+def compute_served_distribution_loss(
+    logits: torch.Tensor,
+    group_ids: torch.Tensor,
+    is_gold: torch.Tensor,
+    soft_targets: Optional[torch.Tensor] = None,
+    temperature: float = 1.0,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """CE on the EXACT served artifact: renormalized P(entailment) over options.
+
+    WHY (JevBench audit 2026-09-22): serving (the frozen jevbench mapping, and any
+    P(ent)-renormalizing client) scores options by p_i = softmax3(logits)_ent /
+    sum_j softmax3(logits_j)_ent, while the existing cross-option loss ranks by
+    softmax(z_ent - z_con) over options. The 3-class normalizer does NOT cancel:
+    the two rankings disagree, and 60% of benchmark errors had gold ranked 2nd
+    under the SERVED distribution. This loss optimizes the served distribution
+    directly - train-serving parity for the artifact users actually receive.
+
+    Args:
+        logits: (N, 3) raw classification logits per option pair.
+        group_ids: (N,) ints; items sharing group_id >= 0 form one question; -1 = ungrouped.
+        is_gold: (N,) gold-option indicator.
+        soft_targets: optional (N,) teacher probabilities (renormalized per group).
+        temperature: applied to the 3-class softmax before renormalization
+            (1.0 during training; the shipped calibration T is fitted post-hoc).
+
+    Returns:
+        (mean group CE, metrics incl. served-distribution accuracy + ECE proxy).
+    """
+    valid = group_ids >= 0
+    if not valid.any():
+        return logits.sum() * 0.0, {"served_loss": 0.0, "served_accuracy": 0.0, "served_groups": 0}
+
+    probs3 = torch.softmax(logits / max(1e-4, float(temperature)), dim=-1)
+    p_ent_raw = probs3[:, ENTAILMENT_INDEX]
+    p_ent = p_ent_raw.clamp_min(1e-12)
+
+    group_losses, correct, n_groups, confs = [], 0, 0, []
+    for gid in torch.unique(group_ids[valid]):
+        idx = torch.nonzero(group_ids == gid, as_tuple=False).squeeze(-1)
+        if len(idx) < 2:
+            continue
+        # Adapter semantics: renormalize over options; only an all-underflow group
+        # (raw P(ent) sum exactly 0) is skipped - it serves uniform, no gradient.
+        if float(p_ent_raw[idx].sum()) == 0.0:
+            continue
+        served = p_ent[idx]
+        total = served.sum()
+        dist = served / total
+        confs.append(float(dist.max()))
+        log_dist = torch.log(dist.clamp_min(1e-12))
+
+        gold_onehot = is_gold[idx].float() if is_gold is not None else None
+        targets = soft_targets[idx] if soft_targets is not None else gold_onehot
+        t_sum = targets.sum()
+        if soft_targets is not None and t_sum > 0:
+            targets = targets / t_sum
+            loss_g = -(targets * log_dist).sum()
+        else:
+            gold_idx = torch.argmax(gold_onehot)
+            loss_g = -log_dist[gold_idx]
+        group_losses.append(loss_g)
+        n_groups += 1
+        gold_arg = int(torch.argmax(targets).item())
+        if int(torch.argmax(dist).item()) == gold_arg:
+            correct += 1
+
+    if not group_losses:
+        return logits.sum() * 0.0, {"served_loss": 0.0, "served_accuracy": 0.0, "served_groups": 0}
+    mean_loss = torch.stack(group_losses).mean()
+    return mean_loss, {
+        "served_loss": mean_loss.item(),
+        "served_accuracy": correct / n_groups,
+        "served_groups": n_groups,
+        "served_mean_conf": sum(confs) / len(confs),
     }
 
 
