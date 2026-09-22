@@ -112,6 +112,42 @@ def test_all_zero_entailment_group_skipped():
     assert meta["served_groups"] == 0, "all-underflow entailment group must be skipped (adapter serves uniform)"
 
 
+def test_finetune_served_loss_wiring_is_complete():
+    """Regression (review F02/F03, 2026-09-22): the served-distribution loss once
+    shipped with a CLI flag and call-site argument but NO signature parameter and
+    NO call inside the training loop - argparse would crash, then the run would
+    silently train plain CE+Brier. Pins the full wiring chain and the launcher's
+    flags against finetune.py's actual CLI."""
+    import inspect
+    import re
+    import subprocess
+    import sys as _sys
+
+    import finetune
+
+    sig = inspect.signature(finetune.finetune_custom_data)
+    assert "served_dist_weight" in sig.parameters, "signature must accept served_dist_weight"
+    src = inspect.getsource(finetune.finetune_custom_data)
+    assert "compute_served_distribution_loss(" in src, \
+        "the training loop must CALL compute_served_distribution_loss"
+    assert "served_dist_weight > 0.0" in src, "the call must be gated on served_dist_weight"
+    assert "served_dist_weight * served_loss" in src, "the loss must enter total_loss weighted"
+    # Group-atomic batching is required for the loss to see whole option sets.
+    assert "GroupedTokenBucketBatchSampler(" in src, "grouped batches must use the group sampler"
+
+    launcher = Path(finetune.__file__).parent / "scripts" / "launch_phase1_served.py"
+    launcher_src = launcher.read_text()
+    cmd_block = launcher_src[launcher_src.index("TRAIN_CMD"):launcher_src.index("]", launcher_src.index("TRAIN_CMD"))]
+    cmd_flags = set(re.findall(r'"--([a-z0-9-]+)"', cmd_block))
+    help_text = subprocess.run(
+        [_sys.executable, str(Path(finetune.__file__)), "--help"],
+        capture_output=True, text=True, timeout=120,
+    ).stdout
+    allowed = set(re.findall(r'--([a-z0-9-]+)', help_text))
+    unknown = {f for f in cmd_flags if f not in allowed}
+    assert not unknown, f"launcher passes flags finetune.py does not define: {unknown}"
+
+
 TESTS = [
     test_hand_computed_cross_entropy,
     test_served_and_margin_rankings_disagree,
@@ -119,6 +155,7 @@ TESTS = [
     test_ungrouped_and_singletons_excluded,
     test_soft_targets_renormalized,
     test_all_zero_entailment_group_skipped,
+    test_finetune_served_loss_wiring_is_complete,
 ]
 
 

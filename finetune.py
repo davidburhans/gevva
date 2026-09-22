@@ -36,12 +36,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import os
-import random
-import sys
-import time
+
+# WHY: match train_cross_encoder's allocator config; long grouped batches at
+# 2048 tokens fragment without expandable segments (review F10).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import csv  # noqa: E402
+import json  # noqa: E402
+import random  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -298,15 +303,21 @@ def stratified_split(
     land in the SAME split, preventing train/val data leakage."""
     random.seed(seed)
 
-    # Check if dataset has grouped items
-    has_groups = any(r.get("group_id") for r in data)
+    # Check if dataset has grouped items. The "-1" sentinel marks un-grouped
+    # rows (same convention as the collator/sampler) - treating it as a real
+    # group key made ALL anchor rows split all-or-nothing, recreating the
+    # zero-neutral-validation bug (adversarial review F05, 2026-09-22).
+    def _is_real_group(gid) -> bool:
+        return gid is not None and str(gid) not in ("", "-1")
+
+    has_groups = any(_is_real_group(r.get("group_id")) for r in data)
     if has_groups:
         groups = defaultdict(list)
         singletons = []
         for r in data:
             gid = r.get("group_id")
-            if gid:
-                groups[gid].append(r)
+            if _is_real_group(gid):
+                groups[str(gid)].append(r)
             else:
                 singletons.append(r)
 
@@ -732,24 +743,28 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
 
     acc = float(np.mean(preds == golds)) if len(golds) > 0 else 0.0
 
-    # Decision accuracy (group-level argmax over scores = z_ent - z_con)
+    # Decision accuracy on the SERVED artifact: group argmax over renormalized
+    # P(entailment) - the exact distribution clients receive (review F07: the old
+    # z_ent - z_con margin metric selects checkpoints for a different ranking).
     decision_acc = None
     if all_group_ids:
         cat_gids = np.concatenate(all_group_ids, axis=0)
         cat_is_gold = np.concatenate(all_is_gold, axis=0)
         valid_g = cat_gids >= 0
         if np.any(valid_g):
-            scores_eval = logits[:, ENTAILMENT] - logits[:, CONTRADICTION]
+            p_ent_eval = probs[:, ENTAILMENT]
             u_gids = np.unique(cat_gids[valid_g])
             corr_dec = 0
             n_dec = 0
             for ug in u_gids:
                 u_idx = np.where(cat_gids == ug)[0]
                 if len(u_idx) > 1:
-                    pred_best = u_idx[np.argmax(scores_eval[u_idx])]
-                    if cat_is_gold[pred_best] > 0.5:
-                        corr_dec += 1
-                    n_dec += 1
+                    served = p_ent_eval[u_idx]
+                    if served.sum() > 0:
+                        pred_best = u_idx[np.argmax(served)]
+                        if cat_is_gold[pred_best] > 0.5:
+                            corr_dec += 1
+                        n_dec += 1
             if n_dec > 0:
                 decision_acc = round(corr_dec / n_dec, 4)
 
@@ -817,6 +832,7 @@ def finetune_custom_data(
     brier_weight: float = 0.0,
     cross_option_weight: float = 1.0,
     nli_aux_weight: float = 0.15,
+    served_dist_weight: float = 0.0,
     decision_temp: float = 1.0,
     val_ratio: float = 0.15,
     qat: bool = False,  # A8: QAT must be opt-in; silent nvfp4 simulation corrupted train/serve parity
@@ -1003,8 +1019,18 @@ def finetune_custom_data(
         )
 
     use_pin = (device != "cpu" and torch.cuda.is_available())
+
+    def _token_lengths(records):
+        """Tokenizer-accurate capped lengths; the chars//4 heuristic undercounts
+        dense synthetic text 2-4x and broke the token budget (stage-3 OOM, 2026-09-21)."""
+        premises = [str(r.get("premise", "")) for r in records]
+        hypotheses = [str(r.get("hypothesis", "")) for r in records]
+        n_p = [len(x) for x in tokenizer(premises, add_special_tokens=False)["input_ids"]]
+        n_h = [len(x) for x in tokenizer(hypotheses, add_special_tokens=False)["input_ids"]]
+        return [min(max_length, 32 + p + h) for p, h in zip(n_p, n_h)]
+
     if use_token_bucketing:
-        train_lengths = [max(16, min(max_length, (len(r["premise"]) + len(r["hypothesis"])) // 4 + 16)) for r in train_records]
+        train_lengths = _token_lengths(train_records)
         if has_groups:
             print(f"Using Grouped Token-Bucket Batching (P1 cross-option, max_tokens_per_batch={max_tokens_per_batch})...")
             train_gids = [r.get("group_id") for r in train_records]
@@ -1031,13 +1057,30 @@ def finetune_custom_data(
             collate_fn=collator,
             pin_memory=use_pin,
         )
-    val_loader = DataLoader(
-        CustomNLIDataset(val_records),
-        batch_size=batch_size * 2,
-        shuffle=False,
-        collate_fn=collator,
-        pin_memory=use_pin,
-    )
+    val_records_dataset = CustomNLIDataset(val_records)
+    if use_token_bucketing and has_val_groups:
+        # Review F07: val groups must stay batch-atomic or the decision metric
+        # (and best-checkpoint selection) scores partial option sets.
+        val_sampler = GroupedTokenBucketBatchSampler(
+            _token_lengths(val_records),
+            group_ids=[r.get("group_id") for r in val_records],
+            max_tokens_per_batch=max_tokens_per_batch,
+            shuffle=False,
+        )
+        val_loader = DataLoader(
+            val_records_dataset,
+            batch_sampler=val_sampler,
+            collate_fn=collator,
+            pin_memory=use_pin,
+        )
+    else:
+        val_loader = DataLoader(
+            val_records_dataset,
+            batch_size=batch_size * 2,
+            shuffle=False,
+            collate_fn=collator,
+            pin_memory=use_pin,
+        )
 
     # 5. Optimizer & Scheduler
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1082,27 +1125,45 @@ def finetune_custom_data(
                 )
                 ce_loss = loss_fn(outputs.logits, labels)
 
-                # Cross-option loss (P1)
-                xopt_loss = None
-                xopt_meta = {"xopt_loss": 0.0, "xopt_accuracy": 0.0, "n_groups": 0}
-                if "group_ids" in batch and cross_option_weight > 0.0:
+                # Grouped losses. Two independent objectives on grouped items:
+                # (a) served-distribution loss (Phase 1): CE on the EXACT served
+                #     artifact (renormalized P(entailment)) - train-serving parity;
+                # (b) cross-option margin loss (P1): softmax CE over z_ent - z_con.
+                # Weights are independent; the NLI aux CE applies whenever ANY
+                # grouped term is active (previously it silently vanished when
+                # cross_option_weight == 0 - adversarial review F03, 2026-09-22).
+                served_loss, served_meta = None, {"served_groups": 0}
+                xopt_loss, xopt_meta = None, {"n_groups": 0}
+                if "group_ids" in batch:
                     group_ids = batch["group_ids"].to(device)
                     is_gold = batch["is_gold"].to(device)
                     soft_targets = batch.get("soft_targets")
                     if soft_targets is not None:
                         soft_targets = soft_targets.to(device)
-                    # Candidate score: z_ent - z_con (neutral-invariant logit-odds)
-                    scores = outputs.logits[:, ENTAILMENT] - outputs.logits[:, CONTRADICTION]
-                    xopt_loss, xopt_meta = compute_cross_option_loss(
-                        scores=scores,
-                        group_ids=group_ids,
-                        is_gold=is_gold,
-                        soft_targets=soft_targets,
-                        temperature=decision_temp,
-                    )
+                    if served_dist_weight > 0.0:
+                        served_loss, served_meta = compute_served_distribution_loss(
+                            logits=outputs.logits,
+                            group_ids=group_ids,
+                            is_gold=is_gold,
+                            soft_targets=soft_targets,
+                        )
+                    if cross_option_weight > 0.0:
+                        scores = outputs.logits[:, ENTAILMENT] - outputs.logits[:, CONTRADICTION]
+                        xopt_loss, xopt_meta = compute_cross_option_loss(
+                            scores=scores,
+                            group_ids=group_ids,
+                            is_gold=is_gold,
+                            soft_targets=soft_targets,
+                            temperature=decision_temp,
+                        )
 
+                grouped_terms = []
+                if served_loss is not None and served_meta.get("served_groups", 0) > 0:
+                    grouped_terms.append(served_dist_weight * served_loss)
                 if xopt_loss is not None and xopt_meta.get("n_groups", 0) > 0:
-                    total_loss = cross_option_weight * xopt_loss + nli_aux_weight * ce_loss
+                    grouped_terms.append(cross_option_weight * xopt_loss)
+                if grouped_terms:
+                    total_loss = sum(grouped_terms) + nli_aux_weight * ce_loss
                 else:
                     total_loss = ce_loss
 

@@ -42,7 +42,12 @@ TRAIN_CMD = [
     "--epochs", "2",
     "--lr", "5e-5",
     "--grad-accum", "8",
-    "--log-interval", "20",
+    # Review F04/F06: group-atomic batching (else served_groups ~ 0 per batch and
+    # the served loss silently no-ops) + trained context covering the mixture's
+    # long premises (finetune default max-length is 512).
+    "--token-bucketing",
+    "--max-tokens-per-batch", "4096",
+    "--max-length", "2048",
 ]
 
 
@@ -55,6 +60,20 @@ def gpu_used_mib() -> int:
         return int(out.stdout.strip().splitlines()[0])
     except Exception:
         return 1 << 30
+
+
+def unload_llama_server_models() -> None:
+    """Best-effort llama-swap unload; /models/unload is asynchronous (precedent:
+    a chain OOMed 8s after unload), so callers must re-poll GPU memory."""
+    import urllib.request
+
+    try:
+        req = urllib.request.Request("http://localhost:8080/models/unload", method="POST",
+                                     data=b"{}", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"models/unload -> HTTP {resp.status}")
+    except Exception as exc:  # noqa: BLE001 - best effort only
+        print(f"models/unload failed (continuing): {exc}")
 
 
 def generation_running() -> bool:
@@ -99,15 +118,25 @@ def main() -> int:
 
     if args.wait_for_generation:
         print("Waiting for Phase-2 generation to finish...")
+        deadline = time.time() + 6 * 3600  # review F09: never wait forever
+        unloaded = False
         while True:
             gen = generation_running()
             gpu = gpu_used_mib()
-            if not gen and gpu < args.gpu_free_mib:
-                print("Generation done and GPU free.")
-                time.sleep(60)  # settle: let llama-swap unload completely
+            if not gen and not unloaded:
+                print("Generation exited; unloading llama-swap models (async)...")
+                unload_llama_server_models()
+                unloaded = True
+                time.sleep(90)
+                continue
+            if not gen and unloaded and gpu < args.gpu_free_mib:
+                print("Generation done, models unloaded, GPU free.")
                 launch(args.dry_run)
                 return 0
-            print(f"  generation_running={gen} gpu_used={gpu} MiB - waiting")
+            if time.time() > deadline:
+                print("WAIT TIMEOUT (6h) - not launching. Inspect manually.")
+                return 1
+            print(f"  generation_running={gen} unloaded={unloaded} gpu_used={gpu} MiB - waiting")
             time.sleep(args.poll_seconds)
     launch(args.dry_run)
     return 0

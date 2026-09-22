@@ -74,12 +74,30 @@ def test_ungrouped_path_still_stratifies():
     assert all(val_labels.get(lab, 0) > 0 for lab in (0, 1, 2)), f"class missing from val: {dict(val_labels)}"
 
 
+def test_minus1_sentinel_rows_are_singletons_not_one_mega_group():
+    """Regression (review F05, 2026-09-22): ingestion stores anchor NLI rows with
+    group_id="-1"; the grouped-split path treated the truthy "-1" as ONE group key,
+    splitting all anchors all-or-nothing - recreating the zero-neutral-validation
+    bug. "-1" must be a singleton exactly like a missing group_id."""
+    rows = _grouped_rows(n_binary_groups=20, n_neutral_groups=3)
+    # 60 anchor rows with the -1 sentinel, labels balanced across all 3 classes
+    for i in range(60):
+        rows.append({"group_id": "-1", "label": i % 3,
+                     "premise": f"anchor-p{i}", "hypothesis": f"anchor-h{i}"})
+    train, val = stratified_split(rows, val_ratio=0.15, seed=42)
+    val_labels = Counter(r["label"] for r in val)
+    assert all(val_labels.get(lab, 0) > 0 for lab in (0, 1, 2)), \
+        f"anchor -1 sentinel broke class coverage in val: {dict(val_labels)}"
+    assert any(r.get("group_id") == "-1" for r in train), "anchors must be able to reach train"
+
+
 TESTS = [
     test_minority_class_always_reaches_val,
     test_groups_never_span_splits,
     test_val_ratio_approximately_per_label,
     test_split_is_deterministic_per_seed,
     test_ungrouped_path_still_stratifies,
+    test_minus1_sentinel_rows_are_singletons_not_one_mega_group,
 ]
 
 
