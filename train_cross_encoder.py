@@ -674,11 +674,18 @@ def train_cross_encoder(args):
 
     loss_fn = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
+    # Resume fingerprints bind the checkpoint to data + recipe. checkpoint_interval
+    # and resume_auto are runtime switches, not training semantics - excluded so a
+    # resume with different interrupt-insurance settings still matches (one shared
+    # key set for BOTH save and load; 2026-09-22 fix - load previously hashed the
+    # full vars(args) and could never match its own checkpoints).
+    fp_args = {k: v for k, v in vars(args).items() if k not in ("checkpoint_interval", "resume_auto")}
+    active_fingerprint = resume_fingerprint(fp_args, train_path, val_path)
+
     # 4b. Mid-epoch resume (--resume-auto): restore a trusted checkpoint if present.
     start_epoch, skip_steps, best_val_acc, global_step = 0, 0, 0.0, 0
     if getattr(args, "resume_auto", False):
-        fingerprint = resume_fingerprint(vars(args), train_path, val_path)
-        ctx = try_load_resume_state(args.out_dir, model, optimizer, scheduler, fingerprint)
+        ctx = try_load_resume_state(args.out_dir, model, optimizer, scheduler, active_fingerprint)
         if ctx is not None:
             start_epoch, skip_steps, best_val_acc, global_step = (
                 ctx.epoch, ctx.steps_done_in_epoch, ctx.best_val_acc, ctx.global_step
@@ -695,8 +702,6 @@ def train_cross_encoder(args):
                     train_loader = _tail_dataloader(train_loader, skip_steps)
 
     # 5. Training Loop
-    fp_args = {k: v for k, v in vars(args).items() if k not in ("checkpoint_interval", "resume_auto")}
-    active_fingerprint = resume_fingerprint(fp_args, train_path, val_path)
     print(
         f"\nStarting training: {args.epochs} epochs, {len(train_loader)} batches this epoch, "
         f"{total_steps} total update steps"

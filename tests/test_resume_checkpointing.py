@@ -22,6 +22,8 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import train_cross_encoder  # noqa: E402
+
 from finetune import SkipPrefixBatchSampler, TokenBucketBatchSampler  # noqa: E402
 from train_cross_encoder import (  # noqa: E402
     _retire_resume_state,
@@ -206,6 +208,21 @@ def test_peft_resume_roundtrip_restores_lora_weights():
         assert lora_ok >= 2, f"expected LoRA params in fixture, found {lora_ok}"
 
 
+def test_fingerprint_call_sites_are_symmetric():
+    """Regression (2026-09-22): the resume LOAD hashed full vars(args) while SAVES
+    hashed fp_args (minus checkpoint_interval/resume_auto), so no resume could
+    ever match its own checkpoint - the first real resume silently restarted
+    training. Contract: exactly one shared fingerprint expression on the active path.
+    """
+    source = Path(train_cross_encoder.__file__).read_text(encoding="utf-8")
+    assert "resume_fingerprint(vars(args)" not in source, \
+        "load-site fingerprint must use fp_args, not full vars(args)"
+    assert source.count("active_fingerprint = resume_fingerprint(fp_args") == 1, \
+        "the active fingerprint must be computed exactly once from fp_args"
+    assert source.count("ctx = try_load_resume_state(args.out_dir, model, optimizer, scheduler, active_fingerprint)") == 1, \
+        "the load site must use the shared active_fingerprint"
+
+
 TESTS = [
     test_skip_prefix_sampler_yields_exact_tail,
     test_skip_prefix_sampler_rejects_negative_skip,
@@ -216,6 +233,7 @@ TESTS = [
     test_retire_removes_all_resume_dirs,
     test_meta_json_is_written_last,
     test_peft_resume_roundtrip_restores_lora_weights,
+    test_fingerprint_call_sites_are_symmetric,
 ]
 
 
