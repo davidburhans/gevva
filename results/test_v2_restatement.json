@@ -1,0 +1,22 @@
+{
+  "test_v2": {
+    "path": "data/test_v2.jsonl",
+    "sha16": "74dc609bc281fe23",
+    "relabel_rule": "haystack_embedded label 0->2 (neutral), 21 rows, per 2026-09-21 audit semantics"
+  },
+  "restated_accuracy": {
+    "stage2": {
+      "orig": 0.8429,
+      "corrected": 0.84
+    },
+    "stage3_v1": {
+      "orig": 0.8477,
+      "corrected": 0.8461
+    },
+    "stage3_v2": {
+      "orig": 0.8567,
+      "corrected": 0.8551
+    }
+  },
+  "note": "Ordering unchanged; v2-vs-stage2 margin widens 1.38->1.51pp. Models answer neutral on only 29-38% of relabeled rows - the strict relabel is defensible but debatable; deltas are +-0.2pp either way. data/test.jsonl (sha b34d2685f1d469db) remains the frozen original instrument."
+}
