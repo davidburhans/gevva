@@ -1,0 +1,22 @@
+{
+ "n": 4670,
+ "accuracy": 0.8203,
+ "ece": 0.0599,
+ "brier": 0.2772,
+ "per_class": {
+  "class0": {
+   "support": 1284,
+   "recall": 0.8699
+  },
+  "class1": {
+   "support": 1688,
+   "recall": 0.8246
+  },
+  "class2": {
+   "support": 1698,
+   "recall": 0.7786
+  }
+ },
+ "seconds": 47.2,
+ "instrument": "data/val.jsonl (flagship val, all 3 classes)"
+}

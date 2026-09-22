@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from nli_labels import CONTRADICTION, ENTAILMENT, NEUTRAL
 
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:8080")
-TEACHER_MODEL_ID = "qwen-3.8-125b-q4"
+TEACHER_MODEL_ID = os.environ.get("NLI_HARD_TEACHER", "qwen-3.8-125b-q4")
 
 DOMAINS = [
     "Clinical Healthcare & Triage",
