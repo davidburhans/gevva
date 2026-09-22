@@ -330,6 +330,17 @@ Audited the weak epoch-1 val slices from §11's stage-3 checkpoint (`85.37%`, EC
 
 ---
 
+## 9d. Evening CPU Session While Stage-3 Trains (2026-09-21, commits `74b86da`..`48e1981`)
+
+Four workstreams executed in parallel with the stage-3 run (GPU untouched; ~25 new tests, all suites green):
+
+1. **Production Stage-3 v2 staged** (`74b86da`): `scripts/compile_stage3_v2.py` filters the 68 unfalsifiable embedded-contradiction rows out of the replay slice (12,190 train / 1,242 val, versioned manifest `results/stage3_v2_manifest.json`). `scripts/launch_stage3_v2.py` carries the production recipe — `--warm-start ckpt/gemma-4-e2b-nli-stage2/best`, checkpoint-interval 100, resume-auto — with `--wait-for-chain` mode that auto-launches when the v1 chain exits and the GPU frees.
+2. **P1 zero-neutral eval root-caused & fixed** (`fb5ac49`): finetune.py's group-aware split shuffled units without label stratification → all neutral-bearing groups landed in train (13,022 val rows, 0 neutral support). Unit selection now stratified by group majority-label; P1's published 3-class ECE/Brier are binary-slice numbers pending a GPU re-eval. (P1's mixture itself is 2% neutral — a P2 rebalance concern, separate from the splitter bug.)
+3. **Audit A8 CLOSED** (`c34bdad`): finetune QAT now opt-in with `--target-quant` default `w4a16` (= the exporter's INT4 group-32); trainer QAT fallbacks aligned on train+reload; trained format persisted to `best/qat_config.json`; PROGRESS §1 "bounded STE" claim corrected to the truth (plain pass-through, contract-pinned). Historical note: `gemma-4-e2b-nli-p1-stage2` was trained under the old silent-nvfp4 defaults and needs format verification before any W4A16 export.
+4. **Downstream benchmarks emit structured artifacts** (`48e1981`): all five eval functions return metrics; `--out` writes a provenance-complete JSON (git SHA, val SHA, QAT flags); smoke suites self-labeled (audit A3); chain stage re-armed with `--out results/stage2_downstream_benchmarks.json`.
+
+---
+
 ## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)
 
 Integrated and empirically gated five SOTA advancements with strict open-source attribution:
