@@ -48,6 +48,9 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="Cap items per tier (quick runs)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-len", type=int, default=16384, help="Context budget (declare trained length)")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Override the shipped calibration temperature (1.0 = score the untempered "
+                             "served distribution; default = the artifact's calibration.json T*)")
     parser.add_argument("--out", default=None, help="JSON artifact path (default results/jevbench_public_<name>.json)")
     args = parser.parse_args()
 
@@ -76,6 +79,8 @@ def main() -> int:
 
     print(f"Loading {args.model_path} (max_len={args.max_len})...")
     enc = Gemma4CrossEncoder(args.model_path, device=args.device, max_len=args.max_len)
+    if args.temperature is not None:
+        enc.calibrated_temperature = float(args.temperature)  # gate must score T=1 AND shipped T* (review F08/N9)
 
     per_item = []
     for tier, items in tiers.items():
@@ -128,6 +133,7 @@ def main() -> int:
     artifact = {
         "provenance": {
             "model_path": args.model_path, "max_len": args.max_len, "device": args.device,
+            "temperature": args.temperature if args.temperature is not None else enc.calibrated_temperature,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "mapping": "jevbench docs/cross-encoder-mapping.md (helpers imported from jevbench repo)",
             "limit_per_tier": args.limit,

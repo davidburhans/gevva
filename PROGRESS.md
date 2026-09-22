@@ -357,6 +357,13 @@ A fresh reviewer agent audited the armed overnight launch before GPU hours were 
 | F09/F10 | MINOR | waiter: no unload fallback/timeout; finetune lacked expandable_segments | both added |
 
 Also fixed en passant: finetune's chars//4 length heuristic (same class as the stage-3 OOM) → tokenizer-accurate. New source-contract test pins the full wiring chain incl. validating launcher flags against finetune's real `--help` — the test that would have caught F01–F04 before arming. **Process rule adopted: every armed auto-launch gets a pre-flight adversarial review + the wiring-contract test must be green before the waiter starts.**
+
+### Adversarial pre-flight review ROUND 2 (2026-09-22 ~17:30, commits 6dd7596 + eval flag)
+
+Fresh reviewer verified all 8 round-1 fixes in-tree (R1-R8 VERIFIED with file:line evidence) and audited the fix code itself. **VERDICT: LAUNCH-AS-IS.** Two new BLOCKERs found and resolved DURING the review:
+- **F1 stale pre-fix waiter**: two full waiter pairs were armed (the original kill hit the `uv run` wrapper pid, not its python child) → double-launch or pre-fix-TRAIN_CMD crash at ~20:30. All killed; exactly one re-armed from current code. Runbook: kill process TREES, not wrapper pids.
+- **F2/N8 evaluate_dataset group merge**: the collator's batch-local group-id remap + cross-batch concatenation merged every batch's local-id-0 group into one mega-group → decision_accuracy (the PRIMARY best-checkpoint selector) was argmax-over-unrelated-options noise → wrong-epoch "best" + T* fit on wrong logits. Fixed via cumulative gid_offset (local max pre-shift); 2-batch + 60-batch stress tests (120 unique groups, max id 119, sentinels excluded). Reviewer additionally caught a transient broken mid-edit variant (geometric offset recurrence → int64 wrap at ~batch 39) before commit.
+Feasibility answers: worst group (long_policy 4×2048) gets its own batch (sampler never splits/drops; group atomicity outranks budget) → peak ~7-8 GB ≪ 32 GB; wall-clock 4.3-7.2 h for 2 epochs (≥2.5 h margin; **epochs is the cut lever, never the token budget**). Anchor-only batches fall back to CE+Brier by design. NOTES for tomorrow: --temperature flag added to eval_jevbench_public (gate scores T=1 AND T*); served-loss epoch logging; speed-log cosmetics; teacher-top accuracy semantics.
 ---
 
 ## 11. Stage 3 Results & Recovery Log (2026-09-22)
