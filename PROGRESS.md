@@ -339,6 +339,24 @@ Four workstreams executed in parallel with the stage-3 run (GPU untouched; ~25 n
 3. **Audit A8 CLOSED** (`c34bdad`): finetune QAT now opt-in with `--target-quant` default `w4a16` (= the exporter's INT4 group-32); trainer QAT fallbacks aligned on train+reload; trained format persisted to `best/qat_config.json`; PROGRESS §1 "bounded STE" claim corrected to the truth (plain pass-through, contract-pinned). Historical note: `gemma-4-e2b-nli-p1-stage2` was trained under the old silent-nvfp4 defaults and needs format verification before any W4A16 export.
 4. **Downstream benchmarks emit structured artifacts** (`48e1981`): all five eval functions return metrics; `--out` writes a provenance-complete JSON (git SHA, val SHA, QAT flags); smoke suites self-labeled (audit A3); chain stage re-armed with `--out results/stage2_downstream_benchmarks.json`.
 
+
+### Adversarial pre-flight review of the Phase-1 launch (2026-09-22 ~17:00, commit f9432fc)
+
+A fresh reviewer agent audited the armed overnight launch before GPU hours were spent. **Verdict: FIX-FIRST — the run would have crashed at startup, and with those crashes fixed, would have silently trained the wrong objective on split groups: a guaranteed wasted night.**
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| F01 | BLOCKER | launcher passed `--log-interval`, which finetune.py never defined → argparse exit 2 at 20:30 | removed from TRAIN_CMD |
+| F02 | BLOCKER | `served_dist_weight` in argparse + call-site but **not** in `finetune_custom_data`'s signature → TypeError | added |
+| F03 | BLOCKER | the served loss was **never called in the loop** (atomic-failed edit bundle landed 2 of 4 pieces; only tests caught nothing because they test the function, not the wiring) → run silently trains plain CE+Brier | loop rewired; aux-CE combination fixed |
+| F04 | BLOCKER | no `--token-bucketing` → batch-size-4 shuffle splits every group (P(intact)≈4e-5) → served_groups≈0, silent no-op. Corroborated retroactively: P1's eval_report decision_accuracy=1.0 was a handful-of-groups artifact | group-atomic batching, budget 4096 |
+| F05 | MAJOR | `stratified_split` treated `group_id="-1"` (all ~5K anchor rows) as one truthy mega-group → all-or-nothing anchor split → zero-neutral val AGAIN (the fb5ac49 bug reintroduced via sentinel mismatch) | "-1"/""/None = singletons; regression test |
+| F06 | MAJOR | finetune default max-length 512 truncated long-policy premises mid-evidence | TRAIN_CMD 2048 |
+| F07 | MAJOR | best-checkpoint selection scored the old margin ranking on partial val fragments | decision metric = served distribution; val loader group-atomic |
+| F08 | NOTE | loss trains T=1 but serving applies shipped T*; renormalization doesn't cancel T* | gate tomorrow must evaluate ECE at BOTH T=1 and T* |
+| F09/F10 | MINOR | waiter: no unload fallback/timeout; finetune lacked expandable_segments | both added |
+
+Also fixed en passant: finetune's chars//4 length heuristic (same class as the stage-3 OOM) → tokenizer-accurate. New source-contract test pins the full wiring chain incl. validating launcher flags against finetune's real `--help` — the test that would have caught F01–F04 before arming. **Process rule adopted: every armed auto-launch gets a pre-flight adversarial review + the wiring-contract test must be green before the waiter starts.**
 ---
 
 ## 11. Stage 3 Results & Recovery Log (2026-09-22)
