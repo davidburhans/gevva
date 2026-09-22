@@ -366,6 +366,26 @@ v2 slice wins vs v1 (val): haystack_embedded 52.6%→90.9% (label fix), MNLI-m 7
 
 **Next steps queued**: v2 W4A16 export (`export_w4a16.py --adapter-path ckpt/gemma-4-e2b-nli-stage3-v2/best`), v2 calibration refit, System 1 suite benchmarks, P1 balanced re-eval, A2/A5 n≥1000 CI reruns (HF-upload gate), 10 GiB pin diagnosis.
 
+### Full JevBench suite (2026-09-22, v2 W4A16, ALL tasks at full test-set size, margin scoring)
+
+Artifact: `results/stage3v2_openjev_benchmarks_full.json` (provenance: limit=None, 13 tasks, ~16 min on RTX 5090).
+
+| Task | n=100 slice | **Full set [95% Wilson CI]** | openjev-4B (quoted) | Verdict |
+| :--- | :---: | :--- | :---: | :--- |
+| MNLI-m / mm | 0.885 / 0.900 | **0.8582 [.851,.865] / 0.8623 [.855,.869]** | 0.904 / 0.907 | behind |
+| ARC-Easy rerank | 0.810 | **0.7504 [.733,.767]** | 0.769 | behind — n=100 lead was slice luck |
+| ARC-Challenge rerank | 0.500 | **0.5307 [.502,.559]** | 0.592 | behind |
+| MMLU rerank | 0.560 | **0.4385 [.430,.447]** | 0.472 | behind — n=100 overstated by 12pp |
+| WinoGrande rerank | 0.510 | **0.5872 [.560,.614]** | 0.586 | **parity/edge ahead** (CI includes 0.586) |
+| BoolQ | 0.840 | **0.7954 [.781,.809]** | (Laya 0.830) | behind |
+| AG News | 0.820 | **0.7721 [.763,.781]** | (Jev 0.910) | behind |
+| DAIR Emotion | 0.510 | **0.4745 [.453,.496]** | (Jev 0.480) | ~ties Jev |
+| Grade F1 (ARC-E/C, MMLU) | .91/.84/.82 | **.8924 / .8324 / .8018** | .986/.975/.949 | behind |
+| **ECE** | 0.0658 | **0.0658** (Brier 0.1940) | ~0.08–0.09; Jev 0.246 | **best on suite** |
+| **P50 latency** | 14.64 ms | **14.78 ms** | 57 ms; Jev 236–276 ms | **~4–16× fastest** |
+
+**Honest placement (blocking rule A5 vindicated)**: the earlier n=100 "#1 on ARC-E & MMLU rerank" claims were slice luck and DO NOT survive full-set evaluation — do not communicate them. v2's durable differentiators: (1) best calibration on the suite, (2) fastest tier by 4–16×, (3) WinoGrande parity with openjev-4B, (4) the ONLY 128K long-context verification capability (100% across 4K–128K bands, unmatched by any tabulated competitor), (5) best-in-project held-out NLI test (85.67%, p=0.0007 vs stage-2). On pure short-context zero-shot reranking, openjev-4B's quoted constants still lead. True apples-to-apples requires locally re-running openjev under this protocol (weights absent from HF — G1: must self-train; deferred).
+
 ---
 
 ## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)
