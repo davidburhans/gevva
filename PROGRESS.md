@@ -341,6 +341,33 @@ Four workstreams executed in parallel with the stage-3 run (GPU untouched; ~25 n
 
 ---
 
+## 11. Stage 3 Results & Recovery Log (2026-09-22)
+
+### Final held-out test numbers (data/test.jsonl, n=3,113, sha b34d2685f1d469db)
+
+| Run | Test Acc | ECE | Brier | Val Acc | Notes |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| Stage-2 flagship | 84.29% | 0.0611 | 0.2388 | 87.07% | 52K-row curriculum, from-scratch |
+| Stage-3 v1 (validation run) | 84.77% | **0.0200** | 0.2346 | 85.37% (ep1) | 12K mixture, from-scratch, unfalsifiable embedded rows still present |
+| **Stage-3 v2 (production)** | **85.67%** | 0.0700 | 0.2358 | **89.29%** | warm-started from stage-2 best + label-filtered mixture |
+
+v2 slice wins vs v1 (val): haystack_embedded 52.6%→90.9% (label fix), MNLI-m 73.4%→82.6% (warm start), all 128K bands 100%. Best-in-project test accuracy. v1 retains the best raw ECE (0.0200); v2's T*=1.1696 fit (NLL-optimal) slightly worsened val ECE 0.043→0.052 — calibration refit on the v2 artifact is a cheap follow-up.
+
+### Overnight execution log (all automated)
+
+- 00:14 — v1 chain completed ALL stages incl. stage-3 W4A16 export (verified, max rel step err 0.535 ≤ 0.6).
+- 01:00 — waiter fired; v2 launched (warm start: 809 adapter tensors + head ✓), resume checkpoints flowing ✓.
+- 05:50 — v2 epoch-1 val 88.16%.
+- ~10:30 — v2 training complete (epoch-2 val **89.29%**, best+calibration saved, resume meta epoch=2/2 complete).
+- ~10:40 — **v2 one-shot test eval OOM'd** (27.5 GiB resident after reload). Two bugs found & fixed during recovery:
+  1. **Cleanup round 2** (`84552ec`): `del model/optimizer/scheduler` left the training model pinned — `raw_lm` (backbone ref from gradient-checkpointing setup) and `trainable_params` (LoRA params+grads) now deleted too; `[mem]` phase logging added. Reduced residue 27.5→19.7 GiB — enough for probe+test to pass. **KNOWN REMAINING LEAK**: ~9.9 GiB (the full training model) is still pinned by an unknown reference after all deletions; `TCE_MEM_DEBUG=1` dumps `gc.get_referrers` for every large CUDA tensor on the next occurrence.
+  2. **Resume fingerprint asymmetry** (`5312ea8`, +amend): SAVES hashed `fp_args` (minus checkpoint_interval/resume_auto) but the LOAD hashed full `vars(args)` — **no resume could ever match its own checkpoint**. The first recovery attempt silently restarted training (killed after 25 min; resume meta survived). One shared `active_fingerprint` at all sites; call-site symmetry pinned by `tests/test_resume_checkpointing.py` (10/10).
+- ~11:20 — v2 recovery run: resume restored epoch=2 (zero retraining), probe+test passed, artifacts written, resume state retired.
+
+**Next steps queued**: v2 W4A16 export (`export_w4a16.py --adapter-path ckpt/gemma-4-e2b-nli-stage3-v2/best`), v2 calibration refit, System 1 suite benchmarks, P1 balanced re-eval, A2/A5 n≥1000 CI reruns (HF-upload gate), 10 GiB pin diagnosis.
+
+---
+
 ## 10. SOTA Decision Engine Enhancements & Ablation Architecture (2026-09-20)
 
 Integrated and empirically gated five SOTA advancements with strict open-source attribution:
