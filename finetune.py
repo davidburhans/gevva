@@ -703,6 +703,7 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     model.eval()
     all_preds, all_probs, all_logits, all_golds, all_sources = [], [], [], [], []
     all_group_ids, all_is_gold = [], []
+    gid_offset = 0  # batch-local group ids -> globally unique (review round-2 N8)
 
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
@@ -713,7 +714,17 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
         image_position_ids = batch["image_position_ids"].to(device) if "image_position_ids" in batch else None
 
         if "group_ids" in batch and batch["group_ids"] is not None:
-            all_group_ids.append(batch["group_ids"].cpu().numpy())
+            # Review round-2 N8: the collator remaps group ids to BATCH-LOCAL ints
+            # (0..G-1 per __call__), so concatenating batches makes every batch's
+            # local-id-0 group merge into one mega-group. Offset them to be
+            # globally unique across the evaluation pass; -1 sentinels pass through.
+            gids = batch["group_ids"].cpu().numpy().copy()
+            pos = gids >= 0
+            if pos.any():
+                local_max = int(gids[pos].max())
+                gids[pos] += gid_offset
+                gid_offset += local_max + 1
+            all_group_ids.append(gids)
             if "is_gold" in batch and batch["is_gold"] is not None:
                 all_is_gold.append(batch["is_gold"].cpu().numpy())
             else:
