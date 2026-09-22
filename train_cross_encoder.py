@@ -839,12 +839,25 @@ def train_cross_encoder(args):
     # WHY: the reloaded eval model is a second full backbone; keeping the training
     # model + AdamW/scheduler state resident doubled weights and OOM'd the one-shot
     # test pass at 16K-token rows (stage-3 smoke, 2026-09-21).
-    del scheduler
-    del optimizer
-    del model
+    # 2026-09-22 v2 correction: raw_lm (a backbone submodule reference from the
+    # gradient-checkpointing setup), trainable_params (keeps LoRA params + grads),
+    # and the last batch's autograd graph also pin the training model - deleting
+    # only model/optimizer left ~22 GiB resident and the test pass OOM'd again.
+    def _log_gpu(tag: str) -> None:
+        if torch.cuda.is_available():
+            print(f"[mem] {tag}: allocated={torch.cuda.memory_allocated() / 2**30:.2f} GiB, "
+                  f"reserved={torch.cuda.memory_reserved() / 2**30:.2f} GiB", flush=True)
+
+    _log_gpu("after training loop")
+    del scheduler, optimizer, model, raw_lm, trainable_params
+    try:
+        del loss, outputs, total_loss, ce_loss, batch
+    except NameError:
+        pass
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    _log_gpu("after training-model cleanup")
 
     # Report-only test evaluation, exactly ONCE, on the RELOADED best checkpoint
     # (audit A1: test never participates in checkpoint selection).
@@ -856,9 +869,11 @@ def train_cross_encoder(args):
         print(f"Reloading best checkpoint from {save_dir} for one-shot test evaluation...")
         best_model = _reload_best_for_eval(args, tokenizer, save_dir)
         best_model.to(device)
+        _log_gpu("after best-model reload")
         # Head-restore probe (WHY: a PEFT reload that silently drops the saved score
         # head scores near-chance; fail loudly BEFORE the one-shot test pass).
         probe = evaluate(best_model, val_loader, device)
+        _log_gpu("after val probe")
         if probe["accuracy"] < 0.5 * max(best_val_acc, 1e-6):
             raise RuntimeError("reloaded checkpoint validation accuracy collapsed - PEFT head restore failed")
         # Test-set fingerprint: ties every reported number & row to the exact test bytes.
