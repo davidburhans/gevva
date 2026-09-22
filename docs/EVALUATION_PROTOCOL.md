@@ -99,3 +99,42 @@ either way).
   prominence as wins.
 - This protocol supersedes any claim written before 2026-09-20 that conflicts with it
   (see PROGRESS.md §8 audit).
+
+## 8. JevBench Remediation Gate Chain (registered 2026-09-22, before any Phase-1 result)
+
+Methodology review verdict METHOD-NEEDS-CHANGES (M1-M7) adopted in full. The four
+JevBench-phase gates are hereby registered into the §6 Holm family:
+
+- **Gate family (extended)**: {synthetic gate §3, H1, H2, SOTA rows, **JevBench P1
+  ECE-gate, P2 hard-McNemar, P3 pooled hard+judge, P4 publish-selection**}.
+  Holm-corrected across all eight; each gate capped at 2 re-gate attempts; Phase-4
+  artifact selection is ONE-SHOT (frozen criterion: highest official-534 JevBench
+  Score among gates-passing checkpoints; ties broken by held-out NLI test accuracy).
+- **Phase-1 gate (morning after training)**: hard-tier renormalized ECE ≤ 0.20 at
+  BOTH T=1 and shipped T* (eval_jevbench_public --temperature {1.0, default}), with
+  a bootstrap 95% CI on the ECE delta vs baseline (resample items, 2,000 draws);
+  no regression on data/test.jsonl accuracy (McNemar, per §2); no regression on the
+  128K probe (n≈20 haystack bands), suite anchors (MNLI-m/mm, ARC-C, MMLU seeded
+  slices), or XNLI slice (report-only flags if any move >2× their SE).
+- **Phase-2 gate**: pooled primary endpoint = hard+judge families (n=128;
+  single-family judge-only claims DOWNGRADED to directional — MDE at n=17 is 35pp),
+  McNemar Holm-corrected, 2 seeds/arm when p ∈ (0.01, 0.05).
+- **Contamination enforcement**: before ANY compile, every training row must pass an
+  8-gram filter vs ../jevbench/datasets/public/*.jsonl (scripts/decontaminate_jevbench.py);
+  intra-set template-collapse caps applied at compile (max consecutive identical
+  instructions: 10). Measured 2026-09-22: 0/4,304 generated rows, 66/91,445 mixture
+  rows (one generic billing phrase) — enforced going forward, not just measured.
+- **Condition freeze**: the baseline row and all gate rows are evaluated at the SAME
+  pre-registered conditions (budget 16384 per mapping doc; the 47.9 baseline was
+  measured at 4096 and is superseded by the corrected-axis baseline 47.0 with
+  Speed=93.4 under the ×2+0.15s self-host adjustment).
+- **Landing-zone restatement (M5 arithmetic correction)**: Speed is capped ~93-94
+  (not 100); Calibration = ECE ⊕ TVD (public-split instruments measure the ECE half
+  only). Honest zone: **59.3-68.0** (pessimistic → full success), replacing the
+  earlier "66-70".
+- **Official-scoring checkpoint (M7)**: request maintainer 534-item scoring
+  IMMEDIATELY after the Phase-1 gate — the public→held-out delta decides whether
+  Phases 2-3 run at all. Owner action required (submission is manual).
+- **Disclosure (M6)**: the published model card must state that error analysis, data
+  mix, loss design, and gate decisions were conditioned on the public-231 slice,
+  with all public-slice numbers labeled unofficial.

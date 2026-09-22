@@ -43,11 +43,13 @@ TRAIN_CMD = [
     "--lr", "5e-5",
     "--grad-accum", "8",
     # Review F04/F06: group-atomic batching (else served_groups ~ 0 per batch and
-    # the served loss silently no-ops) + trained context covering the mixture's
-    # long premises (finetune default max-length is 512).
+    # the served loss silently no-ops). Methodology review M4: max-length 4096
+    # covers every JevBench item (max public state ~3,746 tokens) - 2048 would
+    # have recreated a train/serve length mismatch in the phase closing one;
+    # worst grouped batch ~16K tokens ~ 13-15 GB, still well inside 32 GB.
     "--token-bucketing",
     "--max-tokens-per-batch", "4096",
-    "--max-length", "2048",
+    "--max-length", "4096",
 ]
 
 
