@@ -1,0 +1,58 @@
+{
+  "compiler": "scripts/compile_stage3_v2.py",
+  "dropped_unfalsifiable": {
+    "train": 60,
+    "val": 8
+  },
+  "filter_rule": "drop source==haystack_embedded AND label==CONTRADICTION (unfalsifiable after haystack transplantation; 2026-09-21 audit)",
+  "generated_at": "2026-09-21 19:58:26",
+  "inputs": {
+    "haystack_train": {
+      "path": "data/stage3/stage3_haystack_train.jsonl",
+      "rows": 2250,
+      "sha256_16": "305590cd170d75f5"
+    },
+    "haystack_val": {
+      "path": "data/stage3/stage3_haystack_val.jsonl",
+      "rows": 250,
+      "sha256_16": "dbdd114ed993e4bc"
+    },
+    "replay_train": {
+      "path": "data/stage2_train.jsonl",
+      "rows_fetched": 10000,
+      "sha256_16": "964448efb6a19c2e"
+    },
+    "replay_val": {
+      "path": "data/stage2_val.jsonl",
+      "rows_fetched": 1000,
+      "sha256_16": "e2c4fd92c08f85e5"
+    }
+  },
+  "label_names": {
+    "0": "contradiction",
+    "1": "entailment",
+    "2": "neutral"
+  },
+  "outputs": {
+    "train": {
+      "labels": {
+        "0": 4234,
+        "1": 4755,
+        "2": 3201
+      },
+      "path": "/home/dave/workspaces/nli-cross-encoder/data/stage3_v2/stage3_train.jsonl",
+      "rows": 12190
+    },
+    "val": {
+      "labels": {
+        "0": 434,
+        "1": 457,
+        "2": 351
+      },
+      "path": "/home/dave/workspaces/nli-cross-encoder/data/stage3_v2/stage3_val.jsonl",
+      "rows": 1242
+    }
+  },
+  "recipe_note": "launch with train_cross_encoder.py --warm-start ckpt/gemma-4-e2b-nli-stage2/best --resume-auto --checkpoint-interval 100",
+  "seed": 42
+}
