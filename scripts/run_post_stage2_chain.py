@@ -242,9 +242,8 @@ def run_downstream_eval() -> None:
         sys.executable,
         "eval_downstream_decisions.py",
         "--model-path", "ckpt/gemma-4-e2b-nli-w4a16-stage2",
+        "--out", "results/stage2_downstream_benchmarks.json",
     ]
-    # NOTE: eval_downstream_decisions.py takes no output-path argument (it prints
-    # results); the per-stage log under results/post_stage2/ captures the output.
     rc = run_cmd(cmd, "Downstream Benchmarks", timeout_s=1800)
     if rc == 0:
         update_status("downstream_benchmarks", "done", "Benchmarks complete")

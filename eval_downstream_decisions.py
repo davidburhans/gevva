@@ -14,7 +14,9 @@ Evaluates 4 core capabilities:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -135,7 +137,7 @@ def evaluate_standard_nli_calibration(
 
     if not os.path.exists(val_path):
         print(f"Validation file {val_path} not found. Skipping standard NLI evaluation.")
-        return
+        return {"skipped": f"validation file not found: {val_path}"}
 
     records = []
     with open(val_path, "r", encoding="utf-8") as f:
@@ -164,6 +166,7 @@ def evaluate_standard_nli_calibration(
     # Per-Class Precision, Recall, F1
     from collections import Counter, defaultdict
     print("\nPer-Class Breakdown:")
+    per_class = {}
     for c_id, c_name in ID2LABEL.items():
         tp = int(np.sum((preds == c_id) & (golds == c_id)))
         fp = int(np.sum((preds == c_id) & (golds != c_id)))
@@ -172,15 +175,19 @@ def evaluate_standard_nli_calibration(
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
         support = int(np.sum(golds == c_id))
+        per_class[c_name] = {"precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4), "support": support}
         print(f"  [{c_name:13s}] Prec: {prec:.3f} | Rec: {rec:.3f} | F1: {f1:.3f} (support={support})")
 
     # Source breakdown
     by_src = defaultdict(list)
     for p, g, s in zip(preds, golds, sources):
         by_src[s].append(p == g)
+    by_source = {s: {"accuracy": round(float(np.mean(accs)), 4), "n": len(accs)} for s, accs in sorted(by_src.items())}
     print("\nAccuracy by Data Source:")
-    for s, accs in sorted(by_src.items()):
-        print(f"  - {s:25s}: {np.mean(accs) * 100:.2f}% (n={len(accs)})")
+    for s, stats in by_source.items():
+        print(f"  - {s:25s}: {stats['accuracy'] * 100:.2f}% (n={stats['n']})")
+    return {"accuracy": round(acc, 4), "ece": round(ece, 4), "brier": round(brier, 4),
+            "n_samples": len(records), "val_path": val_path, "per_class": per_class, "by_source": by_source}
 
 
 def benchmark_system_1_latency(encoder: Gemma4CrossEncoder, n_runs: int = 50):
@@ -229,6 +236,8 @@ def benchmark_system_1_latency(encoder: Gemma4CrossEncoder, n_runs: int = 50):
     print(f"Pure GPU Forward Pass Latency:  P50 = {p50_gpu:.2f} ms")
     print(f"End-to-End Inference Latency:   P50 = {p50_e2e:.2f} ms | P95 = {p95_e2e:.2f} ms")
     print(f"Throughput: {1000 / p50_e2e:.1f} decisions/second per GPU stream")
+    return {"gpu_forward_p50_ms": round(float(p50_gpu), 3), "e2e_p50_ms": round(float(p50_e2e), 3),
+            "e2e_p95_ms": round(float(p95_e2e), 3), "throughput_dps": round(1000 / p50_e2e, 1), "n_runs": n_runs}
 
 
 def evaluate_zero_shot_tool_routing(encoder: Gemma4CrossEncoder):
@@ -268,6 +277,8 @@ def evaluate_zero_shot_tool_routing(encoder: Gemma4CrossEncoder):
 
     acc = correct / len(test_queries)
     print(f"\nTool Routing Accuracy: {acc * 100:.1f}% ({correct}/{len(test_queries)})")
+    return {"accuracy": round(acc, 4), "correct": correct, "n": len(test_queries),
+            "note": "smoke suite (5 hardcoded queries); NOT a benchmark - see PROGRESS section 3 provenance note"}
 
 
 def evaluate_rag_hallucination_detection(encoder: Gemma4CrossEncoder):
@@ -309,6 +320,8 @@ def evaluate_rag_hallucination_detection(encoder: Gemma4CrossEncoder):
         print(f"  Probabilities: Con={probs[0]:.4f}, Ent={probs[1]:.4f}, Neu={probs[2]:.4f}")
 
     print(f"\nHallucination Detection Accuracy: {correct / len(test_cases) * 100:.1f}%")
+    return {"accuracy": round(correct / len(test_cases), 4), "correct": correct, "n": len(test_cases),
+            "note": "smoke suite (3 hardcoded Apollo 11 cases); NOT a benchmark - see PROGRESS section 3 provenance note"}
 
 
 def evaluate_multilingual_grounding(encoder: Gemma4CrossEncoder):
@@ -341,6 +354,46 @@ def evaluate_multilingual_grounding(encoder: Gemma4CrossEncoder):
         print(f"  -> Predicted: {pred.upper()} (Expected: {expected.upper()}) | {'PASS' if is_correct else 'FAIL'}")
 
     print(f"\nMultilingual Accuracy: {correct / len(multilingual_tests) * 100:.1f}%")
+    return {"accuracy": round(correct / len(multilingual_tests), 4), "correct": correct,
+            "n": len(multilingual_tests),
+            "note": "smoke suite (7 hardcoded pairs across DE/ES/FR/ZH); NOT a benchmark"}
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def build_report(args, results: dict) -> dict:
+    """Assembles the structured results artifact with provenance (audit A-series standard).
+
+    Example:
+        >>> report = build_report(args, {"nli": {"accuracy": 0.9}})
+        >>> assert report["provenance"]["git_sha"]
+    """
+    val_sha = None
+    if args.val_path and os.path.exists(args.val_path):
+        with open(args.val_path, "rb") as f:
+            val_sha = hashlib.sha256(f.read()).hexdigest()[:16]
+    return {
+        "provenance": {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "git_sha": _git_sha(),
+            "model_path": args.model_path,
+            "base_model": args.base_model,
+            "adapter_path": args.adapter_path,
+            "qat": args.qat,
+            "qat_bits": args.qat_bits,
+            "qat_group_size": args.qat_group_size,
+            "val_path": args.val_path,
+            "val_sha256_16": val_sha,
+            "max_val_samples": args.max_val_samples,
+        },
+        "results": results,
+    }
 
 
 def main():
@@ -353,6 +406,7 @@ def main():
     parser.add_argument("--qat", action="store_true", default=False, help="Simulate QAT quantization on base model")
     parser.add_argument("--qat-bits", type=int, default=4, help="QAT weight bit-width (default: 4)")
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")
+    parser.add_argument("--out", default=None, help="Write structured JSON results artifact with provenance to this path")
     args = parser.parse_args()
 
     if args.model_path:
@@ -366,11 +420,21 @@ def main():
             qat_bits=args.qat_bits,
             qat_group_size=args.qat_group_size,
         )
-    evaluate_standard_nli_calibration(encoder, val_path=args.val_path, max_samples=args.max_val_samples)
-    benchmark_system_1_latency(encoder)
-    evaluate_zero_shot_tool_routing(encoder)
-    evaluate_rag_hallucination_detection(encoder)
-    evaluate_multilingual_grounding(encoder)
+    results = {
+        "nli_calibration": evaluate_standard_nli_calibration(
+            encoder, val_path=args.val_path, max_samples=args.max_val_samples
+        ),
+        "latency": benchmark_system_1_latency(encoder),
+        "tool_routing_smoke": evaluate_zero_shot_tool_routing(encoder),
+        "rag_hallucination_smoke": evaluate_rag_hallucination_detection(encoder),
+        "multilingual_smoke": evaluate_multilingual_grounding(encoder),
+    }
+    if args.out:
+        report = build_report(args, results)
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, sort_keys=True)
+        print(f"\nResults artifact written: {args.out}")
 
 
 if __name__ == "__main__":
