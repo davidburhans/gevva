@@ -561,7 +561,7 @@ def train_cross_encoder(args):
     use_qat = getattr(args, "qat", False) or (target_quant and target_quant != "none")
     if use_qat:
         from gemma4_cross_encoder import apply_quantization_aware_training
-        fmt = target_quant if (target_quant and target_quant != "none") else "nvfp4"
+        fmt = target_quant if (target_quant and target_quant != "none") else "w4a16"
         print(f"Applying Quantization-Aware Training (QAT): Format='{fmt}' (group_size={args.qat_group_size})...")
         model = apply_quantization_aware_training(
             model,
@@ -953,7 +953,7 @@ def _reload_best_for_eval(args, tokenizer, save_dir):
     use_qat = getattr(args, "qat", False) or (target_quant and target_quant != "none")
     if use_qat:
         from gemma4_cross_encoder import apply_quantization_aware_training
-        fmt = target_quant if (target_quant and target_quant != "none") else "nvfp4"
+        fmt = target_quant if (target_quant and target_quant != "none") else "w4a16"  # parity with training-side fallback
         print(f"Re-applying QAT parametrization to reloaded model for evaluation parity: Format='{fmt}'...")
         model = apply_quantization_aware_training(
             model,

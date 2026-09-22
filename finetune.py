@@ -818,8 +818,8 @@ def finetune_custom_data(
     nli_aux_weight: float = 0.15,
     decision_temp: float = 1.0,
     val_ratio: float = 0.15,
-    qat: bool = True,
-    target_quant: str = "nvfp4",
+    qat: bool = False,  # A8: QAT must be opt-in; silent nvfp4 simulation corrupted train/serve parity
+    target_quant: str = "w4a16",  # A8: default matches export_w4a16.py (INT4 group-32 compressed-tensors)
     qat_bits: int = 4,
     qat_group_size: int = 32,
     use_token_bucketing: bool = False,
@@ -1198,6 +1198,16 @@ def finetune_custom_data(
             report_dict = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
             with open(os.path.join(best_dir, "eval_report.json"), "w") as f:
                 json.dump(report_dict, f, indent=2)
+            # A8: the trained quantization format must be recoverable from the artifact.
+            qat_provenance = {
+                "qat_applied": bool(qat),
+                "target_quant": target_quant if qat else "none",
+                "qat_bits": qat_bits,
+                "qat_group_size": qat_group_size,
+                "note": "w4a16 = export_w4a16.py INT4 group-32 compressed-tensors layout",
+            }
+            with open(os.path.join(best_dir, "qat_config.json"), "w") as f:
+                json.dump(qat_provenance, f, indent=2)
 
     total_time = time.time() - t_start
     print("\n" + "=" * 65)
@@ -1232,13 +1242,15 @@ def main():
     parser.add_argument("--lora-r", type=int, default=64, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=int, default=128, help="LoRA alpha scaling factor")
     parser.add_argument("--val-ratio", type=float, default=0.15, help="Validation split ratio if no val-data is provided")
-    parser.add_argument("--qat", action="store_true", default=True, help="Enable Quantization-Aware Training (QAT)")
+    parser.add_argument("--qat", action="store_true", default=False,
+                        help="Enable Quantization-Aware Training (QAT) - opt-in (audit A8; was silently on)")
     parser.add_argument("--no-qat", action="store_false", dest="qat", help="Disable QAT and train in full precision")
     parser.add_argument(
         "--target-quant",
-        default="nvfp4",
+        default="w4a16",
         choices=["nvfp4", "w4a16", "q4_k_m"],
-        help="Target quantization format for QAT (nvfp4 for native Blackwell, w4a16 for compressed-tensors, q4_k_m for GGUF)",
+        help="Target quantization format for QAT (default w4a16 = the export_w4a16.py production format; "
+             "nvfp4 for native Blackwell FP4; q4_k_m for GGUF)",
     )
     parser.add_argument("--qat-bits", type=int, default=4, help="QAT weight bit-width (default: 4)")
     parser.add_argument("--qat-group-size", type=int, default=32, help="QAT group size (default: 32)")
