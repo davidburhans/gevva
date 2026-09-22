@@ -310,7 +310,23 @@ wait for committee → stage sdk files → clean recompile (train/val/**test**) 
 - `--checkpoint-interval N` (optimizer steps, default 100; chain stage-3 cmd passes 100): atomically rotates `<out>/resume/` (adapter + head + optimizer + scheduler + torch/python/cuda RNG + `meta.json` stamped `complete:true` LAST, tmp+rename rotation; a crashed save is never trusted).
 - `--resume-auto`: restores epoch/step-exact state when the fingerprint (args + train/val file hashes) matches; mismatch or incompleteness → clean fresh start with a printed reason. Exact mid-epoch tail replay via `SkipPrefixBatchSampler` (bucketed) / `_TailLoader` (shuffled).
 - Resume state retired only after training AND one-shot test eval fully succeed → a test-eval crash reruns no training (epoch==epochs ⇒ loop no-ops into test).
-- Tests: `tests/test_resume_checkpointing.py` (8/8, CPU-only, duck-typed models). `tests/test_sdk_parity.py` shows 19/20 **while stage-3 training holds the GPU** (multimodal forward needs 4.4 GiB) — environmental contention, verified 20/20 on idle GPU.
+- Tests: `tests/test_resume_checkpointing.py` (9/9 incl. PEFT LoRA round-trip). `tests/test_sdk_parity.py` shows 19/20 **while stage-3 training holds the GPU** (multimodal forward needs 4.4 GiB) — environmental contention, verified 20/20 on idle GPU.
+
+---
+
+## 9c. Epoch-1 Slice Investigation (2026-09-21 evening, CPU-only while training continues)
+
+Audited the weak epoch-1 val slices from §11's stage-3 checkpoint (`85.37%`, ECE 0.045→0.021 @ T*=0.79):
+
+| Slice | Score | Root cause | Action |
+| :--- | :--- | :--- | :--- |
+| `sdk_counterfactual_inversion` "0.0%" | 1/1 row | **n=1 — noise.** The row's entity-swapped claim (trial NCT-16607 vs premise's NCT-049821) is NEUTRAL under strict NLI; the slice's entity-swap⇒contradiction convention has only 7 train rows — unlearnable. | Documented; if the slice matters, grow it via committee validation (note: synthetic failed the A/B gate for the flagship mixture). |
+| `haystack_embedded` 52.6% | 10/19 | **Label-semantics defect (fixed).** `build_haystack_samples` embedded SNLI CONTRADICTION-orig needles, whose "contradiction" exists only via the cross-caption convention; inside an 8–25-paragraph haystack the hypothesis is merely *not stated* → strict readers must answer NEUTRAL. 8/19 val rows are this artifact; non-artifact ceiling = 11/19 = 57.9%, model scored 10/19 — i.e., it was right on the defensible rows and "wrong" only on unfalsifiable ones. | `data_pipeline.py`: contradiction-orig pairs now intercepted (routed to drop-neutral). Regression: `tests/test_haystack_label_invariants.py` (6/6, seeds 0–99). Affects future compiles only. |
+| `haystack_corrupted_con` 75% | 3/4 | n=4 — noise; construction is sound (corruption strictly on entailment needles). | None. |
+| `typed_decisions score_gold` 50% / `choice_gold` 62% | 15/30, 28/45 | Genuine capability gap: the model verifies *correct* options (all-entailment slices) worse than it rejects wrong ones (`score_alt` 91%, `choice_neg` 97%) — confirmation asymmetry on enterprise decisions. | Candidate for the P2 decision-mixture round (rebalance gold:alt exposure). |
+| MNLI-m 73% / core NLI below stage-2 | — | Stage-3 trains **from the base model** (no adapter warm-start; `train_cross_encoder.py` had no such flag) on a 12K-row mixture — cannot relearn 52K-row stage-2 skills. | `--warm-start <adapter_dir>` added (LoRA via `set_peft_model_state_dict` + head restore). Recommended for the production stage-3 artifact rerun. |
+
+**Bug found & fixed en passant (would have silently broken future resumes):** `load_state_dict(peft_weights, strict=False)` drops LoRA keys (checkpoint keys lack the `.default` adapter infix) — resume and warm-start now use `peft.set_peft_model_state_dict`. Caught by the PEFT round-trip test, not by inspection. All suites green: 9/9 resume, 3/3 warm-start, 6/6 haystack invariants, 7/7 bucket lengths, 18/18 committee, 11/11 night stats; adversarial/system1 suites OK.
 
 ---
 

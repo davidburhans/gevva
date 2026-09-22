@@ -155,6 +155,11 @@ def build_haystack_samples(
     - 40% Entailment (premise needle embedded at random depth)
     - 30% Contradiction (fact corrupted via entity / number mutation strictly on entailment needles)
     - 30% Neutral (needle dropped entirely -> unsupported in document)
+
+    Embedded rows are restricted to entailment/neutral source pairs: SNLI-style
+    contradiction pairs contradict only via the cross-caption convention, which is
+    unfalsifiable once transplanted into a haystack (2026-09-21 audit — the model
+    correctly answers NEUTRAL on those rows and was scored wrong).
     """
     rng = random.Random(seed)
     haystack_rows: List[Dict[str, Any]] = []
@@ -213,8 +218,19 @@ def build_haystack_samples(
             doc = "\n\n".join(doc_paragraphs)
             label = CONTRADICTION
             sub_source = "haystack_corrupted_con"
+        elif orig_label == CONTRADICTION:
+            # WHY (2026-09-21 audit): a contradiction-orig pair's needle contradicts
+            # the hypothesis only via SNLI's cross-caption convention (premise scene X
+            # vs hypothesis scene Y). Inside an 8-25 paragraph haystack the hypothesis
+            # is merely NOT STATED, so a strict reader must answer NEUTRAL — the gold
+            # label is unfalsifiable from the document. Emit a verifiable negative
+            # instead of an unanswerable contradiction.
+            doc = "\n\n".join(fillers)
+            label = NEUTRAL
+            sub_source = "haystack_drop_neutral"
         else:
-            # Genuine needle inserted -> Keep original relation (or entailment)
+            # Genuine needle inserted -> Keep original relation (entailment/neutral only;
+            # contradiction-orig pairs were intercepted above)
             pos = rng.randrange(len(fillers) + 1)
             doc_paragraphs = fillers[:pos] + [premise_needle] + fillers[pos:]
             doc = "\n\n".join(doc_paragraphs)

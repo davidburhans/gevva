@@ -43,6 +43,24 @@ class FakeHeadModel(nn.Module):
         torch.save(self.state_dict(), str(Path(path) / "model_state.pt"))
 
 
+class PeftFakeModel(nn.Module):
+    """PEFT-shaped stand-in: LoRA backbone + modules_to_save head (real PEFT wrap)."""
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = nn.Linear(8, 8)
+        self.score = nn.Linear(8, 3, bias=False)
+        self.norm = nn.LayerNorm(8)
+
+
+def _peft_fake_model():
+    from peft import LoraConfig, get_peft_model
+
+    cfg = LoraConfig(r=4, lora_alpha=8, target_modules=["backbone"],
+                     modules_to_save=["score"], lora_dropout=0.0, bias="none")
+    return get_peft_model(PeftFakeModel(), cfg)
+
+
 def _tiny_training_setup(out_dir):
     model = FakeHeadModel()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -160,6 +178,34 @@ def test_meta_json_is_written_last():
         assert meta["complete"] is True
 
 
+def test_peft_resume_roundtrip_restores_lora_weights():
+    """Regression: plain load_state_dict(strict=False) silently dropped LoRA keys;
+    resume must restore lora_A/lora_B AND the saved head exactly."""
+    with tempfile.TemporaryDirectory() as out_dir:
+        teacher = _peft_fake_model()
+        with torch.no_grad():
+            for name, p in teacher.named_parameters():
+                if "lora_" in name:
+                    p.add_(0.33)
+        optimizer = torch.optim.AdamW(teacher.parameters(), lr=1e-3)
+        save_resume_state(out_dir, teacher, optimizer,
+                          torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=5),
+                          {"epoch": 1, "steps_done_in_epoch": 5, "global_step": 3,
+                           "best_val_acc": 0.75, "fingerprint": "peft"})
+
+        student = _peft_fake_model()
+        opt2 = torch.optim.AdamW(student.parameters(), lr=1e-3)
+        ctx = try_load_resume_state(out_dir, student, opt2,
+                                    torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=5), "peft")
+        assert ctx is not None and ctx.global_step == 3
+        lora_ok = 0
+        for (name, p), (_, q) in zip(student.named_parameters(), teacher.named_parameters()):
+            if "lora_" in name:
+                assert torch.equal(p, q), f"LoRA parameter {name} not restored on resume"
+                lora_ok += 1
+        assert lora_ok >= 2, f"expected LoRA params in fixture, found {lora_ok}"
+
+
 TESTS = [
     test_skip_prefix_sampler_yields_exact_tail,
     test_skip_prefix_sampler_rejects_negative_skip,
@@ -169,6 +215,7 @@ TESTS = [
     test_fingerprint_binds_data_and_recipe,
     test_retire_removes_all_resume_dirs,
     test_meta_json_is_written_last,
+    test_peft_resume_roundtrip_restores_lora_weights,
 ]
 
 

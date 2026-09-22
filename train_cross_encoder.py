@@ -299,9 +299,12 @@ def try_load_resume_state(
 
     adapter_file = os.path.join(resume_dir, "adapter_model.safetensors")
     if os.path.exists(adapter_file):
+        # WHY set_peft_model_state_dict: plain load_state_dict(strict=False) silently
+        # drops LoRA keys (checkpoint keys lack the '.default' adapter infix).
         from peft import load_peft_weights
+        from peft import set_peft_model_state_dict
 
-        model.load_state_dict(load_peft_weights(resume_dir), strict=False)
+        set_peft_model_state_dict(model, load_peft_weights(resume_dir))
     else:
         state = torch.load(os.path.join(resume_dir, "model_state.pt"), map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=False)
@@ -339,6 +342,38 @@ def _restore_head_weights(model: Any, head_state: Dict[str, Any]) -> None:
             target.modules_to_save["default"].load_state_dict(state)
         else:
             target.load_state_dict(state)
+
+
+def warm_start_from_adapter(model: Any, adapter_dir: str) -> int:
+    """Initializes LoRA + classification-head weights from a prior checkpoint.
+
+    WHY: stage-3 trained from the base model on a 12K-row mixture and regressed core
+    NLI (MNLI 73% vs the 52K-row stage-2 flagship's 86%); continuing from the
+    previous stage's adapter preserves core skills while expanding context.
+
+    Example:
+        >>> n = warm_start_from_adapter(model, "ckpt/gemma-4-e2b-nli-stage2/best")
+        >>> assert n > 0
+    """
+    from peft import load_peft_weights
+    from peft import set_peft_model_state_dict
+
+    if not (os.path.isfile(os.path.join(adapter_dir, "adapter_model.safetensors"))
+            or os.path.isfile(os.path.join(adapter_dir, "adapter_model.bin"))):
+        raise FileNotFoundError(
+            f"--warm-start adapter dir has no adapter_model.safetensors: {adapter_dir!r} "
+            "(expected a PEFT save_pretrained output like ckpt/gemma-4-e2b-nli-stage2/best)"
+        )
+    # WHY set_peft_model_state_dict: plain load_state_dict(strict=False) silently
+    # drops LoRA keys (checkpoint keys lack the '.default' adapter infix).
+    loaded = load_peft_weights(adapter_dir)
+    set_peft_model_state_dict(model, loaded)
+    head_path = os.path.join(adapter_dir, "head_weights.pt")
+    if os.path.exists(head_path):
+        _restore_head_weights(model, torch.load(head_path, map_location="cpu", weights_only=True))
+        print(f"Warm start: restored classification head from {head_path}")
+    print(f"Warm start: loaded {len(loaded)} adapter tensors from {adapter_dir}")
+    return len(loaded)
 
 
 class DataCollatorNLI:
@@ -559,6 +594,11 @@ def train_cross_encoder(args):
         print("Enabled gradient checkpointing on model.")
     else:
         print("Warning: Could not enable gradient checkpointing on backbone.")
+
+    if args.warm_start:
+        if not os.path.exists(args.warm_start):
+            raise FileNotFoundError(f"--warm-start adapter dir not found: {args.warm_start} (expected adapter_model.safetensors inside)")
+        warm_start_from_adapter(model, args.warm_start)
 
     model.to(device)
 
@@ -1031,6 +1071,8 @@ if __name__ == "__main__":
                         help="Optimizer steps between mid-epoch resume checkpoints (0 disables)")
     parser.add_argument("--resume-auto", default=False, action=argparse.BooleanOptionalAction,
                         help="Resume from <out-dir>/resume when a complete fingerprint-matching checkpoint exists")
+    parser.add_argument("--warm-start", default=None,
+                        help="Path to a prior adapter checkpoint (e.g. ckpt/gemma-4-e2b-nli-stage2/best) to initialize LoRA + head before training")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
