@@ -2195,11 +2195,21 @@ class Gemma4Model(Gemma4PreTrainedModel):
         image_position_ids (`torch.LongTensor` of shape `(batch_size, max_patches, 2)`, *optional*):
             The patch positions as (x, y) coordinates in the image. Padding patches are indicated by (-1, -1).
         """
-        vision_outputs = self.vision_tower(
-            pixel_values=pixel_values,
-            pixel_position_ids=image_position_ids,
-            **kwargs,
-        )
+        # WHY (2026-09-22 Phase-1 OOM): the documented "vision tower frozen with
+        # torch.no_grad()" was never implemented - a batch of 8 multimodal rows
+        # spiked the forward +18 GiB (eager attention over ~4K patches/image with
+        # train-mode buffers) and OOM'd training. When the tower's parameters are
+        # frozen we force eval mode (deterministic features; Module.train()
+        # recursion otherwise re-enables dropout every epoch) and run it under
+        # no_grad; embed_vision downstream stays trainable either way.
+        if all(not p.requires_grad for p in self.vision_tower.parameters()):
+            self.vision_tower.eval()
+        with torch.no_grad():
+            vision_outputs = self.vision_tower(
+                pixel_values=pixel_values,
+                pixel_position_ids=image_position_ids,
+                **kwargs,
+            )
         last_hidden_state = vision_outputs.last_hidden_state
         pooler_output = self.embed_vision(inputs_embeds=last_hidden_state)
 
@@ -2469,11 +2479,14 @@ class Gemma4Model(Gemma4PreTrainedModel):
             Passed through to the vision encoder for positional embedding computation.
         """
         pixel_values_videos = pixel_values_videos.flatten(0, 1)
-        vision_outputs = self.vision_tower(
-            pixel_values=pixel_values_videos,
-            pixel_position_ids=video_position_ids.flatten(0, 1),
-            **kwargs,
-        )
+        if all(not p.requires_grad for p in self.vision_tower.parameters()):
+            self.vision_tower.eval()
+        with torch.no_grad():
+            vision_outputs = self.vision_tower(
+                pixel_values=pixel_values_videos,
+                pixel_position_ids=video_position_ids.flatten(0, 1),
+                **kwargs,
+            )
         last_hidden_state = vision_outputs.last_hidden_state
         pooler_output = self.embed_vision(inputs_embeds=last_hidden_state)
 

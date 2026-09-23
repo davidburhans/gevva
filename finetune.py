@@ -969,6 +969,13 @@ def finetune_custom_data(
     if adapter_path and os.path.exists(adapter_path):
         print(f"Loading existing LoRA weights from {adapter_path} for continual fine-tuning...")
         model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=True)
+        # WHY (Phase-1 OOM, 2026-09-22): PEFT's from_pretrained(is_trainable=True)
+        # re-enables requires_grad on base params, silently un-freezing the vision
+        # tower that was frozen above - a batch of 8 multimodal rows then spiked
+        # +18 GiB (tower forward with grad) and OOM'd training. Re-freeze AFTER the
+        # wrap, matching train_cross_encoder's working order. The FrozenVision
+        # model subclass additionally enforces no_grad/eval at call time.
+        model.base_model.model.freeze_vision_tower(freeze_adapter=False)
         head_weights_path = os.path.join(adapter_path, "head_weights.pt")
         if os.path.exists(head_weights_path):
             print(f"Restoring classification head from {head_weights_path}...")

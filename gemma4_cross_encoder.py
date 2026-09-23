@@ -78,6 +78,53 @@ DEFAULT_NLI_TEMPLATE: str = "Premise: {premise}\nHypothesis: {hypothesis}"
 # -----------------------------------------------------------------------------
 # Model Class: Gemma4ForSequenceClassification
 # -----------------------------------------------------------------------------
+class Gemma4ModelFrozenVision(Gemma4Model):
+    """Gemma4Model enforcing the documented frozen-vision semantics (2026-09-22).
+
+    WHY: stock ``get_image_features`` runs the SigLIP tower WITH autograd and in
+    whatever mode ``Module.train()`` recursion left it - a batch of 8 multimodal
+    rows then spiked the forward +18 GiB (eager attention over ~4K patches per
+    image) and OOM'd Phase-1 training. AGENTS.md always specified "vision tower
+    frozen with torch.no_grad()"; this subclass finally implements it: when the
+    tower's parameters are all frozen it runs in eval mode under ``no_grad``
+    (deterministic frozen features, zero retained graph); ``embed_vision`` stays
+    trainable either way. Wrapping the third-party module here - not patching
+    site-packages - keeps the fix in-repo and reinstall-safe.
+    """
+
+    def _frozen_vision(self) -> bool:
+        return self.vision_tower is not None and all(
+            not p.requires_grad for p in self.vision_tower.parameters()
+        )
+
+    def get_image_features(self, pixel_values, image_position_ids=None, **kwargs):
+        import os as _os
+        if _os.environ.get("PROBE_DEBUG"):
+            print(f"[frozen-vision] override ACTIVE frozen={self._frozen_vision()} patches={pixel_values.shape}", flush=True)
+        if self._frozen_vision():
+            self.vision_tower.eval()
+            with torch.no_grad():
+                return super().get_image_features(
+                    pixel_values=pixel_values, image_position_ids=image_position_ids, **kwargs
+                )
+        return super().get_image_features(
+            pixel_values=pixel_values, image_position_ids=image_position_ids, **kwargs
+        )
+
+    def get_video_features(self, pixel_values_videos, video_position_ids=None, **kwargs):
+        if self._frozen_vision():
+            self.vision_tower.eval()
+            with torch.no_grad():
+                return super().get_video_features(
+                    pixel_values_videos=pixel_values_videos,
+                    video_position_ids=video_position_ids,
+                    **kwargs,
+                )
+        return super().get_video_features(
+            pixel_values_videos=pixel_values_videos, video_position_ids=video_position_ids, **kwargs
+        )
+
+
 class Gemma4ForSequenceClassification(Gemma4PreTrainedModel):
     """Gemma 4 backbone with a pooled Sequence Classification head for NLI and decision-making."""
 
@@ -87,7 +134,7 @@ class Gemma4ForSequenceClassification(Gemma4PreTrainedModel):
     def __init__(self, config: Gemma4Config):
         super().__init__(config)
         self.num_labels = getattr(config, "num_labels", 3)
-        self.model = Gemma4Model(config)
+        self.model = Gemma4ModelFrozenVision(config)
 
         # We normalize the pooled representation using Gemma 4's RMSNorm
         # to ensure training stability across heterogeneous layer configurations
