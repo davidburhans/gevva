@@ -1111,10 +1111,14 @@ def finetune_custom_data(
     if use_token_bucketing and has_val_groups:
         # Review F07: val groups must stay batch-atomic or the decision metric
         # (and best-checkpoint selection) scores partial option sets.
+        # WHY 2048 (not max_tokens_per_batch=4096): validation is inference-only,
+        # so it doesn't need the training budget. A smaller cap leaves more VRAM
+        # headroom for the allocator's cached pool, and group atomicity is
+        # preserved (a group's own footprint still overrides the budget).
         val_sampler = GroupedTokenBucketBatchSampler(
             _token_lengths(val_records),
             group_ids=[r.get("group_id") for r in val_records],
-            max_tokens_per_batch=max_tokens_per_batch,
+            max_tokens_per_batch=min(2048, max_tokens_per_batch),
             shuffle=False,
         )
         val_loader = DataLoader(
@@ -1258,6 +1262,14 @@ def finetune_custom_data(
                     )
 
         # Validation at epoch end
+        # WHY empty_cache (Phase-1 OOM, 2026-09-22): the training loop's caching
+        # allocator keeps its peak (~29.6 GiB) RESERVED-but-cached when the epoch
+        # ends. Validation runs inference-only (no_grad), so it needs headroom
+        # the allocator refuses to give back without an explicit release - the
+        # 2nd OOM died exactly at Epoch-1 validation with 27.35 GiB live tensors
+        # and only 127 MiB free. The model can't be unloaded (validation needs
+        # it), but empty_cache() returns the cached pool to the OS first.
+        torch.cuda.empty_cache()
         print(f"\n--- Validation (Epoch {epoch+1}/{epochs}) ---", flush=True)
         val_metrics = evaluate_dataset(model, val_loader, device)
         acc = val_metrics["accuracy"]
