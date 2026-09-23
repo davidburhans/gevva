@@ -375,6 +375,16 @@ Fresh reviewer attacked the improvement METHOD (M1-M7). Key findings and resolut
 - **M4 (blind spots)**: tonight's TRAIN_CMD raised to `--max-length 4096` (was 2048 — recreated a train/serve length mismatch; 4096 covers every public item incl. the 3,746-token one; worst batch ~13–15 GB). Phase-1 gate now includes 128K probe, suite anchors, XNLI slice.
 - **M6/M7 (process/cost)**: model-card disclosure of public-slice conditioning registered; **official 534-item scoring to be requested immediately after the Phase-1 gate** (public→held-out delta decides Phases 2–3) — OWNER ACTION REQUIRED for submission.
 Full protocol amendment: docs/EVALUATION_PROTOCOL.md §8.
+
+### Phase-1 launch: two OOMs, root-caused, fixed, training running (2026-09-22 night)
+
+The regression-review AMEND changes landed (anchor recompile 101,379 rows / 5.3% neutral / 15K anchors; per-epoch snapshots + anchor-floor selection; T*=1.0 shipping; commit 852d012) — then the launch itself OOM'd twice (at BOTH 4096 and 2048 max-length), on first-forward batches the sampler sized correctly.
+
+Root cause (staged GPU probes, `scratch/probe_phase1_memory.py` + `scratch/probe_phase1_realbatch.py`): **PEFT's `from_pretrained(is_trainable=True)` re-enables requires_grad on base params, silently un-freezing the vision tower** that finetune froze before the wrap. A batch of 8 multimodal rows then spiked +18 GiB (full vision graph, ~4K patches/image) → OOM. Text batches of any size run at 11-13 GiB. `train_cross_encoder`'s path (freeze AFTER get_peft_model) never had the bug — why v2 trained multimodal rows fine. AGENTS.md's "vision tower frozen with torch.no_grad()" was documented but never implemented.
+
+Fixes (commit 861aa22): `Gemma4ModelFrozenVision` subclass (frozen tower → eval + no_grad at call time; embed_vision stays trainable; in-repo wrap, no site-packages patching), finetune re-freezes after the PEFT wrap. Probes: 4 images 25.2→10.3 GiB; 12 images 11.5 GiB. Launch 3 is training: Step 185/1856, loss 1.12, 5.5 samples/s, ~6-7h ETA, all review amendments active.
+
+Standing notes: cosmetic UserWarning in the served-loss confs metric (python floats, no retention — fix with tomorrow's NOTES); waiter not needed (direct launch); models/unload endpoint returned 400 (llama-swap payload mismatch — GPU was free anyway; runbook item).
 ---
 
 ## 11. Stage 3 Results & Recovery Log (2026-09-22)
