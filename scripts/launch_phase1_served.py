@@ -43,13 +43,15 @@ TRAIN_CMD = [
     "--lr", "5e-5",
     "--grad-accum", "8",
     # Review F04/F06: group-atomic batching (else served_groups ~ 0 per batch and
-    # the served loss silently no-ops). Methodology review M4: max-length 4096
-    # covers every JevBench item (max public state ~3,746 tokens) - 2048 would
-    # have recreated a train/serve length mismatch in the phase closing one;
-    # worst grouped batch ~16K tokens ~ 13-15 GB, still well inside 32 GB.
+    # the served loss silently no-ops). Max-length 2048, not 4096: at 4096 the
+    # first oversize 6-option group (~24K tokens in ONE batch - group atomicity
+    # outranks the budget) OOM'd on launch (27.8 GiB live; the 5.2B-param bf16
+    # weights alone are 10.4 GiB). Worst group at 2048 = 12,288 tokens, inside
+    # the verified envelope. Train(2048)/serve(16384) mismatch documented per
+    # methodology M4 with the mapping doc's own probe precedent.
     "--token-bucketing",
     "--max-tokens-per-batch", "4096",
-    "--max-length", "4096",
+    "--max-length", "2048",
 ]
 
 

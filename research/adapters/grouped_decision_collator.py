@@ -170,7 +170,7 @@ def compute_served_distribution_loss(
             continue
         # Adapter semantics: renormalize over options; only an all-underflow group
         # (raw P(ent) sum exactly 0) is skipped - it serves uniform, no gradient.
-        if float(p_ent_raw[idx].sum()) == 0.0:
+        if float(p_ent_raw[idx].detach().sum()) == 0.0:
             continue
         served = p_ent[idx]
         total = served.sum()

@@ -699,6 +699,31 @@ def compute_brier_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tens
 # Evaluation Helper
 # -----------------------------------------------------------------------------
 @torch.no_grad()
+def should_save_best(
+    dec_acc, anchor_acc, best_dec_acc, best_anchor_acc, tol: float = 0.02
+) -> bool:
+    """G2 selection rule (regression review 2026-09-22): decision accuracy is the
+    primary metric ONLY within an anchor-accuracy floor - an epoch that improves
+    served decisions while regressing classic NLI behavior must not ship.
+
+    Example:
+        >>> should_save_best(0.80, 0.90, 0.78, 0.92)   # NLI within 2pp: save
+        True
+        >>> should_save_best(0.82, 0.85, 0.78, 0.92)   # NLI -7pp: reject
+        False
+    """
+    primary = dec_acc if dec_acc is not None else anchor_acc
+    best_primary = best_dec_acc if dec_acc is not None else best_anchor_acc
+    if primary is None or best_primary is None:
+        return True  # nothing comparable yet (first epoch always saves)
+    if primary <= best_primary:
+        return False
+    if anchor_acc is not None and best_anchor_acc is not None:
+        if anchor_acc < best_anchor_acc - tol:
+            return False  # served win bought with an NLI regression: reject
+    return True
+
+
 def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     model.eval()
     all_preds, all_probs, all_logits, all_golds, all_sources = [], [], [], [], []
@@ -820,6 +845,13 @@ def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     }
     if decision_acc is not None:
         res["decision_accuracy"] = decision_acc
+    # G2: anchor rows (ungrouped classic-NLI) accuracy - the regression floor for
+    # best-checkpoint selection when decision_accuracy is primary.
+    if all_group_ids:
+        cat_gids_a = np.concatenate(all_group_ids, axis=0)
+        anchor_mask = cat_gids_a == -1
+        if anchor_mask.any():
+            res["anchor_accuracy"] = round(float(np.mean(preds[anchor_mask] == golds[anchor_mask])), 4)
     return res
 
 
@@ -1105,6 +1137,8 @@ def finetune_custom_data(
     # 6. Training Loop
     print(f"\nBeginning training: {epochs} epochs, {len(train_loader)} batches/epoch, {total_steps} optimizer updates")
     best_val_acc = 0.0
+    best_dec_acc = None  # G2: primary metric (served decision accuracy)
+    best_anchor_acc = None  # G2: regression floor (classic-NLI anchor accuracy)
     best_metrics = {}
     global_step = 0
     t_start = time.time()
@@ -1226,14 +1260,35 @@ def finetune_custom_data(
         for cls_name, m in val_metrics["per_class"].items():
             print(f"  [{cls_name:13s}] Prec: {m['precision']:.3f} | Rec: {m['recall']:.3f} | F1: {m['f1']:.3f} (n={m['support']})")
 
-        # Save best checkpoint: prioritize decision_accuracy if available, else standard accuracy
-        primary_metric = dec_acc if dec_acc is not None else acc
-        if primary_metric > best_val_acc:
-            best_val_acc = primary_metric
+        # G2 (regression review 2026-09-22): snapshot EVERY epoch so a bad selection
+        # can never destroy the good epoch's weights; best/ selection uses dec_acc
+        # as primary ONLY within an anchor-accuracy floor (should_save_best).
+        epoch_dir = os.path.join(output_dir, f"epoch_{epoch+1}")
+        os.makedirs(epoch_dir, exist_ok=True)
+        model.save_pretrained(epoch_dir)
+        raw_model_epoch = model.base_model.model if hasattr(model, "base_model") else model
+        def _clean_state_ep(mod):
+            if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+                return mod.modules_to_save["default"].state_dict()
+            return mod.state_dict()
+        _head_epoch = {"score": _clean_state_ep(raw_model_epoch.score)}
+        if hasattr(raw_model_epoch, "norm"):
+            _head_epoch["norm"] = _clean_state_ep(raw_model_epoch.norm)
+        torch.save(_head_epoch, os.path.join(epoch_dir, "head_weights.pt"))
+        clean_epoch_metrics = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
+        with open(os.path.join(epoch_dir, "eval_report.json"), "w") as f:
+            json.dump(clean_epoch_metrics, f, indent=2)
+        print(f"-> Epoch {epoch+1} snapshot saved to {epoch_dir}")
+
+        anchor_acc = val_metrics.get("anchor_accuracy")
+        if should_save_best(dec_acc, anchor_acc, best_dec_acc, best_anchor_acc):
+            best_dec_acc = dec_acc if dec_acc is not None else anchor_acc
+            best_anchor_acc = anchor_acc if anchor_acc is not None else (best_anchor_acc or 0.0)
             best_metrics = val_metrics
             best_dir = os.path.join(output_dir, "best")
             os.makedirs(best_dir, exist_ok=True)
             metric_name = "decision accuracy" if dec_acc is not None else "accuracy"
+            best_val_acc = (dec_acc if dec_acc is not None else anchor_acc) or best_val_acc
             print(f"-> New best {metric_name} ({best_val_acc*100:.2f}%)! Saving checkpoint to {best_dir}...")
             model.save_pretrained(best_dir)
             # Explicitly save classification head and norm weights (unwrapping any PEFT wrappers)
@@ -1256,17 +1311,25 @@ def finetune_custom_data(
                 t_opt, ece_bef, ece_aft, br_bef, br_aft = fit_temperature_scaling(
                     val_metrics["logits"], val_metrics["golds"]
                 )
+                # G8 (regression review 2026-09-22): ship T*=1.0. The NLL fit targets the
+                # 3-class distribution on an E/C-dominated slice, not the served
+                # renormalized distribution the gate measures - and v2's fit
+                # WORSENED val ECE (0.043->0.052) while P1's degenerate slice fit
+                # T*=0.57. The fitted value is preserved as diagnostics; refit
+                # offline on served-ECE if the T=1 gate leg lands marginal.
                 calib_dict = {
-                    "optimal_temperature": round(float(t_opt), 4),
+                    "optimal_temperature": 1.0,
+                    "fitted_temperature_nll": round(float(t_opt), 4),
                     "val_ece_before": round(float(ece_bef), 4),
                     "val_ece_after": round(float(ece_aft), 4),
                     "val_brier_before": round(float(br_bef), 4),
                     "val_brier_after": round(float(br_aft), 4),
                     "attribution": "Post-hoc validation temperature scaling inspired by sabeel111/OpenSourceJev (MIT License) and Guo et al. (2017)",
+                    "ship_note": "optimal_temperature pinned to 1.0 (training temperature, F08 parity); fitted_temperature_nll is diagnostic only",
                 }
                 with open(os.path.join(best_dir, "calibration.json"), "w") as f:
                     json.dump(calib_dict, f, indent=2)
-                print(f"-> Fitted optimal validation temperature: T* = {t_opt:.4f} (ECE: {ece_bef:.4f} -> {ece_aft:.4f})")
+                print(f"-> Fitted NLL temperature T* = {t_opt:.4f} (diagnostic; shipping T=1.0; ECE fit: {ece_bef:.4f} -> {ece_aft:.4f})")
 
             report_dict = {k: v for k, v in val_metrics.items() if k not in ("logits", "golds")}
             with open(os.path.join(best_dir, "eval_report.json"), "w") as f:

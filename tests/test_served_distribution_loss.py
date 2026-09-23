@@ -148,6 +148,23 @@ def test_finetune_served_loss_wiring_is_complete():
     assert not unknown, f"launcher passes flags finetune.py does not define: {unknown}"
 
 
+def test_should_save_best_floor_rule():
+    """G2: dec_acc is primary ONLY within the anchor-accuracy floor."""
+    from finetune import should_save_best
+
+    # First epoch (nothing comparable): always saves.
+    assert should_save_best(0.80, 0.90, None, None) is True
+    # Better dec_acc, NLI within 2pp: save.
+    assert should_save_best(0.82, 0.91, 0.80, 0.90) is True
+    # Better dec_acc but NLI -7pp (v1-style failure): REJECT.
+    assert should_save_best(0.82, 0.85, 0.80, 0.92) is False
+    # Worse dec_acc: reject regardless.
+    assert should_save_best(0.79, 0.95, 0.80, 0.90) is False
+    # No dec_acc (ungrouped data): falls back to anchor accuracy as primary.
+    assert should_save_best(None, 0.93, None, 0.90) is True
+    assert should_save_best(None, 0.86, None, 0.90) is False
+
+
 TESTS = [
     test_hand_computed_cross_entropy,
     test_served_and_margin_rankings_disagree,
@@ -156,6 +173,7 @@ TESTS = [
     test_soft_targets_renormalized,
     test_all_zero_entailment_group_skipped,
     test_finetune_served_loss_wiring_is_complete,
+    test_should_save_best_floor_rule,
 ]
 
 

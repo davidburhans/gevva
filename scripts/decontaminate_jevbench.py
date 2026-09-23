@@ -52,6 +52,9 @@ def main() -> int:
     parser.add_argument("--in", dest="infile", required=True)
     parser.add_argument("--out", dest="outfile", default=None)
     parser.add_argument("--check-only", action="store_true", help="Report without writing")
+    parser.add_argument("--max-per-template", type=int, default=400,
+                        help="Per-template row cap (raise to disable; the cap targets Phase-2's raw template "
+                             "collapse - mixture rows share instruction prefixes across varied states)")
     args = parser.parse_args()
 
     ref = load_reference()
@@ -69,7 +72,7 @@ def main() -> int:
     # instruction/state template may dominate the compiled set. Signature is
     # schema-aware: instruction if present (converted rows), else state prefix
     # (raw scenarios), else premise prefix.
-    MAX_PER_TEMPLATE = 400
+    MAX_PER_TEMPLATE = args.max_per_template
 
     def template_signature(r) -> str:
         q = r.get("question") or {}
