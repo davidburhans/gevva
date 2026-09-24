@@ -1,4 +1,4 @@
-# Multimodal 128K NLI Cross-Encoder & System 1 Decision Engine
+# Gevva: A Multimodal 128K NLI Cross-Encoder & System 1 Decision Engine
 
 A large-context (128K), multilingual (100+ languages), vision-enabled NLI cross-encoder based on Google's **Gemma 4** architecture (`google/gemma-4-E2B` and `google/gemma-4-E4B`).
 
