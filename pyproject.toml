@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder (#1 on JevBench)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [
     { name = "Gevva Team & Contributors" }
 ]
@@ -30,7 +30,6 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -74,6 +73,14 @@ gevva = "gevva.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gevva*"]
+
+[tool.setuptools]
+py-modules = [
+    "decision_engine",
+    "gemma4_cross_encoder",
+    "export_w4a16",
+    "nli_labels",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
