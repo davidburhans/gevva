@@ -33,13 +33,28 @@ from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
-    Gemma4Config,
-    Gemma4Model,
-    Gemma4PreTrainedModel,
 )
 from transformers.modeling_outputs import SequenceClassifierOutput
-from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
-from transformers.models.gemma4.modeling_gemma4 import Gemma4RMSNorm
+
+try:
+    from transformers import (
+        Gemma4Config,
+        Gemma4Model,
+        Gemma4PreTrainedModel,
+    )
+    from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4RMSNorm
+except ImportError:
+    try:
+        from research.configuration_gemma4 import Gemma4Config
+        from research.modeling_gemma4 import Gemma4Model, Gemma4PreTrainedModel, Gemma4RMSNorm
+        class Gemma4ImageProcessorPil:  # type: ignore
+            pass
+    except Exception:
+        raise ImportError(
+            "Gemma 4 model support requires `transformers>=5.17.0`. "
+            "Please upgrade via: pip install 'transformers>=5.17.0'"
+        )
 
 try:
     from decision_engine import RerankItem, System1Engine

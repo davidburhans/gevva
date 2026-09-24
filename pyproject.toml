@@ -43,7 +43,7 @@ classifiers = [
 
 dependencies = [
     "torch>=2.4.0",
-    "transformers>=4.48.0",
+    "transformers>=5.17.0",
     "accelerate>=0.34.0",
     "tokenizers>=0.20.0",
     "safetensors>=0.4.0",

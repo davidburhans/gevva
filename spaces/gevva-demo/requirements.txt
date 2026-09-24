@@ -1,6 +1,5 @@
 gevva>=1.0.1
-transformers>=4.48.0
+transformers>=5.17.0
 pillow>=10.0.0
-huggingface_hub<1.0.0,>=0.28.0
 
 
