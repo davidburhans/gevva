@@ -366,4 +366,4 @@ Unlike autoregressive LLMs (which take 500–3,000 ms to generate tokens step-by
 """)
 
 if __name__ == "__main__":
-    demo.launch(show_api=False, ssr=False)
+    demo.launch()
