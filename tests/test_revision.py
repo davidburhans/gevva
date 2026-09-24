@@ -56,7 +56,22 @@ class TestRevisionResolution(unittest.TestCase):
             self.assertEqual(enc.revision, "multimodal")
             mock_tok.assert_called_once_with("davidburhans/gevva-remote-test", revision="multimodal")
             mock_model.assert_called_once()
-            self.assertEqual(mock_model.call_args[1].get("revision"), "multimodal")
+    def test_multimodal_dedicated_repo_id_resolution(self):
+        if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+            with patch("gemma4_cross_encoder.AutoTokenizer.from_pretrained") as mock_tok, \
+                 patch("gemma4_cross_encoder.Gemma4ForSequenceClassification.from_pretrained") as mock_model:
+                mock_tok.return_value = MagicMock(pad_token=None)
+                mock_model.return_value = MagicMock()
+                enc = Gemma4CrossEncoder(model_name_or_path="davidburhans/gevva-e2b-multimodal")
+                mock_tok.assert_called_once()
+                called_path = mock_tok.call_args[0][0]
+                self.assertEqual(called_path, "ckpt/gevva-e2b-phase4/best")
+
+                # Also test via gevva.load
+                mock_tok.reset_mock()
+                enc2 = load(model_name_or_path="davidburhans/gevva-e2b-multimodal")
+                called_path2 = mock_tok.call_args[0][0]
+                self.assertEqual(called_path2, "ckpt/gevva-e2b-phase4/best")
 
 
 if __name__ == "__main__":

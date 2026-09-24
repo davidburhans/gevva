@@ -40,7 +40,7 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __all__ = [
     "Gevva",
     "GevvaCrossEncoder",
@@ -98,6 +98,9 @@ def load(
             model_name_or_path = "ckpt/gevva-e2b-phase4/best"
         elif (revision is None or revision in ("main", "flagship")) and os.path.isdir("ckpt/gevva-e2b"):
             model_name_or_path = "ckpt/gevva-e2b"
+    elif model_name_or_path == "davidburhans/gevva-e2b-multimodal" and not os.path.exists(model_name_or_path):
+        if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+            model_name_or_path = "ckpt/gevva-e2b-phase4/best"
 
     if device == "auto":
         import torch

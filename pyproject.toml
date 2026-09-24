@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gevva"
-version = "1.0.0"
+version = "1.0.1"
 description = "Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder (#1 on JevBench)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -510,6 +510,9 @@ class Gemma4CrossEncoder(System1Engine):
                 model_name_or_path = "ckpt/gevva-e2b-phase4/best"
             elif (revision is None or revision in ("main", "flagship")) and os.path.isdir("ckpt/gevva-e2b"):
                 model_name_or_path = "ckpt/gevva-e2b"
+        elif model_name_or_path == "davidburhans/gevva-e2b-multimodal" and not os.path.exists("davidburhans/gevva-e2b-multimodal"):
+            if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+                model_name_or_path = "ckpt/gevva-e2b-phase4/best"
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.max_length = max_len if max_len is not None else max_length

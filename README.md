@@ -245,14 +245,14 @@ best_idx, scores = model.rerank("Where is package #94001234?", tools)
 ```
 
 ### 3. Multimodal Visual Claim Verification
-Load the multimodal branch variant to verify visual claims across charts, invoices, tables, and scenes:
+Load the multimodal model directly from Hugging Face:
 
 ```python
 from PIL import Image
 import gevva
 
-# Load the multimodal variant branch
-model = gevva.load("davidburhans/gevva-e2b", revision="multimodal")
+# Load the dedicated vision-enabled multimodal model
+model = gevva.load("davidburhans/gevva-e2b-multimodal")
 
 image = Image.open("quarterly_revenue_chart.png").convert("RGB")
 claim = "Q3 revenue grew by 18% quarter-over-quarter."
@@ -266,10 +266,10 @@ print(preds[0].predicted_label, preds[0].probabilities)
 
 ## 📦 The Gevva Model Family
 
-| Model | Repository & Revision | Backbone Architecture | Parameters | Context | JevBench Score | Latency ($p_{50}$) | Primary Application |
+| Model | Repository & Hub Identifier | Backbone Architecture | Parameters | Context | JevBench Score | Latency ($p_{50}$) | Primary Application |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Gevva e2b`** *(Flagship)* | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) (`main`) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`77.54`** (#1 Global) | **16.5 ms** (147 ms CPU) | Real-time production serving, edge & mobile |
-| **`Gevva e2b Multimodal`** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b/tree/multimodal) (`revision="multimodal"`) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`70.56`** (88.8% Vision) | **16.5 ms** | Vision-grounded decision engine, charts & invoices |
+| **`Gevva e2b`** *(Flagship)* | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`77.54`** (#1 Global) | **16.5 ms** (147 ms CPU) | Real-time production serving, edge & mobile |
+| **`Gevva e2b Multimodal`** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`70.56`** (88.8% Vision) | **16.5 ms** | Vision-grounded decision engine, charts & invoices |
 | **`Gevva e2b (W4A16)`** | `ckpt/gevva-e2b-w4a16` | Merged INT4 Group-32 | 2.3B | 128K | **`76.80`** | **14.3 ms** | Ultra-low VRAM (<5.2 GB), maximum throughput |
 | **`Gevva e4b`** | *In Staging* | `google/gemma-4-E4B-it` | 4.5B | 128K | *Targeting 80+* | ~28.0 ms | Complex legal/medical reasoning & deep documents |
 

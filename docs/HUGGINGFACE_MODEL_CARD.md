@@ -186,21 +186,24 @@ predicted = labels[int(probs.argmax())]
 print(f"Verdict: {predicted} ({probs[0][probs.argmax()]*100:.1f}%)")
 ```
 
-### Model Variants & Branches
+### Model Variants & Checkpoints
 
-The repository provides two official model variants under the same repo ID `davidburhans/gevva-e2b`:
+The Gevva family provides two official model releases:
 
-| Variant | Branch / Revision | Description | Benchmark Highlights |
+| Variant | Hugging Face Repository | Description | Benchmark Highlights |
 | :--- | :--- | :--- | :--- |
-| **Flagship (Default)** | `main` | Global #1 System 1 Text Decision Engine | **77.54** JevBench Composite (#1 Global) |
-| **Multimodal** | `multimodal` | Vision-grounded decision engine | **88.8%** Visual Grounding (96.4% on Invoices/Tables) |
+| **Flagship (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Global #1 System 1 Text Decision Engine | **77.54** JevBench Composite (#1 Global) |
+| **Multimodal (Vision Grounding)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | Vision-grounded decision engine | **88.8%** Visual Grounding (96.4% on Invoices/Tables) |
 
 To load the multimodal variant:
 ```python
 import gevva
 
-# Load the vision-enabled variant branch
-model = gevva.load("davidburhans/gevva-e2b", revision="multimodal", device="cuda")
+# Load via dedicated repository:
+model = gevva.load("davidburhans/gevva-e2b-multimodal", device="cuda")
+
+# Or via branch revision on the flagship repo:
+# model = gevva.load("davidburhans/gevva-e2b", revision="multimodal", device="cuda")
 ```
 
 ---
