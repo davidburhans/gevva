@@ -92,6 +92,25 @@ class TestSpacesDemoUnit(unittest.TestCase):
         self.assertIn("| #1 | `refund` 🏆 | **85.0%** |", out)
         self.assertIn("Latency", latency)
 
+    def test_route_intent_multimodal(self):
+        scores = [0.70, 0.20, 0.10]
+        docs = ["analyze_chart", "parse_table", "faq"]
+        rerank_res = RerankResult(0, scores, documents=docs)
+        self.mock_engine.rerank.return_value = rerank_res
+        img = Image.new("RGB", (64, 64), color="blue")
+
+        out, latency = app.route_intent(
+            model_id="test-model",
+            query="Analyze this visual chart",
+            tools_input="analyze_chart\nparse_table\nfaq",
+            image=img,
+        )
+
+        self.assertIn("analyze_chart", out)
+        self.assertIn("70.0%", out)
+        self.assertIn("| #1 | `analyze_chart` 🏆 | **70.0%** |", out)
+        self.mock_engine.rerank.assert_called_once()
+
     def test_route_intent_empty_tools(self):
         out, latency = app.route_intent(
             model_id="test-model",
@@ -193,6 +212,21 @@ class TestSpacesDemoLive(unittest.TestCase):
         self.assertIn("Entailment (True / Verified)", labels)
         self.assertIn("Contradiction (False / Refuted)", labels)
         self.assertIn("Neutral (Unverifiable / Irrelevant)", labels)
+
+        # Test live multimodal tool routing
+        tools = (
+            "analyze_financial_chart: Extract bar chart trends, quarterly revenue, and growth variance\n"
+            "parse_tabular_receipt: Extract rows and line items from a table\n"
+            "search_faq: Search standard user questions"
+        )
+        route_out, route_lat = app.route_intent(
+            model_id=local_model_path,
+            query="Analyze these financial metrics.",
+            tools_input=tools,
+            image=img,
+        )
+        self.assertIn("analyze_financial_chart", route_out)
+        self.assertIn("🏆", route_out)
 
     def test_gradio_server_http_launch(self):
         """Tests that Gradio demo launches cleanly on a socket and responds to HTTP requests."""

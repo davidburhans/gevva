@@ -127,6 +127,7 @@ def route_intent(
     model_id: str,
     query: str,
     tools_input: str,
+    image: Optional[Image.Image] = None,
 ):
     if not query or not query.strip():
         return "Please enter a query.", "0.0 ms"
@@ -136,8 +137,22 @@ def route_intent(
 
     engine = load_engine(model_id)
 
+    # Defensively normalize image format if provided
+    if image is not None:
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        elif hasattr(image, "convert"):
+            image = image.convert("RGB")
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image).convert("RGB")
+
     t0 = time.perf_counter()
-    best_idx, scores = engine.rerank(query.strip(), tools, temperature=1.0)
+    best_idx, scores = engine.rerank(
+        premise=query.strip(),
+        options=tools,
+        image=image,
+        temperature=1.0,
+    )
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     ranked = sorted(enumerate(scores), key=lambda x: -x[1])
@@ -148,7 +163,7 @@ def route_intent(
         marker = " 🏆" if idx == best_idx else ""
         lines.append(f"| #{r+1} | `{tools[idx]}`{marker} | **{s*100:.1f}%** |")
 
-    return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms**"
+    return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms** ({'GPU' if torch.cuda.is_available() else 'CPU'})"
 
 
 @gpu_decorator(duration=30)
@@ -275,13 +290,17 @@ with gr.Blocks(title=title) as demo:
 
         # TAB 2: Zero-Shot Tool Routing
         with gr.TabItem("⚡ Zero-Shot Tool & Intent Routing"):
-            gr.Markdown("Route incoming user queries to API functions or workflows in a single forward pass without prompt generation latency.")
+            gr.Markdown("Route incoming user queries and uploaded document/scene images to API functions or workflows in a single forward pass without prompt generation latency.")
             with gr.Row():
                 with gr.Column():
                     route_query = gr.Textbox(
-                        label="Incoming User Query",
+                        label="Incoming User Query / Instruction",
                         value="I never received order #99241, can you please refund my credit card?",
                         lines=2,
+                    )
+                    route_image = gr.Image(
+                        label="Context Image (Optional: Invoices, Receipts, Charts, Scenes)",
+                        type="pil",
                     )
                     route_tools = gr.Textbox(
                         label="Available Tools / Actions (One per line)",
@@ -296,24 +315,44 @@ with gr.Blocks(title=title) as demo:
             gr.Examples(
                 examples=[
                     [
+                        "davidburhans/gevva-e2b-multimodal",
+                        "Please analyze these quarterly financial performance figures.",
+                        "analyze_financial_chart: Extract bar chart trends, quarterly revenue, and growth variance\nparse_tabular_receipt: Extract rows, line items, and invoice subtotals from a table\nsearch_faq: Search standard user questions and help center articles\ntrack_package: Lookup shipping tracking status for an order number",
+                        "examples/sample_chart.jpg",
+                    ],
+                    [
+                        "davidburhans/gevva-e2b-multimodal",
+                        "Route this document to the appropriate supply chain workflow.",
+                        "parse_tabular_inventory: Extract row items, parts catalog, unit counts, and stock quantities from table\nplot_line_graph: Render a continuous time series or bar visualization\ncustomer_refund: Issue payment reimbursement to user card\nreset_password: Send self-service authentication link to employee email",
+                        "examples/sample_table.jpg",
+                    ],
+                    [
+                        "davidburhans/gevva-e2b-multimodal",
+                        "Inspect this visual scene layout and count the objects.",
+                        "geometric_scene_analyzer: Detect shapes, spatial positions, and color distributions in a scene\nprocess_refund: Refund payment transaction to customer account\ngenerate_sales_invoice: Create a new billing invoice and send to client\ntrack_shipment: Check delivery status for carrier package",
+                        "examples/sample_scene.jpg",
+                    ],
+                    [
                         "davidburhans/gevva-e2b",
                         "I never received order #99241, can you please refund my credit card?",
                         "process_refund: Refund payment transaction to original payment method\ntrack_shipment: Check current logistics status for an order number\ncancel_subscription: Terminate recurring monthly subscription\nsearch_knowledge_base: Search customer FAQs and policy documentation",
+                        None,
                     ],
                     [
                         "davidburhans/gevva-e2b",
                         "What is the return policy for opened electronics within 30 days?",
                         "process_refund: Refund payment transaction to original payment method\ntrack_shipment: Check current logistics status for an order number\ncancel_subscription: Terminate recurring monthly subscription\nsearch_knowledge_base: Search customer FAQs and policy documentation",
+                        None,
                     ],
                 ],
-                inputs=[model_selector, route_query, route_tools],
+                inputs=[model_selector, route_query, route_tools, route_image],
                 outputs=[out_route, out_route_lat],
                 fn=route_intent,
                 cache_examples=False,
             )
             btn_route.click(
                 route_intent,
-                inputs=[model_selector, route_query, route_tools],
+                inputs=[model_selector, route_query, route_tools, route_image],
                 outputs=[out_route, out_route_lat],
             )
 
