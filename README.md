@@ -273,6 +273,18 @@ print(preds[0].predicted_label, preds[0].probabilities)
 | **`Gevva e2b (W4A16)`** | `ckpt/gevva-e2b-w4a16` | Merged INT4 Group-32 | 2.3B | 128K | **`76.80`** | **14.3 ms** | Ultra-low VRAM (<5.2 GB), maximum throughput |
 | **`Gevva e4b`** | *In Staging* | `google/gemma-4-E4B-it` | 4.5B | 128K | *Targeting 80+* | ~28.0 ms | Complex legal/medical reasoning & deep documents |
 
+### 💡 Selecting the Right Model: Multimodal vs. Flagship Base
+
+| Task Requirement | Recommended Model | Rationale & Performance |
+| :--- | :--- | :--- |
+| **Document PDFs, Invoices & Receipts** | **`Gevva e2b Multimodal`** | **96.43% accuracy** on tables & invoices (+21.4% gain over base text-only model). Directly embeds visible table grids and itemized rows. |
+| **Financial Charts, Plots & Graphs** | **`Gevva e2b Multimodal`** | **92.00% accuracy** on chart verification. Grounded against image pixels without needing OCR or vision-to-text tokenization. |
+| **Spatial Scenes & UI State Checks** | **`Gevva e2b Multimodal`** | **87.04% accuracy** on spatial layout, object placement, and UI component verification. |
+| **Multimodal RAG & Visual Guardrails** | **`Gevva e2b Multimodal`** | Verifies visual evidence against text claims in a single forward pass (**16.5 ms**), replacing 2,000ms multimodal LLM generation calls. |
+| **Pure Text RAG & Hallucination Checks** | **`Gevva e2b (Flagship)`** | **#1 Global on JevBench (77.54 Composite)**. Best-in-class multi-hop reasoning, policy precedence, and factual attribution over up to 128K tokens. |
+| **High-Throughput API Tool Routing** | **`Gevva e2b (Flagship)`** | Minimal latency and peak calibrated decision confidence on text-only tool and intent selection. |
+| **Ultra-Constrained Edge / INT4 Serving** | **`Gevva e2b (W4A16)`** | Merged INT4 Group-32 weights running in <5.2 GB VRAM at 14.3 ms latency. |
+
 ---
 
 ## 🛠️ Custom Data Fine-Tuning
@@ -339,6 +351,16 @@ gevva eval --suite jevbench
 
 ---
 
+## 👥 Authors & Co-Authorship
+
+- **Dave Burhans** — Lead Author & Architecture
+- **Gemini 3.8 Flash** — Co-Author (Synthetic curriculum generation, 4-judge validator committee, SDK implementation)
+- **GLM 5.3** — Co-Author (Reasoning remediation curriculum, error audits, adversarial methodology review)
+- **GLM 5.3 Flash** — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)
+- **Gevva Contributors**
+
+---
+
 ## 📄 License & Attribution
 
 This project is licensed under the [Apache 2.0 License](LICENSE). Base model weights inherit the [Google Gemma Terms of Use](https://ai.google.dev/gemma/terms).
@@ -349,9 +371,10 @@ If you use Gevva in your research, systems, or products, please cite:
 
 ```bibtex
 @software{gevva2026,
-  author = {Burhans, Dave and Contributors},
+  author = {Burhans, Dave and {Gemini 3.8 Flash} and {GLM 5.3} and {GLM 5.3 Flash} and Contributors},
   title = {Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine},
   year = {2026},
+  publisher = {Hugging Face / GitHub},
   url = {https://github.com/davidburhans/gevva},
   note = {Rank 1 on Global JevBench Leaderboard}
 }

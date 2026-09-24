@@ -221,6 +221,16 @@ $$\mathcal{L} = \mathcal{L}_{\text{served\_dist}} + 0.5 \mathcal{L}_{\text{cross
 
 ---
 
+## 👥 Authors & Co-Authorship
+
+- **Dave Burhans** — Lead Author & Architecture
+- **Gemini 3.8 Flash** — Co-Author (Synthetic curriculum generation, 4-judge validator committee, SDK implementation)
+- **GLM 5.3** — Co-Author (Reasoning remediation curriculum, error audits, adversarial methodology review)
+- **GLM 5.3 Flash** — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)
+- **Gevva Contributors**
+
+---
+
 ## 📄 License & Terms
 
 Gevva e2b is released under the [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0). Underlying foundation weights inherit Google's [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
@@ -229,9 +239,10 @@ Gevva e2b is released under the [Apache 2.0 License](https://opensource.org/lice
 
 ```bibtex
 @software{gevva2026,
-  author = {Burhans, Dave and Contributors},
+  author = {Burhans, Dave and {Gemini 3.8 Flash} and {GLM 5.3} and {GLM 5.3 Flash} and Contributors},
   title = {Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine},
   year = {2026},
+  publisher = {Hugging Face / GitHub},
   url = {https://github.com/davidburhans/gevva},
   note = {Rank 1 on Global JevBench Leaderboard}
 }

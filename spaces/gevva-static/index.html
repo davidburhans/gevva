@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ Gevva: SOTA Multimodal 128K System 1 Decision Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    code, pre { font-family: 'JetBrains Mono', monospace; }
+    .gradient-text {
+      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+
+  <!-- Navbar -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <span class="text-2xl font-extrabold tracking-tight">⚡ <span class="gradient-text">Gevva</span></span>
+        <span class="bg-amber-500/20 text-amber-400 text-xs font-semibold px-2.5 py-0.5 rounded-full border border-amber-500/30">#1 Global on JevBench (77.54)</span>
+      </div>
+      <div class="flex items-center space-x-4 text-sm font-medium">
+        <a href="https://github.com/davidburhans/gevva" target="_blank" class="hover:text-blue-400 transition flex items-center space-x-1.5">
+          <i class="fab fa-github"></i><span>GitHub</span>
+        </a>
+        <a href="https://pypi.org/project/gevva/" target="_blank" class="hover:text-amber-400 transition flex items-center space-x-1.5">
+          <i class="fab fa-python"></i><span>PyPI (1.0.1)</span>
+        </a>
+        <a href="https://huggingface.co/davidburhans/gevva-e2b" target="_blank" class="hover:text-yellow-400 transition flex items-center space-x-1.5">
+          <span>🤗 Models</span>
+        </a>
+        <a href="https://huggingface.co/datasets/davidburhans/gevva-decisions" target="_blank" class="hover:text-emerald-400 transition flex items-center space-x-1.5">
+          <span>📊 Datasets</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <main class="max-w-6xl mx-auto px-4 py-12">
+    <div class="text-center max-w-3xl mx-auto mb-14">
+      <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-4">
+        Multimodal 128K <span class="gradient-text">System 1 Decision Engine</span>
+      </h1>
+      <p class="text-lg text-slate-400 leading-relaxed mb-6">
+        Non-autoregressive cognitive intelligence inspired by Daniel Kahneman's System 1. Evaluates text claims, visual scenes, tool routing, and answer rubrics in a <strong>single forward pass (~16.5 ms)</strong> with calibrated confidence.
+      </p>
+
+      <div class="flex flex-wrap items-center justify-center gap-3">
+        <div class="bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-xs">
+          <span class="text-slate-400">JevBench Score:</span> <strong class="text-amber-400">77.54 (#1 Global)</strong>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-xs">
+          <span class="text-slate-400">Context Window:</span> <strong class="text-purple-400">128K Tokens</strong>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-xs">
+          <span class="text-slate-400">Inference Latency:</span> <strong class="text-emerald-400">16.5 ms (RTX 5090)</strong>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-xs">
+          <span class="text-slate-400">License:</span> <strong class="text-blue-400">Apache 2.0</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Install Banner -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-12 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center space-x-3">
+        <i class="fas fa-terminal text-blue-400 text-lg"></i>
+        <span class="text-sm font-semibold">Install official SDK & CLI via pip:</span>
+      </div>
+      <div class="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 font-mono text-sm text-amber-300 flex items-center space-x-3">
+        <span>pip install gevva</span>
+        <button onclick="navigator.clipboard.writeText('pip install gevva'); alert('Copied to clipboard!');" class="text-slate-500 hover:text-slate-300">
+          <i class="far fa-copy"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- The 2 Official Model Variants -->
+    <h2 class="text-2xl font-bold mb-6 flex items-center space-x-2">
+      <span>📦</span><span>Official Model Releases & Selection Guide</span>
+    </h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-14">
+      <!-- Flagship Card -->
+      <div class="bg-slate-900 border border-amber-500/30 rounded-xl p-6 relative overflow-hidden flex flex-col justify-between">
+        <div class="absolute top-0 right-0 bg-amber-500/20 text-amber-300 text-xs font-bold px-3 py-1 rounded-bl-lg border-b border-l border-amber-500/30">
+          GLOBAL #1 WORLD CHAMPION
+        </div>
+        <div>
+          <div class="flex items-center space-x-3 mb-2">
+            <span class="text-2xl">🥇</span>
+            <h3 class="text-xl font-bold text-white">Gevva e2b (Flagship)</h3>
+          </div>
+          <p class="text-sm text-slate-400 mb-4 font-mono">davidburhans/gevva-e2b</p>
+
+          <div class="space-y-2 mb-6 text-sm">
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">JevBench Composite:</span>
+              <strong class="text-amber-400">77.54 (#1 Global)</strong>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Target Modality:</span>
+              <span class="text-slate-200">Text & Long Document Verification</span>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Context Length:</span>
+              <span class="text-purple-400">128K (131,072 tokens)</span>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Primary Superpower:</span>
+              <span class="text-emerald-400">Complex multi-hop deduction & legal policy</span>
+            </div>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-lg font-mono text-xs text-slate-300 mb-4">
+            <code>from gevva import GevvaCrossEncoder<br>model = GevvaCrossEncoder("davidburhans/gevva-e2b")</code>
+          </div>
+        </div>
+
+        <a href="https://huggingface.co/davidburhans/gevva-e2b" target="_blank" class="w-full text-center bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-semibold py-2 rounded-lg transition text-sm">
+          View on Hugging Face 🤗
+        </a>
+      </div>
+
+      <!-- Multimodal Card -->
+      <div class="bg-slate-900 border border-blue-500/30 rounded-xl p-6 relative overflow-hidden flex flex-col justify-between">
+        <div class="absolute top-0 right-0 bg-blue-500/20 text-blue-300 text-xs font-bold px-3 py-1 rounded-bl-lg border-b border-l border-blue-500/30">
+          VISION & DOCUMENT ENGINE
+        </div>
+        <div>
+          <div class="flex items-center space-x-3 mb-2">
+            <span class="text-2xl">👁️</span>
+            <h3 class="text-xl font-bold text-white">Gevva e2b Multimodal</h3>
+          </div>
+          <p class="text-sm text-slate-400 mb-4 font-mono">davidburhans/gevva-e2b-multimodal</p>
+
+          <div class="space-y-2 mb-6 text-sm">
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Visual Grounding:</span>
+              <strong class="text-blue-400">88.8% Accuracy</strong>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Invoices & Tabular:</span>
+              <strong class="text-emerald-400">96.43% (+21.4% gain)</strong>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Charts & Graphs:</span>
+              <strong class="text-purple-400">92.00% Accuracy</strong>
+            </div>
+            <div class="flex justify-between border-b border-slate-800 pb-1.5">
+              <span class="text-slate-400">Primary Superpower:</span>
+              <span class="text-blue-300">Single-pass visual claim check (~16.5 ms)</span>
+            </div>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-lg font-mono text-xs text-slate-300 mb-4">
+            <code>from gevva import GevvaCrossEncoder<br>model = GevvaCrossEncoder("davidburhans/gevva-e2b-multimodal")</code>
+          </div>
+        </div>
+
+        <a href="https://huggingface.co/davidburhans/gevva-e2b-multimodal" target="_blank" class="w-full text-center bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-300 font-semibold py-2 rounded-lg transition text-sm">
+          View on Hugging Face 🤗
+        </a>
+      </div>
+    </div>
+
+    <!-- Quickstart Code Samples -->
+    <h2 class="text-2xl font-bold mb-6 flex items-center space-x-2">
+      <span>⚡</span><span>Quickstart in Python</span>
+    </h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-14">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <h3 class="text-base font-bold text-slate-200 mb-3 flex items-center space-x-2">
+          <span>🔮</span><span>Visual Claim Verification</span>
+        </h3>
+        <pre class="bg-slate-950 p-4 rounded-lg text-xs text-slate-300 overflow-x-auto leading-relaxed">
+<code>from PIL import Image
+from gevva import GevvaCrossEncoder
+
+# 1. Load multimodal model
+model = GevvaCrossEncoder("davidburhans/gevva-e2b-multimodal")
+
+# 2. Check claim against invoice image in 16.5 ms
+image = Image.open("invoice.jpg").convert("RGB")
+claim = "The total balance due is exactly $1,420.50."
+
+pred = model.predict(
+    pairs=[("An invoice is displayed.", claim)],
+    images=[image]
+)[0]
+
+print(pred.predicted_label)  # 'entailment'
+print(pred.probabilities)    # [0.03, 0.94, 0.03]</code></pre>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <h3 class="text-base font-bold text-slate-200 mb-3 flex items-center space-x-2">
+          <span>🎯</span><span>Zero-Shot Tool & Intent Routing</span>
+        </h3>
+        <pre class="bg-slate-950 p-4 rounded-lg text-xs text-slate-300 overflow-x-auto leading-relaxed">
+<code>from gevva import GevvaCrossEncoder
+
+model = GevvaCrossEncoder("davidburhans/gevva-e2b")
+
+# Instant routing without prompt latency
+tools = [
+    "process_refund: Refund payment to customer card",
+    "track_order: Query courier package tracking",
+    "cancel_order: Cancel pending warehouse shipment",
+]
+
+result = model.route(
+    query="I never got my package #9924, please refund me",
+    tools=tools
+)
+print("Route to:", result.selected_tool)
+# Output: 'process_refund'</code></pre>
+      </div>
+    </div>
+
+    <!-- Authors & Citation -->
+    <div class="border-t border-slate-800 pt-8 mt-12 text-slate-400 text-sm">
+      <h3 class="text-base font-bold text-slate-200 mb-3">👥 Authors & Co-Authorship</h3>
+      <ul class="space-y-1 mb-6 text-sm">
+        <li><strong>Dave Burhans</strong> — Lead Author & Architecture</li>
+        <li><strong>Gemini 3.8 Flash</strong> — Co-Author (Synthetic curriculum generation, 4-judge validator committee, SDK implementation)</li>
+        <li><strong>GLM 5.3</strong> — Co-Author (Reasoning remediation curriculum, error audits, adversarial review)</li>
+        <li><strong>GLM 5.3 Flash</strong> — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)</li>
+        <li><strong>Gevva Contributors</strong></li>
+      </ul>
+
+      <p class="text-xs text-slate-500">
+        Released under Apache 2.0 License. Base model weights inherit Google Gemma Terms of Use.
+      </p>
+    </div>
+  </main>
+</body>
+</html>

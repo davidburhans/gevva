@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
-    { name = "Gevva Team & Contributors" }
+    { name = "Dave Burhans", email = "davidburhans@gmail.com" },
+    { name = "Gemini 3.8 Flash" },
+    { name = "GLM 5.3" },
+    { name = "GLM 5.3 Flash" },
+    { name = "Gevva Contributors" },
 ]
 keywords = [
     "nlp",
