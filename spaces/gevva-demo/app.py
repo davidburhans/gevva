@@ -1,5 +1,16 @@
 import time
 from typing import Dict, List, Optional
+
+try:
+    import spaces
+    def gpu_decorator(duration=30):
+        return spaces.GPU(duration=duration)
+except (ImportError, Exception):
+    def gpu_decorator(duration=30):
+        def decorator(fn):
+            return fn
+        return decorator
+
 import gradio as gr
 from PIL import Image
 import torch
@@ -27,6 +38,7 @@ def load_engine(model_id: str) -> GevvaCrossEncoder:
     return _MODEL_CACHE[model_id]
 
 
+@gpu_decorator(duration=30)
 def predict_pair(
     model_id: str,
     premise: str,
@@ -67,6 +79,7 @@ def predict_pair(
     return verdict_display, label_dict, latency_display
 
 
+@gpu_decorator(duration=30)
 def route_intent(
     model_id: str,
     query: str,
@@ -95,6 +108,7 @@ def route_intent(
     return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms**"
 
 
+@gpu_decorator(duration=30)
 def grade_candidate(
     model_id: str,
     question: str,

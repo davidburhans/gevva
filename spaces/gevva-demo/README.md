@@ -8,7 +8,7 @@ sdk_version: 4.44.0
 app_file: app.py
 pinned: false
 license: apache-2.0
-short_description: "#1 Global on JevBench (77.54): Ultra-fast System 1 NLI & Vision Engine"
+short_description: "#1 Global on JevBench (77.54): SOTA Decision Engine"
 models:
 - davidburhans/gevva-e2b
 - davidburhans/gevva-e2b-multimodal
