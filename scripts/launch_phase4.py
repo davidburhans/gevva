@@ -4,9 +4,9 @@
 Targets Weak-Family Remediation & Long-Horizon Grounding:
 - Base: ckpt/gevva-e2b (Starts from our World Champion Gevva e2b checkpoint)
 - Training Mode: Full Fine-Tuning (1.88B trainable transformer parameters)
-- Data: data/train_phase4_mixture.jsonl (62,600 rows: Phase-4 synthetic weak families + Phase-3 replay + clean NLI)
-- Loss: served_dist 1.0 + cross_option 0.5 + NLI aux 0.15 + Brier 0.5
-- Optimizer: AdamW, peak lr=1e-5, cosine schedule, grad_accum=16
+- Data: data/train_phase4_mixture.jsonl (62,195 train rows, 3,277 val rows with 5% val-ratio)
+- Loss: served_dist 1.0 + cross_option 0.0 + NLI aux 0.25 + Brier 0.5
+- Optimizer: AdamW, peak lr=2.5e-6, cosine schedule, grad_accum=16
 - Output: ckpt/gevva-e2b-phase4
 
 Usage:
@@ -35,6 +35,7 @@ TRAIN_CMD = [
     "--base-model", "ckpt/gevva-e2b",
     "--out-dir", "ckpt/gevva-e2b-phase4",
     "--full-fine-tune",
+    "--val-ratio", "0.05",
     "--served-dist-weight", "1.0",
     "--cross-option-weight", "0.0",
     "--nli-aux-weight", "0.25",
