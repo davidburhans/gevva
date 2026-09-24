@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 from collections import Counter, defaultdict
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_P3_BASE_FILE = REPO_ROOT / "data" / "train_phase3_enriched.jsonl"
 DEFAULT_P4_SYNTH_FILE = REPO_ROOT / "data" / "staged" / "phase4" / "synth_phase4_remediation.jsonl"
+DEFAULT_VISUAL_SYNTH_FILE = REPO_ROOT / "data" / "visual_synth" / "train.jsonl"
 DEFAULT_CLEAN_NLI_FILE = REPO_ROOT / "data" / "train.jsonl"
 DEFAULT_OUT_FILE = REPO_ROOT / "data" / "train_phase4_mixture.jsonl"
 
@@ -78,6 +80,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compile Phase-4 Training Mixture")
     parser.add_argument("--p3-base-file", default=str(DEFAULT_P3_BASE_FILE), help="Phase-3 enriched base mixture")
     parser.add_argument("--p4-synth-file", default=str(DEFAULT_P4_SYNTH_FILE), help="Phase-4 synthetic remediation JSONL")
+    parser.add_argument("--visual-synth-file", default=str(DEFAULT_VISUAL_SYNTH_FILE), help="Visual synthetic pairs JSONL")
     parser.add_argument("--clean-nli-file", default=str(DEFAULT_CLEAN_NLI_FILE), help="Clean NLI reference file")
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_FILE), help="Output Phase-4 mixture path")
     parser.add_argument("--seed", type=int, default=42)
@@ -105,6 +108,28 @@ def main() -> None:
         logger.info("-> Loaded %d Phase-4 synthetic rows.", len(mixture_rows))
     else:
         logger.warning("Phase-4 synthetic file %s not found.", p4_synth_path)
+
+    # 2. Ingest Multimodal Visual Synthetic Data
+    visual_synth_path = Path(args.visual_synth_file)
+    if visual_synth_path.exists():
+        logger.info("Loading Visual Synthetic pairs from %s...", visual_synth_path.name)
+        v_count = 0
+        with open(visual_synth_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                # Normalize relative image path
+                if "image" in r and not os.path.exists(r["image"]):
+                    cand = str(REPO_ROOT / "data" / "visual_synth" / r["image"])
+                    if os.path.exists(cand):
+                        r["image"] = cand
+                mixture_rows.append(r)
+                source_stats[r.get("source", "visual_synth")] += 1
+                v_count += 1
+        logger.info("-> Loaded %d multimodal visual synthetic rows.", v_count)
+    else:
+        logger.warning("Visual synthetic file %s not found.", visual_synth_path)
 
     # 2. Ingest Phase-3 Base Mixture (with optional sampling to keep training nimble)
     p3_base_path = Path(args.p3_base_file)

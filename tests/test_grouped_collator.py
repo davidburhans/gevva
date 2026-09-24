@@ -398,6 +398,36 @@ def test_collator_ungrouped_sentinels_stay_out_of_competition_groups():
         assert grad[i].item() == 0.0, f"ungrouped row {i} received xopt gradient {grad[i].item()}"
 
 
+def test_tokenize_nli_pair_safe_preserves_vision_tokens():
+    from gemma4_cross_encoder import tokenize_nli_pair_safe
+
+    class MockTokenizer:
+        bos_token_id = 2
+        pad_token_id = 0
+
+        def encode(self, text, add_special_tokens=False):
+            return [ord(c) % 50 + 10 for c in text]
+
+        def convert_tokens_to_ids(self, tok):
+            mapping = {"<|image>": 991, "<|image|>": 992, "<image|>": 993}
+            return mapping.get(tok, 100)
+
+    tok = MockTokenizer()
+    # Request 270 image soft tokens with max_length=128 (shorter than visual tokens)
+    tokens = tokenize_nli_pair_safe(
+        tok,
+        premise="A very long premise description " * 10,
+        hypothesis="A claim about the visual scene",
+        max_length=128,
+        image_soft_tokens=270,
+    )
+    # Exactly 270 image tokens must be preserved to satisfy Gemma4Model invariants
+    img_token_count = sum(1 for t in tokens if t == 992)
+    assert img_token_count == 270, f"Expected 270 image tokens, got {img_token_count}"
+    assert 991 in tokens  # boi token
+    assert 993 in tokens  # eoi token
+
+
 if __name__ == "__main__":
     test_compute_cross_option_loss_hard()
     test_compute_cross_option_loss_soft_targets()
@@ -416,4 +446,6 @@ if __name__ == "__main__":
     test_to_cyclic_permutations_rejects_non_positive_shifts()
     test_in_context_collator_same_epoch_determinism()
     test_in_context_collator_preserves_bos_after_truncation()
+    test_tokenize_nli_pair_safe_preserves_vision_tokens()
     print("All grouped decision collator tests passed successfully!")
+

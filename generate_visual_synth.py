@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from nli_labels import CONTRADICTION, ENTAILMENT, NEUTRAL  # noqa: E402

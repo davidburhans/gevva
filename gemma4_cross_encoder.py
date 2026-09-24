@@ -330,11 +330,20 @@ def tokenize_nli_pair_safe(
 
     overhead = len(bos_id) + len(prem_prefix_ids) + len(vis_ids) + len(hyp_ids)
     avail_premise = max_length - overhead
-    if avail_premise < 16:
-        avail_premise = max(8, max_length - len(hyp_ids))
+    if avail_premise < 0:
+        # Tight budget: drop premise text first
+        avail_premise = 0
+        if image_soft_tokens == 0:
+            overhead_no_prem = len(bos_id) + len(prem_prefix_ids) + len(hyp_ids)
+            if overhead_no_prem > max_length:
+                avail_hyp_body = max(1, max_length - len(bos_id) - len(prem_prefix_ids) - len(hyp_prefix_ids) - len(pred_suffix_ids))
+                hyp_body_ids = hyp_body_ids[:avail_hyp_body]
+                hyp_ids = hyp_prefix_ids + hyp_body_ids + pred_suffix_ids
 
     prem_ids = tokenizer.encode(premise.strip(), add_special_tokens=False)[:max(0, avail_premise)]
-    full_ids = (bos_id + prem_prefix_ids + vis_ids + prem_ids + hyp_ids)[:max_length]
+    full_ids = bos_id + prem_prefix_ids + vis_ids + prem_ids + hyp_ids
+    if image_soft_tokens == 0 and len(full_ids) > max_length:
+        full_ids = full_ids[:max_length]
     return full_ids
 
 
