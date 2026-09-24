@@ -216,6 +216,20 @@ Following the standard `ModernCE` / `openjev` specification:
 
 ---
 
+## 👥 Attribution, Credits & Foundation Models
+
+The synthetic data generation, weak-family remediation, and multi-judge validation pipelines for Gevva Decisions leverage state-of-the-art open models and quantized runtimes:
+- **Base Models**:
+  - **Qwen 3.6 27B MTP** and **Qwen 3.8 Flash Next**, developed by the **Qwen Team at Alibaba Cloud** ([Qwen](https://huggingface.co/Qwen)).
+  - **Google Gemma 4** family (`google/gemma-4-E2B-it`), developed by **Google DeepMind**.
+- **Quantization & GGUF Providers**:
+  - The high-throughput GGUF quants served via `llama-server` on port 8080 were created and published by **Unsloth AI** ([unsloth](https://huggingface.co/unsloth)):
+    - [`unsloth/Qwen3.6-27B-MTP-GGUF`](https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF) (Quant: `Q4_K_XL`)
+    - [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) (Quant: `IQ4_XS`)
+  - Inference execution powered by the open-source [`llama.cpp`](https://github.com/ggerganov/llama.cpp) runtime.
+
+---
+
 ## 📜 Citation & License
 
 This dataset is released under the [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0).

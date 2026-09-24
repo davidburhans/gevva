@@ -1,5 +1,10 @@
+import os
 import time
 from typing import Dict, List, Optional
+
+import numpy as np
+from PIL import Image
+import torch
 
 try:
     import spaces
@@ -32,9 +37,6 @@ def _safe_json_schema_to_python_type(schema, defs=None):
 
 client_utils._json_schema_to_python_type = _safe_json_schema_to_python_type
 
-from PIL import Image
-import torch
-
 from gevva import GevvaCrossEncoder
 
 # Cache loaded models in memory
@@ -50,8 +52,15 @@ def load_engine(model_id: str) -> GevvaCrossEncoder:
     if model_id not in _MODEL_CACHE:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Loading {model_id} on {device}...")
+        resolved_path = model_id
+        # In local development, resolve to local checkpoints if present
+        if model_id == "davidburhans/gevva-e2b-multimodal" and os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+            resolved_path = "ckpt/gevva-e2b-phase4/best"
+        elif model_id == "davidburhans/gevva-e2b" and os.path.isdir("ckpt/gevva-e2b"):
+            resolved_path = "ckpt/gevva-e2b"
+
         _MODEL_CACHE[model_id] = GevvaCrossEncoder(
-            model_name_or_path=model_id,
+            model_name_or_path=resolved_path,
             device=device,
             dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         )
@@ -70,6 +79,15 @@ def predict_pair(
 
     engine = load_engine(model_id)
 
+    # Defensively normalize image format if provided
+    if image is not None:
+        if isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        elif hasattr(image, "convert"):
+            image = image.convert("RGB")
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image).convert("RGB")
+
     t0 = time.perf_counter()
     if image is not None:
         text_context = premise.strip() if premise and premise.strip() else "An image is shown."
@@ -84,8 +102,13 @@ def predict_pair(
         )
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    pred = preds[0]
-    probs = pred.probabilities
+    # preds is np.ndarray of shape (1, 3): [p_contradiction, p_entailment, p_neutral]
+    probs = preds[0]
+    class_idx = int(np.argmax(probs))
+    labels = ["contradiction", "entailment", "neutral"]
+    predicted_label = labels[class_idx]
+    confidence = float(probs[class_idx])
+
     # Format label dictionary for Gradio Label component
     label_dict = {
         "Entailment (True / Verified)": float(probs[1]),
@@ -93,7 +116,7 @@ def predict_pair(
         "Neutral (Unverifiable / Irrelevant)": float(probs[2]),
     }
 
-    verdict_display = f"### Verdict: **{pred.predicted_label.upper()}** (Confidence: {pred.confidence*100:.1f}%)"
+    verdict_display = f"### Verdict: **{predicted_label.upper()}** (Confidence: {confidence*100:.1f}%)"
     latency_display = f"⏱️ Forward Pass Latency: **{elapsed_ms:.1f} ms** ({'GPU' if torch.cuda.is_available() else 'CPU'})"
 
     return verdict_display, label_dict, latency_display
@@ -114,16 +137,16 @@ def route_intent(
     engine = load_engine(model_id)
 
     t0 = time.perf_counter()
-    best_idx, scores = engine.rerank(query.strip(), tools)
+    best_idx, scores = engine.rerank(query.strip(), tools, temperature=1.0)
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     ranked = sorted(enumerate(scores), key=lambda x: -x[1])
     lines = [f"### 🎯 Selected Tool: **`{tools[best_idx]}`** (Confidence: {scores[best_idx]*100:.1f}%)\n"]
-    lines.append("| Rank | Tool / Action Candidate | Entailment Score |")
+    lines.append("| Rank | Tool / Action Candidate | Probability |")
     lines.append("| :---: | :--- | :---: |")
     for r, (idx, s) in enumerate(ranked):
         marker = " 🏆" if idx == best_idx else ""
-        lines.append(f"| #{r+1} | `{tools[idx]}`{marker} | **{s:.4f}** |")
+        lines.append(f"| #{r+1} | `{tools[idx]}`{marker} | **{s*100:.1f}%** |")
 
     return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms**"
 
@@ -146,11 +169,15 @@ def grade_candidate(
 
     is_correct = grade.is_correct
     badge = "✅ **CORRECT (Entails Reference)**" if is_correct else f"❌ **INCORRECT ({grade.label.upper()})**"
+    p_dict = grade.probabilities
+    p_ent = float(p_dict.get("entailment", 0.0))
+    p_con = float(p_dict.get("contradiction", 0.0))
+    p_neu = float(p_dict.get("neutral", 0.0))
     summary = f"""### {badge}
 - **Confidence**: **{grade.score*100:.1f}%**
-- **Semantic Alignment (Entailment)**: {grade.scores[1]*100:.1f}%
-- **Contradiction Probability**: {grade.scores[0]*100:.1f}%
-- **Neutral / Irrelevant Probability**: {grade.scores[2]*100:.1f}%
+- **Semantic Alignment (Entailment)**: {p_ent*100:.1f}%
+- **Contradiction Probability**: {p_con*100:.1f}%
+- **Neutral / Irrelevant Probability**: {p_neu*100:.1f}%
 """
     return summary, f"⏱️ Grading Latency: **{elapsed_ms:.1f} ms**"
 
