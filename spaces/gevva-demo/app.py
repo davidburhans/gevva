@@ -295,7 +295,7 @@ with gr.Blocks(title=title) as demo:
                 with gr.Column():
                     route_query = gr.Textbox(
                         label="Incoming User Query / Instruction",
-                        value="I never received order #99241, can you please refund my credit card?",
+                        value="The package never arrived at my doorstep, give me back the money you charged me.",
                         lines=2,
                     )
                     route_image = gr.Image(
@@ -304,7 +304,7 @@ with gr.Blocks(title=title) as demo:
                     )
                     route_tools = gr.Textbox(
                         label="Available Tools / Actions (One per line)",
-                        value="process_refund: Refund payment transaction to original payment method\ntrack_shipment: Check current logistics status for an order number\ncancel_subscription: Terminate recurring monthly subscription\nsearch_knowledge_base: Search customer FAQs and policy documentation",
+                        value="reverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle\nquery_knowledge_base: Search customer help documentation and policy articles",
                         lines=5,
                     )
                     btn_route = gr.Button("Route Query 🎯", variant="primary")
@@ -316,32 +316,32 @@ with gr.Blocks(title=title) as demo:
                 examples=[
                     [
                         "davidburhans/gevva-e2b-multimodal",
-                        "Please analyze these quarterly financial performance figures.",
-                        "analyze_financial_chart: Extract bar chart trends, quarterly revenue, and growth variance\nparse_tabular_receipt: Extract rows, line items, and invoice subtotals from a table\nsearch_faq: Search standard user questions and help center articles\ntrack_package: Lookup shipping tracking status for an order number",
+                        "Did our performance improve towards the end of the year or drop off?",
+                        "evaluate_growth_trajectory: Assess historical performance deltas and period trends from visual reports\nlog_warehouse_stock: Record manufactured unit counts and physical equipment quantities\nissue_account_credit: Reimburse disputed billing adjustments to a client balance\ndispatch_field_agent: Book an on-site hardware repair visit for technical issues",
                         "examples/sample_chart.jpg",
                     ],
                     [
                         "davidburhans/gevva-e2b-multimodal",
-                        "Route this document to the appropriate supply chain workflow.",
-                        "parse_tabular_inventory: Extract row items, parts catalog, unit counts, and stock quantities from table\nplot_line_graph: Render a continuous time series or bar visualization\ncustomer_refund: Issue payment reimbursement to user card\nreset_password: Send self-service authentication link to employee email",
+                        "Check whether we have enough replacement pipe fittings and valves on hand for dispatch.",
+                        "audit_supply_stock: Record component quantities, verify available hardware units, and update enterprise depot levels\nforecast_quarterly_revenue: Model predictive financial trajectories and commercial earnings\nprocess_chargeback: Reclaim unauthorized customer payments through banking network\nreset_access_credentials: Send one-time authentication link to user workstation",
                         "examples/sample_table.jpg",
                     ],
                     [
                         "davidburhans/gevva-e2b-multimodal",
-                        "Inspect this visual scene layout and count the objects.",
-                        "geometric_scene_analyzer: Detect shapes, spatial positions, and color distributions in a scene\nprocess_refund: Refund payment transaction to customer account\ngenerate_sales_invoice: Create a new billing invoice and send to client\ntrack_shipment: Check delivery status for carrier package",
+                        "Identify the arrangement of objects on the table and measure how far apart they are.",
+                        "spatial_layout_perception: Calculate Euclidean distances, relative coordinates, and geometric boundaries from visual feed\nreimburse_travel_stipend: Review lodging receipts and wire approved expense disbursements to employee\ngenerate_sql_migration: Create database schema alterations and index definitions for PostgreSQL\nrenew_domain_registration: Check DNS records and execute SSL renewal with registrar",
                         "examples/sample_scene.jpg",
                     ],
                     [
                         "davidburhans/gevva-e2b",
-                        "I never received order #99241, can you please refund my credit card?",
-                        "process_refund: Refund payment transaction to original payment method\ntrack_shipment: Check current logistics status for an order number\ncancel_subscription: Terminate recurring monthly subscription\nsearch_knowledge_base: Search customer FAQs and policy documentation",
+                        "The package never arrived at my doorstep, give me back the money you charged me.",
+                        "reverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle\nquery_knowledge_base: Search customer help documentation and policy articles",
                         None,
                     ],
                     [
                         "davidburhans/gevva-e2b",
-                        "What is the return policy for opened electronics within 30 days?",
-                        "process_refund: Refund payment transaction to original payment method\ntrack_shipment: Check current logistics status for an order number\ncancel_subscription: Terminate recurring monthly subscription\nsearch_knowledge_base: Search customer FAQs and policy documentation",
+                        "Can a customer bring back an unsealed stereo gadget four weeks after purchase?",
+                        "lookup_post_sale_guidelines: Retrieve consumer eligibility terms and timeframe allowances for opened merchandise\nreverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle",
                         None,
                     ],
                 ],

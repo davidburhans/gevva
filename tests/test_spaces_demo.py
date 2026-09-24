@@ -77,38 +77,38 @@ class TestSpacesDemoUnit(unittest.TestCase):
     def test_route_intent(self):
         # Rerank returns RerankResult with scores
         scores = [0.85, 0.10, 0.05]
-        docs = ["refund", "tracking", "cancel"]
+        docs = ["reverse_settled_transaction", "track_carrier_dispatch", "terminate_membership"]
         rerank_res = RerankResult(0, scores, documents=docs)
         self.mock_engine.rerank.return_value = rerank_res
 
         out, latency = app.route_intent(
             model_id="test-model",
-            query="Please refund my money",
-            tools_input="refund\ntracking\ncancel",
+            query="The package never arrived at my doorstep, give me back the money you charged me.",
+            tools_input="reverse_settled_transaction\ntrack_carrier_dispatch\nterminate_membership",
         )
 
-        self.assertIn("refund", out)
+        self.assertIn("reverse_settled_transaction", out)
         self.assertIn("85.0%", out)
-        self.assertIn("| #1 | `refund` 🏆 | **85.0%** |", out)
+        self.assertIn("| #1 | `reverse_settled_transaction` 🏆 | **85.0%** |", out)
         self.assertIn("Latency", latency)
 
     def test_route_intent_multimodal(self):
         scores = [0.70, 0.20, 0.10]
-        docs = ["analyze_chart", "parse_table", "faq"]
+        docs = ["evaluate_growth_trajectory", "log_warehouse_stock", "issue_account_credit"]
         rerank_res = RerankResult(0, scores, documents=docs)
         self.mock_engine.rerank.return_value = rerank_res
         img = Image.new("RGB", (64, 64), color="blue")
 
         out, latency = app.route_intent(
             model_id="test-model",
-            query="Analyze this visual chart",
-            tools_input="analyze_chart\nparse_table\nfaq",
+            query="Did our performance improve towards the end of the year or drop off?",
+            tools_input="evaluate_growth_trajectory\nlog_warehouse_stock\nissue_account_credit",
             image=img,
         )
 
-        self.assertIn("analyze_chart", out)
+        self.assertIn("evaluate_growth_trajectory", out)
         self.assertIn("70.0%", out)
-        self.assertIn("| #1 | `analyze_chart` 🏆 | **70.0%** |", out)
+        self.assertIn("| #1 | `evaluate_growth_trajectory` 🏆 | **70.0%** |", out)
         self.mock_engine.rerank.assert_called_once()
 
     def test_route_intent_empty_tools(self):
@@ -213,19 +213,19 @@ class TestSpacesDemoLive(unittest.TestCase):
         self.assertIn("Contradiction (False / Refuted)", labels)
         self.assertIn("Neutral (Unverifiable / Irrelevant)", labels)
 
-        # Test live multimodal tool routing
+        # Test live multimodal tool routing without lexical overlap
         tools = (
-            "analyze_financial_chart: Extract bar chart trends, quarterly revenue, and growth variance\n"
-            "parse_tabular_receipt: Extract rows and line items from a table\n"
-            "search_faq: Search standard user questions"
+            "evaluate_growth_trajectory: Assess historical performance deltas and period trends from visual reports\n"
+            "log_warehouse_stock: Record manufactured unit counts and physical equipment quantities\n"
+            "issue_account_credit: Reimburse disputed billing adjustments to a client balance"
         )
         route_out, route_lat = app.route_intent(
             model_id=local_model_path,
-            query="Analyze these financial metrics.",
+            query="Did our performance improve towards the end of the year or drop off?",
             tools_input=tools,
             image=img,
         )
-        self.assertIn("analyze_financial_chart", route_out)
+        self.assertIn("evaluate_growth_trajectory", route_out)
         self.assertIn("🏆", route_out)
 
     def test_gradio_server_http_launch(self):
