@@ -298,11 +298,12 @@ For complete recipes, supported column variations, and QAT options, see the [Cus
 
 ## 🔬 Architecture & Methodology
 
-### 1. The Gevva Training Curriculum
-Gevva was trained across a rigorous **3-stage curriculum** encompassing **243,916 curated pairs** across 41 diverse sources:
+### 1. The Gevva Training Curriculum & Open Dataset
+Gevva was trained across a rigorous **multi-stage curriculum** encompassing **243,916+ curated pairs** across 41 diverse sources, officially published for full community reproducibility at [`davidburhans/gevva-decisions`](https://huggingface.co/datasets/davidburhans/gevva-decisions):
 1. **Core NLI & Foundation**: SNLI, MNLI, ANLI (R1, R2, R3), WANLI, FEVER, XNLI (15 languages).
 2. **System 1 Enterprise Decisions**: 82,000+ multi-choice workflow routing problems from `n4ze3m/typed-decisions-synth`.
 3. **Hard-Tier Reasoning & Parity Data**: Multi-hop deduction (ReClor, LogiQA 2.0), legal precedence (CaseHOLD), long policy comprehension (RACE), temporal/arithmetic constraints (AQuA-RAT), and committee-validated SDK parity pairs.
+4. **Multimodal Grounding (`multimodal`)**: Invoices, tables, financial charts, diagrams, and spatial scenes paired with visual entailment claims.
 
 ### 2. Group-Atomic Cross-Option Ranking Loss
 Unlike traditional cross-encoders trained only on isolated binary pairs, Gevva trains directly on the **served option distribution**:
