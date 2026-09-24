@@ -3,9 +3,15 @@ from typing import Dict, List, Optional
 
 try:
     import spaces
-    def gpu_decorator(duration=30):
-        return spaces.GPU(duration=duration)
-except (ImportError, Exception):
+    if hasattr(spaces, "GPU"):
+        def gpu_decorator(duration=30):
+            return spaces.GPU(duration=duration)
+    else:
+        def gpu_decorator(duration=30):
+            def decorator(fn):
+                return fn
+            return decorator
+except Exception:
     def gpu_decorator(duration=30):
         def decorator(fn):
             return fn
