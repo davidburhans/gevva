@@ -500,11 +500,15 @@ class Gemma4CrossEncoder(System1Engine):
         subfolder: Optional[str] = None,
         bs: Optional[int] = None,
         max_len: Optional[int] = None,
+        revision: Optional[str] = None,
         **kwargs,
     ):
         model_name_or_path = model_name_or_path or path
+        self.revision = revision
         if model_name_or_path == "davidburhans/gevva-e2b" and not os.path.exists("davidburhans/gevva-e2b"):
-            if os.path.isdir("ckpt/gevva-e2b"):
+            if revision == "multimodal" and os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+                model_name_or_path = "ckpt/gevva-e2b-phase4/best"
+            elif (revision is None or revision in ("main", "flagship")) and os.path.isdir("ckpt/gevva-e2b"):
                 model_name_or_path = "ckpt/gevva-e2b"
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
@@ -518,7 +522,10 @@ class Gemma4CrossEncoder(System1Engine):
         if tokenizer is not None:
             self.tokenizer = tokenizer
         elif model_name_or_path is not None:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+            tok_kwargs = {}
+            if self.revision is not None and not os.path.exists(model_name_or_path):
+                tok_kwargs["revision"] = self.revision
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, **tok_kwargs)
         else:
             raise ValueError("Must provide either model_name_or_path or tokenizer.")
 
@@ -658,6 +665,9 @@ class Gemma4CrossEncoder(System1Engine):
                         is_gemma = "gemma" in getattr(cfg_probe, "model_type", "").lower() or "gemma" in type(cfg_probe).__name__.lower()
                     except Exception:
                         pass
+                hf_kwargs = {}
+                if self.revision is not None and not os.path.exists(model_name_or_path):
+                    hf_kwargs["revision"] = self.revision
                 if is_gemma:
                     self.model = Gemma4ForSequenceClassification.from_pretrained(
                         model_name_or_path,
@@ -665,6 +675,7 @@ class Gemma4CrossEncoder(System1Engine):
                         id2label=ID2LABEL,
                         label2id=LABEL2ID,
                         torch_dtype=dtype,
+                        **hf_kwargs,
                     )
                 else:
                     from transformers import AutoModelForSequenceClassification
@@ -674,6 +685,7 @@ class Gemma4CrossEncoder(System1Engine):
                         id2label=ID2LABEL,
                         label2id=LABEL2ID,
                         torch_dtype=dtype,
+                        **hf_kwargs,
                     )
         else:
             raise ValueError("Must provide either model_name_or_path or model.")

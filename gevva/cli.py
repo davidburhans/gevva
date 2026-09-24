@@ -33,8 +33,9 @@ def cmd_version(args: argparse.Namespace) -> int:
 def cmd_predict(args: argparse.Namespace) -> int:
     from gevva import GevvaCrossEncoder
 
-    print(f"Loading Gevva model from '{args.model}'...")
-    model = GevvaCrossEncoder(args.model, device=args.device)
+    rev_str = f" (revision: {args.revision})" if args.revision else ""
+    print(f"Loading Gevva model from '{args.model}'{rev_str}...")
+    model = GevvaCrossEncoder(args.model, revision=args.revision, device=args.device)
     probs = model.predict([(args.premise, args.hypothesis)])[0]
     labels = ["contradiction", "entailment", "neutral"]
     best_idx = int(probs.argmax())
@@ -64,8 +65,9 @@ def cmd_predict(args: argparse.Namespace) -> int:
 def cmd_rerank(args: argparse.Namespace) -> int:
     from gevva import GevvaCrossEncoder
 
-    print(f"Loading Gevva model from '{args.model}'...")
-    model = GevvaCrossEncoder(args.model, device=args.device)
+    rev_str = f" (revision: {args.revision})" if args.revision else ""
+    print(f"Loading Gevva model from '{args.model}'{rev_str}...")
+    model = GevvaCrossEncoder(args.model, revision=args.revision, device=args.device)
     best_idx, scores = model.rerank(args.query, args.options)
 
     ranked = sorted(enumerate(scores), key=lambda x: -x[1])
@@ -87,8 +89,9 @@ def cmd_rerank(args: argparse.Namespace) -> int:
 def cmd_grade(args: argparse.Namespace) -> int:
     from gevva import GevvaCrossEncoder
 
-    print(f"Loading Gevva model from '{args.model}'...")
-    model = GevvaCrossEncoder(args.model, device=args.device)
+    rev_str = f" (revision: {args.revision})" if args.revision else ""
+    print(f"Loading Gevva model from '{args.model}'{rev_str}...")
+    model = GevvaCrossEncoder(args.model, revision=args.revision, device=args.device)
     grade = model.grade(args.question, reference=args.reference, candidate=args.candidate)
 
     if args.json:
@@ -137,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     # predict
     p_pred = subparsers.add_parser("predict", help="Evaluate a premise-hypothesis pair")
     p_pred.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
+    p_pred.add_argument("--revision", default=None, help="HuggingFace model branch/revision (e.g., 'multimodal' or 'main')")
     p_pred.add_argument("--premise", required=True, help="Premise text context")
     p_pred.add_argument("--hypothesis", required=True, help="Hypothesis / claim statement")
     p_pred.add_argument("--device", default="auto", help="Compute device ('cuda', 'cpu', 'auto')")
@@ -146,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     # rerank
     p_rerank = subparsers.add_parser("rerank", help="Rerank multiple candidate options for a query")
     p_rerank.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
+    p_rerank.add_argument("--revision", default=None, help="HuggingFace model branch/revision (e.g., 'multimodal' or 'main')")
     p_rerank.add_argument("--query", required=True, help="Query / question text")
     p_rerank.add_argument("--options", nargs="+", required=True, help="Candidate options to rank")
     p_rerank.add_argument("--device", default="auto", help="Compute device ('cuda', 'cpu', 'auto')")
@@ -155,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     # grade
     p_grade = subparsers.add_parser("grade", help="Grade a candidate response against a reference answer")
     p_grade.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
+    p_grade.add_argument("--revision", default=None, help="HuggingFace model branch/revision (e.g., 'multimodal' or 'main')")
     p_grade.add_argument("--question", required=True, help="Task question or prompt")
     p_grade.add_argument("--reference", required=True, help="Reference gold answer or rubric")
     p_grade.add_argument("--candidate", required=True, help="Candidate response to grade")

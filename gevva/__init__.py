@@ -73,13 +73,19 @@ __all__ = [
 DEFAULT_MODEL_ID = "davidburhans/gevva-e2b"
 
 
-def load(model_name_or_path: str = DEFAULT_MODEL_ID, device: str = "auto", **kwargs) -> GevvaCrossEncoder:
+def load(
+    model_name_or_path: str = DEFAULT_MODEL_ID,
+    revision: str | None = None,
+    device: str = "auto",
+    **kwargs,
+) -> GevvaCrossEncoder:
     """Load a pre-trained or fine-tuned Gevva Cross-Encoder model.
 
     Args:
         model_name_or_path: Path to local checkpoint directory or HuggingFace repo ID
             (default: 'davidburhans/gevva-e2b'). If the default repo is requested and a local
-            'ckpt/gevva-e2b' directory exists, the local checkpoint is utilized.
+            checkpoint exists, the local checkpoint is utilized.
+        revision: Model variant/branch (e.g., 'multimodal' or 'main').
         device: 'cuda', 'cpu', or 'auto' (default: 'auto')
         **kwargs: Additional arguments passed to GevvaCrossEncoder
 
@@ -88,10 +94,17 @@ def load(model_name_or_path: str = DEFAULT_MODEL_ID, device: str = "auto", **kwa
     """
     import os
     if model_name_or_path == DEFAULT_MODEL_ID and not os.path.exists(DEFAULT_MODEL_ID):
-        if os.path.isdir("ckpt/gevva-e2b"):
+        if revision == "multimodal" and os.path.isdir("ckpt/gevva-e2b-phase4/best"):
+            model_name_or_path = "ckpt/gevva-e2b-phase4/best"
+        elif (revision is None or revision in ("main", "flagship")) and os.path.isdir("ckpt/gevva-e2b"):
             model_name_or_path = "ckpt/gevva-e2b"
 
     if device == "auto":
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    return GevvaCrossEncoder(model_name_or_path=model_name_or_path, device=device, **kwargs)
+    return GevvaCrossEncoder(
+        model_name_or_path=model_name_or_path,
+        revision=revision,
+        device=device,
+        **kwargs,
+    )

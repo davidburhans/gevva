@@ -186,6 +186,23 @@ predicted = labels[int(probs.argmax())]
 print(f"Verdict: {predicted} ({probs[0][probs.argmax()]*100:.1f}%)")
 ```
 
+### Model Variants & Branches
+
+The repository provides two official model variants under the same repo ID `davidburhans/gevva-e2b`:
+
+| Variant | Branch / Revision | Description | Benchmark Highlights |
+| :--- | :--- | :--- | :--- |
+| **Flagship (Default)** | `main` | Global #1 System 1 Text Decision Engine | **77.54** JevBench Composite (#1 Global) |
+| **Multimodal** | `multimodal` | Vision-grounded decision engine | **88.8%** Visual Grounding (96.4% on Invoices/Tables) |
+
+To load the multimodal variant:
+```python
+import gevva
+
+# Load the vision-enabled variant branch
+model = gevva.load("davidburhans/gevva-e2b", revision="multimodal", device="cuda")
+```
+
 ---
 
 ## 🔬 Training Curriculum & Methodology
