@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """export_w4a16.py
 ==================
-Standalone W4A16 (INT4 Group-32 Weights) Checkpoint Exporter for Gemma 4 Cross-Encoder.
+Standalone W4A16 (INT4 Group-32 Weights) Checkpoint Exporter for Gevva Decision Engine.
 
 Takes a base Gemma 4 model and fine-tuned LoRA adapter, merges them,
 and packs target linear layers into an INT4 (Group-32 symmetric) compressed weight format.

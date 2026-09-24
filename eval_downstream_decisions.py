@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """eval_downstream_decisions.py
 ==============================
-Comprehensive evaluation and demonstration of the fine-tuned Gemma 4 Cross-Encoder
+Comprehensive evaluation and demonstration of Gevva
 as a high-throughput System 1 Decision Engine.
 
 Evaluates 4 core capabilities:

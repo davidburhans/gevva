@@ -11,8 +11,8 @@ Reports: accuracy by family and tier, gold-ranked-2nd rate on errors (the Phase-
 audit metric), renormalized-distribution ECE, Wilson CIs, latency.
 
 Usage:
-  uv run python scripts/eval_jevbench_public.py --model-path ckpt/gemma-4-e2b-nli-w4a16-stage3-v2
-  uv run python scripts/eval_jevbench_public.py --model-path ... --limit 30   # quick gate runs
+  uv run python scripts/eval_jevbench_public.py --model-path ckpt/gevva-e2b
+  uv run python scripts/eval_jevbench_public.py --temperature 1.6
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ def wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="JevBench public-split evaluation (frozen mapping)")
-    parser.add_argument("--model-path", required=True)
+    parser = argparse.ArgumentParser(description="JevBench public-split evaluation for Gevva")
+    parser.add_argument("--model-path", default="ckpt/gevva-e2b", help="Path to checkpoint (default: ckpt/gevva-e2b)")
     parser.add_argument("--jevbench-dir", default=str(JEVBENCH_DEFAULT))
     parser.add_argument("--limit", type=int, default=None, help="Cap items per tier (quick runs)")
     parser.add_argument("--device", default="cuda")
@@ -93,12 +93,13 @@ def main() -> int:
             lat = time.perf_counter() - t0
             s_map = {l: float(s) for l, s in zip(t.labels, scores)}
             probs = renormalize_entailments(s_map)
-            pred = max(probs, key=probs.get)
             ranked = sorted(t.labels, key=lambda l: -probs[l])
-            gold2nd = (ranked[1] == t.expected) if len(ranked) > 1 and pred != t.expected else False
+            pred = ranked[0]
+            is_corr = str(pred) == str(t.expected)
+            gold2nd = (str(ranked[1]) == str(t.expected)) if len(ranked) > 1 and not is_corr else False
             per_item.append({
                 "id": t.id, "tier": tier, "family": t.family, "type": t.question.get("type"),
-                "gold": t.expected, "pred": pred, "correct": pred == t.expected,
+                "gold": t.expected, "pred": pred, "correct": is_corr,
                 "gold_rank2_on_error": bool(gold2nd), "latency_s": round(lat, 4),
                 "probs": {k: round(v, 4) for k, v in probs.items()},
             })

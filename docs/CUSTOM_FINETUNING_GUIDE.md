@@ -1,24 +1,30 @@
-# Custom Data Fine-Tuning Guide: Gemma 4 NLI Cross-Encoder
+# Custom Data Fine-Tuning Guide: Gevva Decision Engine
 
-This guide provides step-by-step instructions for fine-tuning the **Gemma 4 NLI Cross-Encoder / System 1 Decision Engine** on domain-specific datasets.
+This guide provides step-by-step instructions for fine-tuning the **Gevva System 1 Decision Engine** on domain-specific datasets.
 
-The fine-tuning pipeline is designed for **zero boilerplate**: it automatically detects input file formats, column headers, and label formats, performs stratified train/validation splits, and saves lightweight LoRA adapter checkpoints (~21 MB).
+The fine-tuning pipeline is designed for **zero boilerplate**:
+- **Format Auto-Detection**: Supports `.jsonl`, `.csv`, `.tsv`, `.parquet`, and `.json`.
+- **Column Auto-Mapping**: Automatically detects premise, hypothesis, and label fields regardless of naming conventions.
+- **Label Normalization**: Accepts raw integer IDs (`0`, `1`, `2`) or natural language strings (`"supports"`, `"refutes"`, `"unverifiable"`).
+- **Stratified Auto-Splits**: Automatically creates balanced train/val splits when a separate validation set is not provided.
+- **Dual Training Paradigms**: Supports both fast Parameter-Efficient Fine-Tuning (LoRA) and high-accuracy Full Fine-Tuning (FFT).
 
 ---
 
 ## 1. Quickstart (1-Line Fine-Tuning)
 
-### CLI
+### Using the Gevva CLI
 ```bash
-# Fine-tune starting from base model (auto-detects columns and splits 85/15 train/val)
-python finetune.py --data my_data.jsonl --out-dir ./ckpt/my_domain_model
+# 1-line fine-tuning starting from base Gemma 4 E2B-it (auto-detects columns and splits 85/15)
+gevva finetune --data my_data.jsonl --out-dir ./ckpt/my_domain_gevva
 
-# Or continually fine-tune starting from our pre-trained NLI checkpoint
-python finetune.py \
-    --data my_data.csv \
-    --adapter ./ckpt/gemma-4-e2b-nli-stage1/best \
+# Continually adapt starting from the champion Gevva e2b checkpoint
+gevva finetune \
+    --data my_data.jsonl \
+    --base-model ckpt/gevva-e2b \
     --out-dir ./ckpt/my_domain_finetuned \
-    --epochs 3
+    --full-fine-tune \
+    --epochs 2
 ```
 
 ### Python API
@@ -28,10 +34,12 @@ from finetune import finetune_custom_data
 results = finetune_custom_data(
     train_data="my_dataset.jsonl",
     output_dir="./ckpt/my_domain_model",
-    adapter_path="./ckpt/gemma-4-e2b-nli-stage1/best",  # optional: resume from NLI checkpoint
-    epochs=3,
-    batch_size=8,
-    lr=2e-4,
+    base_model_id="ckpt/gevva-e2b",
+    full_fine_tune=True,
+    epochs=2,
+    batch_size=4,
+    grad_accum=8,
+    lr=1e-5,
 )
 
 print(f"Fine-tuning complete! Best accuracy: {results['best_accuracy']*100:.2f}%")
@@ -39,21 +47,19 @@ print(f"Fine-tuning complete! Best accuracy: {results['best_accuracy']*100:.2f}%
 
 ---
 
-## 2. Supported Data Formats
+## 2. Supported Data Formats & Conventions
 
-The engine supports `.jsonl`, `.csv`, `.tsv`, and `.json`.
+### Recognized Column Names
+The engine inspects header keys case-insensitively and maps them automatically:
 
-### Column Auto-Detection
-The engine automatically detects column names matching any common conventions:
-
-| Field | Recognized Column Names (Case-Insensitive) |
+| Field | Recognized Column Names |
 | :--- | :--- |
 | **Premise / Context** | `premise`, `context`, `document`, `passage`, `evidence`, `text_a`, `prompt`, `reference` |
 | **Hypothesis / Claim** | `hypothesis`, `claim`, `assertion`, `candidate`, `response`, `text_b`, `query`, `answer` |
-| **Label / Verdict** | `label`, `gold`, `target`, `annotation`, `class`, `ground_truth`, `verdict` |
+| **Label / Target** | `label`, `gold`, `target`, `annotation`, `class`, `ground_truth`, `verdict` |
+| **Multimodal Image** | `image`, `image_path`, `img`, `visual_evidence`, `photo` |
 
-### Label Auto-Mapping
-Labels can be integers or strings:
+### Label Schema Normalization
 
 | Class | ID | Recognized String Formats |
 | :--- | :---: | :--- |
@@ -65,8 +71,8 @@ Labels can be integers or strings:
 
 ## 3. Real-World Task Recipes
 
-### Recipe 1: RAG Hallucination Detection & Citation Grounding
-Verify whether extracted answers or generated claims are faithful to retrieved documents.
+### Recipe 1: RAG Hallucination Detection & Document Grounding
+Verify whether LLM-generated claims are faithful to source reference documentation.
 
 **Dataset (`rag_grounding.jsonl`)**:
 ```json
@@ -79,16 +85,17 @@ Verify whether extracted answers or generated claims are faithful to retrieved d
 ```bash
 python finetune.py \
     --data rag_grounding.jsonl \
-    --adapter ./ckpt/gemma-4-e2b-nli-stage1/best \
+    --base-model ckpt/gevva-e2b \
     --out-dir ./ckpt/medical_rag_verifier \
-    --epochs 3 \
-    --lr 1e-4
+    --full-fine-tune \
+    --epochs 2 \
+    --lr 1e-5
 ```
 
 ---
 
 ### Recipe 2: Zero-Shot Intent & Tool Routing
-Route user prompts directly to candidate tools/APIs in a single forward pass (~25 ms).
+Route user requests to the correct agent tool or microservice in a single forward pass (~16 ms).
 
 **Dataset (`tool_routing.csv`)**:
 ```csv
@@ -103,7 +110,7 @@ prompt,candidate_tool,class
 ```bash
 python finetune.py \
     --data tool_routing.csv \
-    --adapter ./ckpt/gemma-4-e2b-nli-stage1/best \
+    --base-model ckpt/gevva-e2b \
     --out-dir ./ckpt/agent_router \
     --epochs 3
 ```
@@ -111,21 +118,19 @@ python finetune.py \
 ---
 
 ### Recipe 3: Multi-Choice Candidate Reranking
-Rank multiple candidates (e.g., search passages, code snippets, or product recommendations).
+Rank candidate search passages or documents given a query.
 
-**Inference with `Gemma4CrossEncoder` (1-Line Loading)**:
+**Inference with `Gevva`**:
 ```python
-from gemma4_cross_encoder import Gemma4CrossEncoder
+import gevva
 
-# 1-line initialization (automatically detects base model, LoRA adapter, and head weights)
-encoder = Gemma4CrossEncoder("./ckpt/my_domain_model/best")
+encoder = gevva.load("./ckpt/my_domain_model/best")
 
-# Candidate reranking in a single batched pass (~20 ms)
-query = "How to handle out-of-memory errors in PyTorch gradient checkpointing?"
+query = "How to handle out-of-memory errors during PyTorch training?"
 passages = [
-    "PyTorch gradient checkpointing trades compute for memory by recalculating activations.",
+    "PyTorch gradient checkpointing trades compute for memory by recomputing activations during backward pass.",
     "The capital of Washington state is Olympia.",
-    "TensorBoard visualizes training loss curves over time."
+    "TensorBoard visualizes training loss curves over training epochs."
 ]
 
 best_idx, scores = encoder.rerank(
@@ -141,93 +146,41 @@ print(f"Top Candidate ({scores[best_idx]*100:.1f}% confidence): {passages[best_i
 
 ## 4. Hardware Sizing & Recommended Settings
 
-The fine-tuning engine is optimized for consumer GPUs:
+The fine-tuning engine is optimized for modern NVIDIA GPUs:
 
-| Hardware | Max Length | Batch Size | Grad Accum | Effective Batch Size | Peak VRAM |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **NVIDIA RTX 5090 (32GB)** | 512 | 4 | 8 | 32 | ~11.6 GB |
-| **NVIDIA RTX 4090 / 3090 (24GB)** | 512 | 4 | 8 | 32 | ~11.6 GB |
-| **NVIDIA RTX 4080 / 16GB GPU** | 256 | 2 | 16 | 32 | ~9.5 GB |
-
----
-
-## 5. Output Artifacts
-
-Each fine-tuning run saves the following in `<output_dir>/best/`:
-1. `adapter_model.safetensors` (~21 MB): Trained LoRA parameters + classification head (`score`).
-2. `head_weights.pt`: Explicit serialized state dictionaries for `score` and `norm`.
-3. `adapter_config.json`: LoRA configuration matching text decoder projections.
-4. `tokenizer.json` & `tokenizer_config.json`: Gemma 4 256K vocabulary tokenizer.
-5. `eval_report.json`: Per-class precision, recall, F1, accuracy, and Brier calibration score.
+| Hardware | Mode | Max Length | Batch Size | Grad Accum | Effective Batch Size | Peak VRAM |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **NVIDIA RTX 5090 (32GB)** | Full Fine-Tune (FFT) | 2,048 | 4 | 8 | 32 | ~24.5 GB |
+| **NVIDIA RTX 5090 (32GB)** | LoRA Adapter | 2,048 | 8 | 4 | 32 | ~14.2 GB |
+| **NVIDIA RTX 4090 / 3090 (24GB)**| LoRA Adapter | 1,024 | 4 | 8 | 32 | ~12.5 GB |
+| **NVIDIA RTX 4080 (16GB)** | LoRA Adapter | 512 | 2 | 16 | 32 | ~9.8 GB |
 
 ---
 
-## 6. Quantization-Aware Training (QAT) & W4A16 Deployment
+## 5. Output Checkpoint Artifacts
 
-To produce a model tailored for low-memory, high-throughput edge deployment:
-
-### Step 1: Train with In-Loop 4-Bit Group QAT
-```bash
-python finetune.py \
-    --data my_data.jsonl \
-    --adapter ./ckpt/gemma-4-e2b-nli-stage1/best \
-    --out-dir ./ckpt/my_domain_qat \
-    --qat \
-    --qat-bits 4 \
-    --qat-group-size 32 \
-    --epochs 2
-```
-
-### Step 2: Export to W4A16 `compressed-tensors` Format
-Merge the LoRA adapter and pack target linear layers into INT4 Group-32 format:
-```bash
-python export_w4a16.py \
-    --base-model google/gemma-4-E2B \
-    --adapter-path ./ckpt/my_domain_qat/best \
-    --output-dir ./ckpt/my_domain_w4a16 \
-    --group-size 32
-```
-This produces a unified `model.safetensors` and `quantization_config.json` compatible with vLLM, TensorRT-LLM, and ExLlamaV2/Marlin runtimes with ~4x memory reduction and zero accuracy degradation.
+Each fine-tuning run outputs the following in `<output_dir>/best/`:
+1. `model.safetensors` (for Full Fine-Tuning) or `adapter_model.safetensors` (for LoRA).
+2. `config.json` & `tokenizer.json`: Gemma 4 tokenizer and sequence classification config.
+3. `head_weights.pt`: Explicit serialized tensors for classification score and layer norm.
+4. `calibration.json`: Fitted temperature scaling factor ($T^*$) and validation ECE / Brier metrics.
+5. `eval_report.json`: Per-class accuracy, precision, recall, and F1.
 
 ---
 
-## 7. Advanced SOTA Training Techniques
+## 6. Advanced Training Options
 
-### Deterministic Token-Bucket Batching
-Variable-length sequences cause severe padding overhead and GPU memory spikes. Pass `--use-token-bucketing` to group sequences into discrete length buckets ($64 \le L \le 131,072$) and bound total tokens per batch:
-```bash
-python finetune.py \
-    --data my_data.jsonl \
-    --use-token-bucketing \
-    --max-tokens-per-batch 8192 \
-    --out-dir ./ckpt/my_domain_bucketed
-```
+### Full Fine-Tuning vs. LoRA
+- **LoRA (Default)**: Trains low-rank adapters on attention and MLP projections. Very fast, uses minimal disk space (~21 MB adapter), ideal for modest domain datasets (<10K samples).
+- **Full Fine-Tuning (`--full-fine-tune`)**: Keeps embedding tables and vision tower frozen while tuning all transformer backbone layers. Achieved **#1 in the world on JevBench (77.54)** by enabling deep semantic co-adaptation. Recommended when fine-tuning on ≥20K examples.
 
-### Post-Hoc Temperature Calibration ($T^*$)
-At the conclusion of fine-tuning, the engine automatically fits scalar temperature $T^*$ on validation logits using L-BFGS to minimize validation NLL without modifying $\arg\max$ predictions. It exports `calibration.json` to the output checkpoint directory:
-```json
-{
-  "optimal_temperature": 1.1420,
-  "val_ece_before": 0.0572,
-  "val_ece_after": 0.0241,
-  "val_brier_before": 0.2315,
-  "val_brier_after": 0.2189
-}
-```
-`Gemma4CrossEncoder` automatically detects and applies `calibration.json` at inference time.
+### Multi-Class Proper-Scoring Brier Loss
+Penalize uncalibrated probabilities directly in the loss function via `--brier-weight 0.5`:
+$$\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda \mathcal{L}_{\text{Brier}}$$
+This prevents the model from generating overconfident predictions on ambiguous inputs.
 
-### Multi-Class Proper-Scoring Brier Loss ($\lambda \cdot \text{Brier}$)
-In addition to standard cross-entropy, penalize uncalibrated confidence probabilities directly during training via `--brier-weight 0.5`:
-```bash
-python finetune.py \
-    --data my_data.jsonl \
-    --brier-weight 0.5 \
-    --out-dir ./ckpt/my_domain_calibrated
-```
+### Post-Hoc Temperature Calibration
+The fine-tuning engine automatically computes the optimal scalar temperature ($T^*$) on validation logits using L-BFGS to minimize negative log-likelihood (NLL). When loading the model with `gevva.load()`, this temperature is applied automatically at inference time.
 
-### Multimodal Fine-Tuning
-If your dataset contains visual evidence (e.g. document images, UI screenshots, or camera frames), specify the image path in the `image` column:
-```json
-{"premise": "Customer invoice dated 2026-03-15.", "image": "images/invoice_001.jpg", "hypothesis": "Total due is $1,240.50.", "label": "entailment"}
-```
-`CustomNLICollator` automatically loads the image with PIL, extracts SigLIP visual patch features via `Gemma4ImageProcessorPil`, dynamically allocates soft tokens in `input_ids`, and passes `pixel_values` and `image_position_ids` directly to the model.
+### Multimodal Vision Fine-Tuning
+To train on images alongside text, simply populate an `image` column in your JSONL/CSV with local image paths. The data collator automatically processes patches through SigLIP and embeds visual tokens inside the premise.

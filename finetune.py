@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """finetune.py
 =============
-Turnkey custom data fine-tuning engine for the Gemma 4 NLI Cross-Encoder / System 1 Decision Engine.
+Turnkey custom data fine-tuning engine for the Gevva System 1 Decision Engine.
 
 Allows users to fine-tune on domain-specific datasets (RAG verification, tool routing,
 domain NLI, search reranking) with zero boilerplate.
@@ -17,16 +17,17 @@ Features:
     * Entailment (1): "entailment", "entails", "supports", "supported", "true", "yes", "1"
     * Neutral (2): "neutral", "unverifiable", "unknown", "not_enough_info", "nei", "2"
 - Auto-splits train / validation (stratified) if separate validation file is not provided.
-- Continual Fine-Tuning: Can start from raw base (`google/gemma-4-E2B`) OR continue
-  from a pre-trained NLI checkpoint / LoRA adapter.
+- Continual Fine-Tuning: Can start from raw base (`google/gemma-4-E2B-it`) OR continue
+  from pre-trained Gevva checkpoints (`ckpt/gevva-e2b`).
+- Full Fine-Tuning (`--full-fine-tune`) and LoRA adapter modes.
 - CLI and Python API (`finetune_custom_data(...)`).
 
 Usage:
-    # From JSONL
+    # Fine-tune starting from base model
     python finetune.py --data my_data.jsonl --out-dir ./my_model
 
-    # From CSV with custom columns and starting from pre-trained NLI checkpoint
-    python finetune.py --data my_data.csv --adapter ./ckpt/gemma-4-e2b-nli-stage1/best --epochs 3
+    # Continually fine-tune starting from Gevva e2b champion
+    python finetune.py --data my_data.csv --base-model ckpt/gevva-e2b --full-fine-tune --epochs 2
 
     # Python API
     from finetune import finetune_custom_data
@@ -724,6 +725,7 @@ def should_save_best(
     return True
 
 
+@torch.no_grad()
 def evaluate_dataset(model, dataloader, device) -> Dict[str, Any]:
     model.eval()
     all_preds, all_probs, all_logits, all_golds, all_sources = [], [], [], [], []
@@ -864,6 +866,7 @@ def finetune_custom_data(
     output_dir: str = "./ckpt/custom_model",
     base_model_id: str = "google/gemma-4-E2B",
     adapter_path: Optional[str] = None,
+    head_weights: Optional[str] = None,
     epochs: int = 3,
     batch_size: int = 8,
     grad_accum: int = 4,
@@ -878,6 +881,8 @@ def finetune_custom_data(
     served_dist_weight: float = 0.0,
     decision_temp: float = 1.0,
     val_ratio: float = 0.15,
+    start_epoch: int = 0,
+    full_fine_tune: bool = False,
     qat: bool = False,  # A8: QAT must be opt-in; silent nvfp4 simulation corrupted train/serve parity
     target_quant: str = "w4a16",  # A8: default matches export_w4a16.py (INT4 group-32 compressed-tensors)
     qat_bits: int = 4,
@@ -966,7 +971,83 @@ def finetune_custom_data(
     )
     base_model.freeze_vision_tower(freeze_adapter=False)
 
-    if adapter_path and os.path.exists(adapter_path):
+    def _get_raw_model(m):
+        if hasattr(m, "peft_config") or type(m).__name__ == "PeftModel":
+            if hasattr(m, "base_model") and hasattr(m.base_model, "model"):
+                return m.base_model.model
+        if hasattr(m, "score"):
+            return m
+        return m
+
+    def _load_into_module(mod, state):
+        if not isinstance(state, dict):
+            w = state
+        elif "weight" in state:
+            w = state["weight"]
+        elif "modules_to_save.default.weight" in state:
+            w = state["modules_to_save.default.weight"]
+        elif "default.weight" in state:
+            w = state["default.weight"]
+        elif "original_module.weight" in state:
+            w = state["original_module.weight"]
+        else:
+            w = next(iter(state.values()))
+        if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+            mod.modules_to_save["default"].weight.data.copy_(w)
+            if hasattr(mod, "original_module") and hasattr(mod.original_module, "weight"):
+                mod.original_module.weight.data.copy_(w)
+        elif hasattr(mod, "weight"):
+            mod.weight.data.copy_(w)
+        else:
+            mod.load_state_dict({"weight": w}, strict=False)
+
+    if full_fine_tune:
+        if adapter_path and os.path.exists(adapter_path):
+            print(f"Loading and merging existing LoRA weights from {adapter_path} for full fine-tuning...")
+            peft_m = PeftModel.from_pretrained(base_model, adapter_path)
+            head_weights_path = os.path.join(adapter_path, "head_weights.pt")
+            if os.path.exists(head_weights_path):
+                hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
+                raw = _get_raw_model(peft_m)
+                if "score" in hw and hasattr(raw, "score"):
+                    _load_into_module(raw.score, hw["score"])
+                if "norm" in hw and hasattr(raw, "norm"):
+                    _load_into_module(raw.norm, hw["norm"])
+            model = peft_m.merge_and_unload()
+        else:
+            model = base_model
+            head_weights_path = head_weights if (head_weights and os.path.exists(head_weights)) else os.path.join(base_model_id, "head_weights.pt")
+            if os.path.exists(head_weights_path):
+                print(f"Loading head weights from {head_weights_path}...")
+                hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
+                raw = _get_raw_model(model)
+                if "score" in hw and hasattr(raw, "score"):
+                    _load_into_module(raw.score, hw["score"])
+                if "norm" in hw and hasattr(raw, "norm"):
+                    _load_into_module(raw.norm, hw["norm"])
+
+        # Unfreeze all parameters first
+        for p in model.parameters():
+            p.requires_grad = True
+
+        # Freeze non-transformer components (vision tower, audio tower, and massive token/per-layer embedding tables)
+        if hasattr(model, "freeze_vision_tower"):
+            model.freeze_vision_tower(freeze_adapter=False)
+        if hasattr(model, "model") and hasattr(model.model, "audio_tower"):
+            for p in model.model.audio_tower.parameters():
+                p.requires_grad = False
+        lm = getattr(model, "model", model)
+        if hasattr(lm, "language_model"):
+            lm = lm.language_model
+        if hasattr(lm, "embed_tokens") and hasattr(lm.embed_tokens, "weight"):
+            lm.embed_tokens.weight.requires_grad = False
+        if hasattr(lm, "embed_tokens_per_layer") and hasattr(lm.embed_tokens_per_layer, "weight"):
+            lm.embed_tokens_per_layer.weight.requires_grad = False
+
+        trainable_cnt = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_cnt = sum(p.numel() for p in model.parameters())
+        print(f"Full Fine-Tuning mode: Unfrozen {trainable_cnt:,} / {total_cnt:,} parameters ({trainable_cnt/total_cnt*100:.2f}%) across all transformer layers.")
+    elif adapter_path and os.path.exists(adapter_path):
         print(f"Loading existing LoRA weights from {adapter_path} for continual fine-tuning...")
         model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=True)
         # WHY (Phase-1 OOM, 2026-09-22): PEFT's from_pretrained(is_trainable=True)
@@ -980,28 +1061,7 @@ def finetune_custom_data(
         if os.path.exists(head_weights_path):
             print(f"Restoring classification head from {head_weights_path}...")
             hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
-            raw = model.base_model.model if hasattr(model, "base_model") else model
-            def _load_into_module(mod, state):
-                if not isinstance(state, dict):
-                    w = state
-                elif "weight" in state:
-                    w = state["weight"]
-                elif "modules_to_save.default.weight" in state:
-                    w = state["modules_to_save.default.weight"]
-                elif "default.weight" in state:
-                    w = state["default.weight"]
-                elif "original_module.weight" in state:
-                    w = state["original_module.weight"]
-                else:
-                    w = next(iter(state.values()))
-                if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
-                    mod.modules_to_save["default"].weight.data.copy_(w)
-                    if hasattr(mod, "original_module") and hasattr(mod.original_module, "weight"):
-                        mod.original_module.weight.data.copy_(w)
-                elif hasattr(mod, "weight"):
-                    mod.weight.data.copy_(w)
-                else:
-                    mod.load_state_dict({"weight": w}, strict=False)
+            raw = _get_raw_model(model)
 
             if "score" in hw and hasattr(raw, "score"):
                 _load_into_module(raw.score, hw["score"])
@@ -1030,19 +1090,37 @@ def finetune_custom_data(
             group_size=qat_group_size,
         )
 
+    def _get_lm(m):
+        curr = m
+        for _ in range(4):
+            if hasattr(curr, "language_model"):
+                return curr.language_model
+            if hasattr(curr, "model") and hasattr(curr.model, "language_model"):
+                return curr.model.language_model
+            if hasattr(curr, "base_model"):
+                curr = curr.base_model
+            else:
+                break
+        return getattr(curr, "language_model", None)
+
     # Enable gradient checkpointing to safely fit in RTX 5090 VRAM
-    raw_lm = model.base_model.model.model.language_model if hasattr(model, "base_model") else model.model.language_model
-    if hasattr(raw_lm, "gradient_checkpointing_enable"):
+    raw_lm = _get_lm(model)
+    if raw_lm is not None and hasattr(raw_lm, "gradient_checkpointing_enable"):
         raw_lm.gradient_checkpointing_enable()
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         print("Enabled gradient checkpointing on language model backbone.")
 
     model.to(device)
-    model.print_trainable_parameters()
+    if hasattr(model, "print_trainable_parameters"):
+        model.print_trainable_parameters()
+    else:
+        tr = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        tot = sum(p.numel() for p in model.parameters())
+        print(f"trainable params: {tr:,} || all params: {tot:,} || trainable%: {tr/tot*100:.4f}")
 
     # 4. DataLoaders
-    is_gemma = "gemma" in base_model_id.lower()
+    is_gemma = "gemma" in base_model_id.lower() or "gevva" in base_model_id.lower()
     if image_processor is None and is_gemma:
         try:
             image_processor = Gemma4ImageProcessorPil()
@@ -1146,15 +1224,27 @@ def finetune_custom_data(
     loss_fn = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     # 6. Training Loop
-    print(f"\nBeginning training: {epochs} epochs, {len(train_loader)} batches/epoch, {total_steps} optimizer updates")
+    print(f"\nBeginning training: {epochs} epoch(s) (starting at epoch {start_epoch+1}), {len(train_loader)} batches/epoch, {total_steps} optimizer updates")
     best_val_acc = 0.0
     best_dec_acc = None  # G2: primary metric (served decision accuracy)
     best_anchor_acc = None  # G2: regression floor (classic-NLI anchor accuracy)
+    prev_report_path = os.path.join(output_dir, "best", "eval_report.json")
+    if os.path.exists(prev_report_path):
+        try:
+            with open(prev_report_path) as f:
+                prev_rep = json.load(f)
+            best_dec_acc = prev_rep.get("decision_accuracy")
+            best_anchor_acc = prev_rep.get("anchor_accuracy")
+            best_val_acc = best_dec_acc if best_dec_acc is not None else prev_rep.get("accuracy", 0.0)
+            print(f"Loaded existing best baseline from {prev_report_path}: Decision Acc = {best_dec_acc*100 if best_dec_acc is not None else 'N/A'}%")
+        except Exception as e:
+            print(f"Warning: could not load existing best eval report: {e}")
     best_metrics = {}
     global_step = 0
     t_start = time.time()
 
-    for epoch in range(epochs):
+    for epoch_idx in range(epochs):
+        epoch = start_epoch + epoch_idx
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         model.train()
@@ -1256,7 +1346,7 @@ def finetune_custom_data(
                     if brier_weight > 0.0:
                         extra_msg += f" | Brier: {epoch_brier_loss / (step + 1):.4f}"
                     print(
-                        f"Epoch {epoch+1}/{epochs} | Step {global_step}/{total_steps} | "
+                        f"Epoch {epoch+1}/{start_epoch+epochs} | Step {global_step}/{total_steps} | "
                         f"Loss: {avg_loss:.4f}{extra_msg} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
                         flush=True,
                     )
@@ -1270,7 +1360,7 @@ def finetune_custom_data(
         # and only 127 MiB free. The model can't be unloaded (validation needs
         # it), but empty_cache() returns the cached pool to the OS first.
         torch.cuda.empty_cache()
-        print(f"\n--- Validation (Epoch {epoch+1}/{epochs}) ---", flush=True)
+        print(f"\n--- Validation (Epoch {epoch+1}/{start_epoch+epochs}) ---", flush=True)
         val_metrics = evaluate_dataset(model, val_loader, device)
         acc = val_metrics["accuracy"]
         dec_acc = val_metrics.get("decision_accuracy")
@@ -1285,7 +1375,8 @@ def finetune_custom_data(
         epoch_dir = os.path.join(output_dir, f"epoch_{epoch+1}")
         os.makedirs(epoch_dir, exist_ok=True)
         model.save_pretrained(epoch_dir)
-        raw_model_epoch = model.base_model.model if hasattr(model, "base_model") else model
+
+        raw_model_epoch = _get_raw_model(model)
         def _clean_state_ep(mod):
             if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
                 return mod.modules_to_save["default"].state_dict()
@@ -1311,7 +1402,7 @@ def finetune_custom_data(
             print(f"-> New best {metric_name} ({best_val_acc*100:.2f}%)! Saving checkpoint to {best_dir}...")
             model.save_pretrained(best_dir)
             # Explicitly save classification head and norm weights (unwrapping any PEFT wrappers)
-            raw_model = model.base_model.model if hasattr(model, "base_model") else model
+            raw_model = _get_raw_model(model)
             def clean_state(mod):
                 if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
                     return mod.modules_to_save["default"].state_dict()
@@ -1364,6 +1455,8 @@ def finetune_custom_data(
             with open(os.path.join(best_dir, "qat_config.json"), "w") as f:
                 json.dump(qat_provenance, f, indent=2)
 
+        torch.cuda.empty_cache()
+
     total_time = time.time() - t_start
     print("\n" + "=" * 65)
     print(f"Fine-Tuning Finished in {total_time/60:.1f} minutes!")
@@ -1389,6 +1482,7 @@ def main():
     parser.add_argument("--out-dir", default="./ckpt/custom_finetuned", help="Directory to save fine-tuned model")
     parser.add_argument("--base-model", default="google/gemma-4-E2B", help="Base HuggingFace model path")
     parser.add_argument("--adapter", default=None, help="Optional path to existing LoRA adapter checkpoint to resume from")
+    parser.add_argument("--head-weights", default=None, help="Optional path to existing head_weights.pt to warm-start classification head")
     parser.add_argument("--epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per forward pass")
     parser.add_argument("--grad-accum", type=int, default=8, help="Gradient accumulation steps")
@@ -1448,6 +1542,18 @@ def main():
         default=1.0,
         help="Temperature for cross-option softmax competition (default: 1.0)",
     )
+    parser.add_argument(
+        "--full-fine-tune",
+        action="store_true",
+        default=False,
+        help="Train the full transformer backbone (freezing embedding tables & vision tower) instead of LoRA",
+    )
+    parser.add_argument(
+        "--start-epoch",
+        type=int,
+        default=0,
+        help="Starting epoch index (0-indexed, default: 0)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1457,6 +1563,7 @@ def main():
         output_dir=args.out_dir,
         base_model_id=args.base_model,
         adapter_path=args.adapter,
+        head_weights=args.head_weights,
         epochs=args.epochs,
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
@@ -1470,7 +1577,9 @@ def main():
         served_dist_weight=args.served_dist_weight,
         decision_temp=args.decision_temp,
         val_ratio=args.val_ratio,
+        start_epoch=args.start_epoch,
         label_convention=args.label_convention,
+        full_fine_tune=args.full_fine_tune,
         qat=args.qat,
         target_quant=args.target_quant,
         qat_bits=args.qat_bits,

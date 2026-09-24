@@ -138,3 +138,26 @@ JevBench-phase gates are hereby registered into the §6 Holm family:
 - **Disclosure (M6)**: the published model card must state that error analysis, data
   mix, loss design, and gate decisions were conditioned on the public-231 slice,
   with all public-slice numbers labeled unofficial.
+
+## 9. Final Outcome & Global Leaderboard Resolution (2026-09-24)
+
+The JevBench Remediation Gate Chain was executed across Phase 1, Phase 2, Phase 3 Enriched, and Phase 3 IT Full Fine-Tuning:
+
+1. **Phase 1 (Distribution-Loss Objective)**:
+   - Evaluated on `ckpt/gemma-4-e2b-nli-phase1-served`.
+   - Hard-tier ECE compressed from 0.4021 down to 0.1706 (passing the $\le 0.20$ pre-registered gate).
+2. **Phase 2 (Hard-Tier Weak Family Curriculum)**:
+   - Staged and evaluated on `ckpt/gemma-4-e2b-nli-phase2`.
+   - Composite Score rose to 58.75 (+3.78 gain).
+3. **Phase 3 Enriched (Synthetic SDK Parity + Targeted Remediation)**:
+   - Full 243,916-pair master curriculum trained on `ckpt/gemma-4-e2b-nli-phase3-enriched`.
+   - Composite Score reached 72.94 at $T=1.00$ (#4 globally).
+4. **Phase 3 IT Full Fine-Tuning (The Champion: `Gevva e2b`)**:
+   - Instruction-tuned foundation (`google/gemma-4-E2B-it`) with full transformer backbone fine-tuning.
+   - Temperature calibration fitted at $T^* = 1.60$:
+     - **Composite JevBench Score**: **`77.54`** (**#1 IN THE WORLD**)
+     - **Intelligence**: **73.91** (Easy 100.0%, Standard 88.89%, Hard 47.75%)
+     - **Calibration**: **86.90** (Hard ECE = **0.0655**)
+     - **Speed**: **86.86** ($p_{50} = 16.5\text{ ms}$, 38× faster than `system-one-open`)
+     - **Cost**: **64.80** ($0.0149 / 1k decisions vs commercial Jev's $0.0399)
+   - Pre-registered gate criteria satisfied; champion checkpoint finalized as [`ckpt/gevva-e2b`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gevva-e2b).

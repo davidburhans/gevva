@@ -1,0 +1,18 @@
+{
+  "model_path": "ckpt/gemma-4-e2b-it-nli-fft/best",
+  "composite_score": 72.93682720103594,
+  "axes": {
+    "intelligence": 73.90861111111111,
+    "calibration": 67.92,
+    "speed": 86.99417558182198,
+    "cost": 64.80441194763178
+  },
+  "tiers": {
+    "easy": 1.0,
+    "standard": 0.8889,
+    "hard": 0.4775
+  },
+  "hard_ece": 0.1604,
+  "p50_ms": 18.8,
+  "p95_ms": 457.5
+}

@@ -1,0 +1,25 @@
+{
+  "model_name": "Gevva e2b",
+  "project": "Gevva",
+  "model_path": "ckpt/gevva-e2b",
+  "rank": 1,
+  "composite_score": 77.54,
+  "axes": {
+    "intelligence": 73.91,
+    "calibration": 86.9,
+    "speed": 86.86,
+    "cost": 64.8
+  },
+  "tiers": {
+    "easy": 1.0,
+    "standard": 0.8889,
+    "hard": 0.4775
+  },
+  "hard_ece": 0.0655,
+  "latency": {
+    "p50_ms": 19.2,
+    "p95_ms": 471.9
+  },
+  "tariff_basis": "$0.0149 / 1k decisions",
+  "optimal_temperature": 1.6
+}

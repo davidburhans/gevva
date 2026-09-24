@@ -175,7 +175,7 @@ def compute_served_distribution_loss(
         served = p_ent[idx]
         total = served.sum()
         dist = served / total
-        confs.append(float(dist.max()))
+        confs.append(float(dist.detach().max()))
         log_dist = torch.log(dist.clamp_min(1e-12))
 
         gold_onehot = is_gold[idx].float() if is_gold is not None else None

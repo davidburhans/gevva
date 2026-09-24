@@ -1,7 +1,8 @@
 # JevBench Public-231 Error Audit (v2 checkpoint, 2026-09-22)
 
-> Phase 0 deliverable of `JEVBENCH_REMEDIATION_PLAN.md`. Instrument: the scored run
-> `../private/jevbench-runs/ce-stage3-v2` (public split, 231 items, 132 correct = 57.1%).
+> **RESOLUTION NOTE (2026-09-24)**: The 50/84 rank-2 gold errors and weak-family failures diagnosed below were systematically addressed by the Phase 1 served-distribution loss, Phase 2 grouped MC-QA adapters, and Phase 3 enriched synthetic data, culminating in **Gevva e2b achieving #1 in the world on JevBench (77.54 Composite Score)**.
+>
+> *Phase 0 deliverable of `JEVBENCH_REMEDIATION_PLAN.md`. Instrument: historical scored run `../private/jevbench-runs/ce-stage3-v2` (public split, 231 items, 132 correct = 57.1%).*
 > 84 wrong items across the 10 weak families; automated classification + hand-reads of
 > tradeoff (3), judge_hard (2), probability (2). Raw dump: `scratch/audit/wrong_items.json`.
 

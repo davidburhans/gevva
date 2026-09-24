@@ -1,0 +1,93 @@
+{
+  "families": {
+    "intent": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.5655,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 5,
+      "p50_ms": 25.5,
+      "p95_ms": 171.4
+    },
+    "long_policy": {
+      "accuracy": 0.2,
+      "ci95": [
+        0.0362,
+        0.6245
+      ],
+      "gold_rank2_on_error": "2/4",
+      "n": 5,
+      "p50_ms": 569.4,
+      "p95_ms": 1298.1
+    },
+    "policy": {
+      "accuracy": 0.4,
+      "ci95": [
+        0.1176,
+        0.7693
+      ],
+      "gold_rank2_on_error": "3/3",
+      "n": 5,
+      "p50_ms": 25.1,
+      "p95_ms": 31.3
+    }
+  },
+  "overall": {
+    "accuracy": 0.5333,
+    "ci95": [
+      0.3012,
+      0.7519
+    ],
+    "gold_rank2_on_error": "5/7",
+    "n": 15,
+    "p50_ms": 27.6,
+    "p95_ms": 1298.1
+  },
+  "provenance": {
+    "device": "cuda",
+    "generated_at": "2026-09-23 12:48:02",
+    "limit_per_tier": 5,
+    "mapping": "jevbench docs/cross-encoder-mapping.md (helpers imported from jevbench repo)",
+    "max_len": 16384,
+    "model_path": "ckpt/gemma-4-e2b-nli-phase1-served/best",
+    "temperature": 1.0
+  },
+  "renormalized_ece_hard": 0.4019,
+  "tiers": {
+    "easy": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.5655,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 5,
+      "p50_ms": 25.5,
+      "p95_ms": 171.4
+    },
+    "hard": {
+      "accuracy": 0.2,
+      "ci95": [
+        0.0362,
+        0.6245
+      ],
+      "gold_rank2_on_error": "2/4",
+      "n": 5,
+      "p50_ms": 569.4,
+      "p95_ms": 1298.1
+    },
+    "standard": {
+      "accuracy": 0.4,
+      "ci95": [
+        0.1176,
+        0.7693
+      ],
+      "gold_rank2_on_error": "3/3",
+      "n": 5,
+      "p50_ms": 25.1,
+      "p95_ms": 31.3
+    }
+  }
+}

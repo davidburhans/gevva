@@ -3,7 +3,7 @@
 ==============================
 Direct Head-to-Head Capability Comparison Benchmark Suite.
 
-Benchmarks our Gemma 4 E2B NLI Cross-Encoder.
+Benchmarks Gevva System 1 Decision Engine.
 
 PROVENANCE NOTE: competitor numbers printed alongside ours are quoted published
 reference constants (REFERENCE_BENCHMARKS below), NOT local runs - protocols and

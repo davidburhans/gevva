@@ -1,0 +1,18 @@
+{
+  "model_path": "ckpt/gemma-4-e2b-nli-phase3/best",
+  "composite_score": 59.05558807436242,
+  "axes": {
+    "intelligence": 63.4013888888889,
+    "calibration": 34.24,
+    "speed": 86.45833991824666,
+    "cost": 64.80441194763178
+  },
+  "tiers": {
+    "easy": 0.9583,
+    "standard": 0.7361,
+    "hard": 0.3874
+  },
+  "hard_ece": 0.3288,
+  "p50_ms": 19.7,
+  "p95_ms": 521.7
+}

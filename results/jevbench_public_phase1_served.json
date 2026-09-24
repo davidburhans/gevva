@@ -1,0 +1,258 @@
+{
+  "families": {
+    "adequacy": {
+      "accuracy": 0.75,
+      "ci95": [
+        0.4677,
+        0.9111
+      ],
+      "gold_rank2_on_error": "3/3",
+      "n": 12,
+      "p50_ms": 23.4,
+      "p95_ms": 25.2
+    },
+    "adversarial": {
+      "accuracy": 0.5,
+      "ci95": [
+        0.1876,
+        0.8124
+      ],
+      "gold_rank2_on_error": "1/3",
+      "n": 6,
+      "p50_ms": 46.4,
+      "p95_ms": 46.6
+    },
+    "ambiguous": {
+      "accuracy": 0.2857,
+      "ci95": [
+        0.0822,
+        0.6411
+      ],
+      "gold_rank2_on_error": "2/5",
+      "n": 7,
+      "p50_ms": 58.9,
+      "p95_ms": 102.7
+    },
+    "extraction": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.862,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 24,
+      "p50_ms": 25.4,
+      "p95_ms": 27.8
+    },
+    "fact": {
+      "accuracy": 0.8333,
+      "ci95": [
+        0.552,
+        0.953
+      ],
+      "gold_rank2_on_error": "2/2",
+      "n": 12,
+      "p50_ms": 25.2,
+      "p95_ms": 33.1
+    },
+    "intent": {
+      "accuracy": 0.875,
+      "ci95": [
+        0.69,
+        0.9566
+      ],
+      "gold_rank2_on_error": "2/3",
+      "n": 24,
+      "p50_ms": 24.8,
+      "p95_ms": 30.4
+    },
+    "judge_hard": {
+      "accuracy": 0.4706,
+      "ci95": [
+        0.2616,
+        0.6904
+      ],
+      "gold_rank2_on_error": "9/9",
+      "n": 17,
+      "p50_ms": 31.1,
+      "p95_ms": 41.6
+    },
+    "long_policy": {
+      "accuracy": 0.3158,
+      "ci95": [
+        0.1536,
+        0.5399
+      ],
+      "gold_rank2_on_error": "6/13",
+      "n": 19,
+      "p50_ms": 602.5,
+      "p95_ms": 1362.4
+    },
+    "multi_hop": {
+      "accuracy": 0.2778,
+      "ci95": [
+        0.125,
+        0.5087
+      ],
+      "gold_rank2_on_error": "4/13",
+      "n": 18,
+      "p50_ms": 548.6,
+      "p95_ms": 993.8
+    },
+    "ordinal": {
+      "accuracy": 0.0,
+      "ci95": [
+        0.0,
+        0.2425
+      ],
+      "gold_rank2_on_error": "0/12",
+      "n": 12,
+      "p50_ms": 25.8,
+      "p95_ms": 31.2
+    },
+    "policy": {
+      "accuracy": 0.5833,
+      "ci95": [
+        0.3195,
+        0.8067
+      ],
+      "gold_rank2_on_error": "5/5",
+      "n": 12,
+      "p50_ms": 25.8,
+      "p95_ms": 27.0
+    },
+    "probability": {
+      "accuracy": 0.3,
+      "ci95": [
+        0.1078,
+        0.6032
+      ],
+      "gold_rank2_on_error": "5/7",
+      "n": 10,
+      "p50_ms": 119.0,
+      "p95_ms": 330.9
+    },
+    "routing": {
+      "accuracy": 0.5,
+      "ci95": [
+        0.2538,
+        0.7462
+      ],
+      "gold_rank2_on_error": "6/6",
+      "n": 12,
+      "p50_ms": 27.2,
+      "p95_ms": 31.9
+    },
+    "routing_hard": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.5655,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 5,
+      "p50_ms": 49.6,
+      "p95_ms": 54.1
+    },
+    "temporal_numeric": {
+      "accuracy": 0.2,
+      "ci95": [
+        0.0705,
+        0.4519
+      ],
+      "gold_rank2_on_error": "7/12",
+      "n": 15,
+      "p50_ms": 84.6,
+      "p95_ms": 304.6
+    },
+    "tool_selection": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.7575,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 12,
+      "p50_ms": 26.4,
+      "p95_ms": 30.3
+    },
+    "tradeoff": {
+      "accuracy": 0.1667,
+      "ci95": [
+        0.0301,
+        0.5635
+      ],
+      "gold_rank2_on_error": "4/5",
+      "n": 6,
+      "p50_ms": 136.3,
+      "p95_ms": 194.3
+    },
+    "trap": {
+      "accuracy": 0.625,
+      "ci95": [
+        0.3057,
+        0.8632
+      ],
+      "gold_rank2_on_error": "2/3",
+      "n": 8,
+      "p50_ms": 37.4,
+      "p95_ms": 55.1
+    }
+  },
+  "overall": {
+    "accuracy": 0.5628,
+    "ci95": [
+      0.4983,
+      0.6252
+    ],
+    "gold_rank2_on_error": "58/101",
+    "n": 231,
+    "p50_ms": 27.9,
+    "p95_ms": 695.5
+  },
+  "provenance": {
+    "device": "cuda",
+    "generated_at": "2026-09-23 12:48:50",
+    "limit_per_tier": null,
+    "mapping": "jevbench docs/cross-encoder-mapping.md (helpers imported from jevbench repo)",
+    "max_len": 16384,
+    "model_path": "ckpt/gemma-4-e2b-nli-phase1-served/best",
+    "temperature": 1.0
+  },
+  "renormalized_ece_hard": 0.3296,
+  "tiers": {
+    "easy": {
+      "accuracy": 0.9583,
+      "ci95": [
+        0.8602,
+        0.9885
+      ],
+      "gold_rank2_on_error": "2/2",
+      "n": 48,
+      "p50_ms": 25.1,
+      "p95_ms": 30.4
+    },
+    "hard": {
+      "accuracy": 0.3694,
+      "ci95": [
+        0.2854,
+        0.4621
+      ],
+      "gold_rank2_on_error": "40/70",
+      "n": 111,
+      "p50_ms": 83.4,
+      "p95_ms": 873.2
+    },
+    "standard": {
+      "accuracy": 0.5972,
+      "ci95": [
+        0.4818,
+        0.7028
+      ],
+      "gold_rank2_on_error": "16/29",
+      "n": 72,
+      "p50_ms": 25.4,
+      "p95_ms": 28.7
+    }
+  }
+}

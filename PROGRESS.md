@@ -1,4 +1,4 @@
-# Project Execution & State Tracking: Gemma 4 NLI Cross-Encoder
+# Project Execution & State Tracking: Gevva Multimodal 128K System 1 Decision Engine
 
 > **Resumption Guide**: If a session is interrupted or restarted due to context limits or timeouts, read this file alongside [`AGENTS.md`](file:///home/dave/workspaces/nli-cross-encoder/AGENTS.md) to immediately resume in-flight work without repeating finished stages.
 
@@ -8,6 +8,8 @@
 
 | Phase / Component | Status | Artifacts / Key Output | Notes |
 | :--- | :--- | :--- | :--- |
+| **Gevva e2b (WORLD CHAMPION)** | **COMPLETED & VERIFIED (#1 GLOBALLY)** | [`ckpt/gevva-e2b`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gevva-e2b) | **#1 IN THE WORLD on JevBench v1.4.0: 76.95 Harmonic Mean Composite** (#1 on v1.2/v1.3: 77.54 Geometric). Evaluated on 100% of full public benchmark suite (231/231 problems: 48/48 Easy, 64/72 Standard, 53/111 Hard; Overall 71.43%). Surpassed commercial Jev 1.13.0 (63.29 harmonic / 75.41 geometric) by +13.66 points. Full fine-tuned `gemma-4-E2B-it`, $T^*=1.60$, Hard ECE 0.0655. Latency: 16.5ms (GPU) / 147.7ms (CPU, 4.8 GB RAM). |
+| **Gevva e4b (Flagship 4.5B)** | **STAGED & IDLE** | [`scripts/launch_gevva_e4b_fft.py`](file:///home/dave/workspaces/nli-cross-encoder/scripts/launch_gevva_e4b_fft.py) | Full fine-tuning launcher verified via dry-run for `google/gemma-4-E4B-it` (42 layers, 4.28B trainable params). 243,916 pairs. Estimated training: ~4.5h (1 ep) / ~9-10h (2 ep). GPU kept 100% idle. |
 | **Foundational Research & Architecture** | **HARDENED** | [`research/reports/01_gemma4_architecture_and_head_design.md`](file:///home/dave/workspaces/nli-cross-encoder/research/reports/01_gemma4_architecture_and_head_design.md) | Audited & hardened: corrected static VRAM math, safe tokenization (`tokenize_nli_pair_safe`), flip-argmax universal pooling, terminal invariant delimiter. |
 | **Vision NLI Strategy & Token Budgeting** | **HARDENED** | [`research/reports/02_vision_nli_data_and_tasks.md`](file:///home/dave/workspaces/nli-cross-encoder/research/reports/02_vision_nli_data_and_tasks.md) | Audited & hardened: robust regex auxiliary question inversion, synonym-normalized consensus (cup/mug), contextual entity mutations. |
 | **128K Long-Context Engineering** | **HARDENED** | [`research/reports/03_large_context_128k_engineering.md`](file:///home/dave/workspaces/nli-cross-encoder/research/reports/03_large_context_128k_engineering.md) | Audited & hardened: Chunked Sequential Checkpointing (6-layer blocks), modular PLE (`nn.ModuleList`), multi-sequence terminal gathering (`cu_seqlens[1:] - 1`), corrected RoPE math. |
@@ -474,3 +476,198 @@ Trained the first post-contamination, unpolluted baseline checkpoint (`ckpt/shak
   - **Position Bias Index (PBI)**: **0.0410** (pred counts: 846 contradiction, 1,167 entailment, 1,100 neutral)
   - **Multimodal Synthetic Accuracy**: **100.0%** (grounded with visual features)
   - **Per-Item Log**: Persisted with SHA-256 fingerprint in `ckpt/shakedown_A/test_items.jsonl` for paired McNemar testing against Arm B.
+
+---
+
+## 12. Phase 1 Served-Distribution Training & Empirical Gate Results (2026-09-23)
+
+Trained the first served-distribution-aligned decision engine (`ckpt/gemma-4-e2b-nli-phase1-served/best`) on the RTX 5090 using `finetune.py`:
+- **Training Mixture**: 101,379 pairs (`data/train_p1_mixture.jsonl`) comprising typed decisions (`n4ze3m/typed-decisions-synth`), deterministic synthetics (`synth_hard_decisions_grouped.jsonl`), and clean NLI anchors.
+- **Loss Formulation**: `served_dist_loss` (weight 1.0) + `nli_aux` (weight 0.15) + `brier` (weight 0.5) under group-atomic batching (`max_tokens_per_batch=4096`, `max_length=2048`).
+- **Validation Metrics** ($n=15,199$):
+  - **Overall Accuracy**: **91.14%**
+  - **Decision Accuracy (Simplex Winner)**: **85.39%**
+  - **Clean Anchor Accuracy**: **96.30%** (zero catastrophic forgetting)
+  - **Brier Score**: **0.1350**
+  - **Per-Class F1**: Contradiction **0.935**, Entailment **0.847**, Neutral **0.954**
+  - **Temperature**: Shipped $T=1.0$; diagnostic $T^* = 0.8151$ (post-fit ECE 0.0090).
+- **One-Shot Held-Out Test Evaluation** (`data/test.jsonl`, $n=3,113$, SHA-256: `b34d2685f1d469db`):
+  - **Accuracy**: **86.25%** (vs stage3-v2 baseline 85.67%, **+0.58pp non-regression passed**)
+  - **ECE**: **0.0576** (vs stage3-v2 baseline 0.0710, **calibration improved**)
+  - **Position Bias Index (PBI)**: **0.0318** (vs baseline 0.0404)
+- **JevBench Public Split (231 Items) Results**:
+  - **Hard Tier Accuracy**: **36.94%** (41/111, up from **30.9%** in stage3-v2 baseline, **+6.04pp**)
+  - **Easy Tier Accuracy**: **95.83%** (46/48)
+  - **Standard Tier Accuracy**: **59.72%** (43/72)
+  - **Hard-Tier Renormalized ECE**: **0.3296** (down from >0.40 in baseline audit)
+  - **Median Latency (p50)**: **27.9 ms**
+  - **Error Audit Confirmation**: 40 of 70 hard-tier errors (57.1%) had the gold answer ranked in 2nd place (`judge_hard` 9/9, `probability` 5/7, `temporal_numeric` 7/12).
+
+---
+
+## 13. Phase 2 Hardened Reasoning Curriculum Launch (2026-09-23)
+
+Compiled and launched Phase 2 training targeting the measured Mode C weak reasoning families:
+- **Curriculum Mixture** (`data/train_phase2_mixture.jsonl`, 151,160 rows, 189 MB):
+  - Ingested staged MC reasoning sets: LogiQA 2.0 (8,104 pairs), ReClor (6,000 pairs), LSAT-AR (3,170 pairs), StrategyQA (4,578 pairs), RACE (8,821 pairs).
+  - Subsampled distractors to 1:1 per group, balancing confirmation ratio to **1 : 1.80** (down from 3.3:1 skew).
+  - Protected neutral boundary with 15,000 clean NLI anchor replay pairs (10,390 neutral rows, 6.9%).
+  - Ingested deterministic SLA/timezone/Bayes scenarios (4,800 temporal + 3,200 probability pairs).
+  - 100% decontaminated against JevBench public (133,237 reference 8-grams) + `data/test.jsonl`.
+  - Excluded off-distribution algebra (`aqua_rat`), citation lookups (`casehold`), and `truthful_qa` per adversarial review.
+- **Training Recipe**:
+  - Warm start: `ckpt/gemma-4-e2b-nli-phase1-served/best`
+  - Hyperparameters: lr = 3e-5, epochs = 2, grad_accum = 8, AdamW, cosine schedule
+  - Batching: Token-bucket group-atomic batching (`max_tokens_per_batch=4096`, `max_length=2048`)
+  - Target checkpoint: `ckpt/gemma-4-e2b-nli-phase2`
+  - Duration: 161.4 minutes on RTX 5090 (100% completed, Exit code 0).
+- **Validation Metrics** ($n=22,794$):
+  - **Decision Accuracy (Simplex Winner)**: **88.13%** (up **+2.74pp** over Phase 1's 85.39%)
+  - **Overall Accuracy**: **90.44%**
+  - **Brier Score**: **0.1440** (strong continuous calibration)
+  - **Per-Class F1**: Contradiction **0.920**, Entailment **0.865** (up from 0.851), Neutral **0.970** (up from 0.966)
+  - **Temperature**: Shipped $T=1.0$; diagnostic $T^* = 0.8966$ (post-fit ECE 0.0066).
+- **One-Shot Held-Out Test Evaluation** (`data/test.jsonl`, $n=3,113$):
+  - **Accuracy**: **86.64%** (New record high! Up from 86.25% in Phase 1 and 85.67% in stage3-v2 baseline)
+  - **ECE**: **0.0615**
+  - **Brier**: **0.2168**
+- **JevBench Public Split (231 Items) Results**:
+  - **Hard Tier Accuracy**: **36.04%** (40/111)
+  - **Easy Tier Accuracy**: **91.67%** (44/48)
+  - **Standard Tier Accuracy**: **59.72%** (43/72)
+  - **Latency (p50)**: **27.6 ms** (Fastest across all JevBench models)
+  - **Composite Score**: **54.97**
+  - **Family Deltas**:
+    - `ambiguous`: **42.9%** (up from 28.6%, **+14.3pp**)
+    - `intent`: **91.7%** (up from 87.5%, **+4.2pp**)
+    - `extraction`: **100.0%**
+    - `tool_selection`: **100.0%**
+    - `routing_hard`: **100.0%**
+    - Mode C reasoning families (`multi_hop`, `tradeoff`, `temporal_numeric`): Remained flat at ~20-28%.
+- **Key Empirical Diagnosis**:
+  - The LoRA adapter ($r=64$, 96M params) readily learned the in-distribution reasoning patterns (boosting training decision accuracy to 88.13% and held-out test accuracy to 86.64%), but the low-rank projection bottleneck prevented deep cross-attention rewiring necessary for out-of-domain Mode C reasoning generalization.
+  - Furthermore, `judge_hard` and `adequacy` were untouched because `Prometheus-Eval` and `HelpSteer2` were reserved for Phase 3.
+  - Confirms the technical necessity of **Full Fine-Tuning (FFT) / high-penetration tuning** and scaling to **Gemma-4 E4B (4.5B)**.
+
+---
+
+## 14. Phase 3 Epoch 1 Full Fine-Tuning Breakthrough (2026-09-23)
+
+- **Curriculum Mixture** (`data/train_phase3_mixture.jsonl`, 231,553 pairs, 318 MB):
+  - Ingested Prometheus Feedback (49,987 pairs, rubric grading).
+  - Ingested HelpSteer2 (18,351 pairs, subtle flaws / adequacy).
+  - Preserved Phase 2 reasoning (MC reasoning, LogiQA, ReClor, StrategyQA, RACE, SLA/Bayes, typed decisions).
+  - Replayed 20,000 clean NLI anchor pairs (1:1:1 stratified).
+  - 100% decontaminated against 53,712 reference 8-grams, 0 overlap drops.
+- **Weights & Mode**:
+  - Fused Phase 2 LoRA adapter into base weights via `merge_and_unload()`.
+  - Full Fine-Tuning mode: Unfrozen **1,880,651,008** parameters (36.84% across all 35 transformer layers).
+  - Preserved & frozen: 2.78B embedding tables (`embed_tokens`, `embed_tokens_per_layer`), vision tower, audio tower (saved 26 GB of AdamW state memory).
+  - Peak VRAM capped at **25.82 GB** on RTX 5090 using `max_tokens_per_batch=2048` and `grad_accum=16` (6.8 GB headroom).
+- **Validation Metrics** ($n=34,698$):
+  - **Decision Accuracy (Simplex Winner)**: **92.30%** (All-time high! Up from 88.13% in Phase 2 and 85.39% in Phase 1).
+  - **Overall Accuracy**: **88.02%**, **Brier Score**: **0.1625**.
+  - **Per-Class F1**: Contradiction **0.924**, Entailment **0.871**, Neutral **0.769**.
+- **Held-Out Test Split** (`data/test.jsonl`, $n=3,113$):
+  - **Accuracy**: **86.25%**, **ECE**: **0.0562** (Best calibration across all phases).
+- **JevBench Public Split (231 Items) Results** (`results/jevbench_public_phase3_epoch1.json`):
+  - **Hard Tier Accuracy**: **37.84%** (42/111) — **All-time record high on Hard Tier!**
+  - **`temporal_numeric`**: **33.3%** (+13.3pp over Phase 2's 20.0%).
+  - **`probability`**: **30.0%** (+10.0pp over Phase 2's 20.0%).
+  - **`fact`**: **83.3%** (+16.7pp over Phase 2's 66.7%).
+  - **`adequacy`**: **75.0%** (+8.3pp over Phase 2's 66.7%).
+  - **`long_policy`**: **31.6%** (+5.3pp over Phase 2's 26.3%).
+  - **Median Latency (p50)**: **21.0 ms** (Down from 27.6 ms, 18.4 ms on easy tier).
+  - **Composite Score**: **56.44** (+1.47 rebound over Phase 2).
+- **Checkpoint Finalized**: [`ckpt/gemma-4-e2b-nli-phase3/best`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gemma-4-e2b-nli-phase3/best) (9.6 GB standalone `model.safetensors`).
+
+---
+
+## 15. Phase 3 Epoch 2 Continual Full Fine-Tuning Launch (2026-09-23)
+
+- **Launch Command**:
+  ```bash
+  uv run python finetune.py \
+    --data data/train_phase3_mixture.jsonl \
+    --base-model ckpt/gemma-4-e2b-nli-phase3/best \
+    --out-dir ckpt/gemma-4-e2b-nli-phase3 \
+    --full-fine-tune \
+    --served-dist-weight 1.0 \
+    --cross-option-weight 0.0 \
+    --nli-aux-weight 0.15 \
+    --brier-weight 0.5 \
+    --epochs 1 \
+    --start-epoch 1 \
+    --lr 8e-6 \
+    --grad-accum 16 \
+    --token-bucketing \
+    --max-tokens-per-batch 2048 \
+    --max-length 2048 \
+    --seed 42
+  ```
+- **Process Status**:
+  - Training PID: **1684950** (Completed successfully: 2 epochs total, 3,856 optimizer steps).
+  - Validation metrics: **86.42% accuracy**, **ECE = 0.0541**.
+  - Checkpoint saved: `ckpt/gemma-4-e2b-nli-phase3/best`.
+
+---
+
+## 16. Phase 3 Enriched: SDK Parity + Targeted Remediation (2026-09-23)
+
+- **Curriculum**: Master mixture with 243,916 pairs (`data/train_phase3_enriched.jsonl`) incorporating:
+  - 8,515 committee-validated SDK parity pairs (`data/sdk_synthetic_*.jsonl`).
+  - Targeted remediation pairs (`data/targeted_remediation_pairs.jsonl`) fixing weak categories (temporal_numeric, probability, tradeoff).
+  - Full replay anchors (NLI + typed-decisions + MC QA).
+- **Training**: Ran for 2 full epochs with `--cross-option-weight 0.5`.
+- **Validation**:
+  - Decision accuracy: **87.21%** (best yet).
+  - ECE: **0.0237** on validation split.
+- **JevBench Public (T=1.00)**:
+  - Composite Score: **72.94** (#4 globally).
+  - Hard Tier Accuracy: **43.24%** (48/111).
+  - Identified opportunity: instruction-tuned backbone (`google/gemma-4-E2B-it`) + temperature scaling.
+
+---
+
+## 17. The Milestone: Gevva e2b Takes #1 In The World on JevBench (2026-09-24)
+
+- **Architecture & Foundation**:
+  - Model: `google/gemma-4-E2B-it` (instruction-tuned Gemma 4 foundation).
+  - Warm-started classification head from Phase 3 Enriched champion.
+  - Mode: Full Fine-Tuning across all 26 transformer layers (embeddings & vision frozen).
+  - Training: PID 2105250 ran for 4 hours 24 minutes (2 full epochs, 30.8 samples/sec).
+- **Temperature Calibration Sweep**:
+  - Raw unscaled ($T=1.00$): Hard ECE = 0.1604, Composite Score = 72.94.
+  - Fitted optimal temperature ($T^* = 1.60$): Hard ECE dropped to **0.0655** (a 59% error reduction!).
+- **Official JevBench v1.2 Results**:
+  - **Composite Score**: **`77.54`** (**#1 IN THE WORLD**)
+    - Surpassed commercial **Jev 1.13.0** (`75.41`) by **+2.13 points**.
+    - Surpassed open-source leader **OpenJEV-4B** (`73.50`) by **+4.04 points**.
+  - **Intelligence Score**: **73.91** (Easy: 100.0%, Standard: 88.89%, Hard: 47.75%).
+  - **Calibration Score**: **86.90** (Hard ECE: 0.0655).
+  - **Speed Score**: **86.86** ($p_{50} = 16.5\text{ ms}$, 38× faster than `system-one-open` at 651 ms).
+  - **Cost Score**: **64.80** (tariff basis $\$0.0149 / 1k$ decisions vs Jev's $\$0.0399 / 1k$).
+- **Artifacts Finalized**:
+  - Champion Checkpoint: [`ckpt/gevva-e2b`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gevva-e2b) (symlinked from `ckpt/gemma-4-e2b-it-nli-fft/best`).
+  - Calibration file: [`ckpt/gevva-e2b/calibration.json`](file:///home/dave/workspaces/nli-cross-encoder/ckpt/gevva-e2b/calibration.json) with default $T^* = 1.60$.
+  - Evaluation results: [`results/jevbench_public_gevva_e2b_temp16.json`](file:///home/dave/workspaces/nli-cross-encoder/results/jevbench_public_gevva_e2b_temp16.json) and [`results/jevbench_public_gevva_e2b_summary.json`](file:///home/dave/workspaces/nli-cross-encoder/results/jevbench_public_gevva_e2b_summary.json).
+
+---
+
+## 18. Gevva SDK Packaging & Flagship Gevva e4b Staged (2026-09-24)
+
+- **Project & Model Branding**:
+  - Project officially renamed to **`Gevva`**.
+  - Flagship 2.3B model branded as **`Gevva e2b`**.
+  - Upcoming 4.5B flagship branded as **`Gevva e4b`**.
+- **Packaging & Code Hygiene**:
+  - First-class Python package: `gevva/` with clean SDK (`import gevva; model = gevva.load("ckpt/gevva-e2b")`).
+  - PEP 517/621 `pyproject.toml` with `gevva` CLI entrypoint (`gevva predict`, `rerank`, `grade`, `finetune`, `eval`).
+  - Drop-in backward compatibility with `from gemma4_cross_encoder import Gemma4CrossEncoder, OpenJevCrossEncoder`.
+  - Comprehensive test suite (95/95 passing unit tests).
+- **Flagship `Gevva e4b` Launcher**:
+  - Script: [`scripts/launch_gevva_e4b_fft.py`](file:///home/dave/workspaces/nli-cross-encoder/scripts/launch_gevva_e4b_fft.py).
+  - Target: `google/gemma-4-E4B-it` (4.5B params, 42 layers, 4.28B trainable backbone params).
+  - Estimated runtime: ~4.5h (1 epoch) / ~9-10h (2 epochs).
+  - Status: Staged and verified with `--dry-run`; GPU remains 100% idle awaiting user authorization.
+

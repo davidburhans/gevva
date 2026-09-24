@@ -1,7 +1,7 @@
 {
   "stage2_wait": {
     "state": "done",
-    "updated_at": "2026-09-21 00:20:26",
+    "updated_at": "2026-09-21 14:29:38",
     "details": {
       "accuracy": 0.8429168005139737,
       "ece": 0.061055651430604235,
@@ -53,9 +53,9 @@
     "details": "Export & Verification 100% passed"
   },
   "downstream_benchmarks": {
-    "state": "failed",
-    "updated_at": "2026-09-21 00:22:00",
-    "details": "rc=2"
+    "state": "done",
+    "updated_at": "2026-09-21 14:29:51",
+    "details": "Benchmarks complete"
   },
   "stage3_compilation": {
     "state": "done",
@@ -66,13 +66,18 @@
     }
   },
   "stage3_training": {
-    "state": "failed",
-    "updated_at": "2026-09-21 05:06:15",
-    "details": "Stage 3 failed with code 1"
+    "state": "done",
+    "updated_at": "2026-09-22 00:14:23",
+    "details": "Stage 3 training completed successfully"
   },
   "hf_staging": {
     "state": "done",
     "updated_at": "2026-09-21 05:06:17",
     "details": "Model card & dataset card staged successfully"
+  },
+  "stage3_w4a16_export": {
+    "state": "done",
+    "updated_at": "2026-09-22 00:14:35",
+    "details": "Stage 3 W4A16 export complete"
   }
 }

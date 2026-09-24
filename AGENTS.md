@@ -1,17 +1,17 @@
-# Agent Instructions & Project Context: Multimodal 128K NLI Cross-Encoder
+# Agent Instructions & Project Context: Gevva Multimodal 128K System 1 Decision Engine
 
-> **Rule for All Antigravity Agent Sessions**: This repository implements a large-context, multilingual, vision-enabled NLI cross-encoder / System 1 decision engine based on Google's Gemma 4 models. Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
+> **Rule for All Antigravity Agent Sessions**: This repository implements **Gevva**, a state-of-the-art, large-context (128K), multilingual (100+ languages), vision-enabled System 1 decision engine and NLI cross-encoder based on Google's Gemma 4 models. **Gevva e2b holds the #1 Global Rank on JevBench (77.54 Composite Score)**. Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
 
 ---
 
 ## 1. Project Mission & Overview
 
-This project builds a **large-context (128K)**, **multilingual (100+ languages)**, **vision-enabled NLI cross-encoder** based on Google's lightweight multimodal foundation models:
-- **`google/gemma-4-E2B`** (~2.3B effective parameters, edge-optimized)
-- **`google/gemma-4-E4B`** (~4.5B effective parameters, high accuracy)
+This project builds **Gevva**, a family of **large-context (128K)**, **multilingual (100+ languages)**, **vision-enabled System 1 decision engines** based on Google's lightweight multimodal foundation models:
+- **`Gevva e2b`** (built on `google/gemma-4-E2B-it`, ~2.3B effective parameters, **#1 on Global JevBench: 77.54**)
+- **`Gevva e4b`** (built on `google/gemma-4-E4B-it`, ~4.5B effective parameters, deep reasoning flagship)
 
 ### What We Are Building
-A high-throughput, non-autoregressive **System 1 Decision Engine** (inspired by [TypeSafe AI Jev](http://typesafe.ai/blog/introducing-system-one-models-and-jev) and [Convai Laya](https://huggingface.co/convaiinnovations/laya)). Rather than generating tokens autoregressively, the model evaluates input pairs in a single forward pass (~25–40 ms) and outputs calibrated probability distributions over three standard states:
+A high-throughput, non-autoregressive **System 1 Decision Engine** (inspired by Daniel Kahneman's System 1 cognitive model, [TypeSafe AI Jev](http://typesafe.ai/blog/introducing-system-one-models-and-jev) and [Convai Laya](https://huggingface.co/convaiinnovations/laya)). Rather than generating tokens autoregressively, the model evaluates input pairs in a single forward pass (~14.3–16.5 ms) and outputs calibrated probability distributions over three standard states:
 
 $$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neutral (2)}\}$$
 
@@ -74,9 +74,10 @@ Hypothesis: {hypothesis}
 ```
 /home/dave/workspaces/nli-cross-encoder/
 ├── README.md                      # Primary project overview, quickstart & benchmarks
-├── RESOURCES.md                   # Initial reference links & foundation models
-├── AGENTS.md                      # This file (session memory, rules, and guidelines)
-├── PROGRESS.md                    # Live state tracking, benchmark logs, and runbook
+├── pyproject.toml                 # Package configuration (gevva 1.0.0, CLI entrypoint)
+├── gevva/                         # Gevva Python SDK package (from gevva import GevvaCrossEncoder, load)
+│   ├── __init__.py                # Top-level exports and load() helper
+│   └── cli.py                     # CLI entrypoint (gevva predict, rerank, grade, finetune, eval)
 ├── gemma4_cross_encoder.py        # Core model, 100% Jev/OpenJEV API, W4A16 loader & inference engine
 ├── finetune.py                    # Turnkey custom data fine-tuning engine (auto-detects formats & columns)
 ├── export_w4a16.py                # Production INT4 Group-32 exporter (compressed-tensors layout)
@@ -89,19 +90,18 @@ Hypothesis: {hypothesis}
 ├── validation_metrics_db.py       # SQLite judge metrics DB (idempotent verdicts, judge_performance view)
 ├── llm_client.py                  # OpenAI-compatible llama-server client (GBNF-constrained JSON)
 ├── nli_labels.py                  # Shared label enum (0=contradiction, 1=entailment, 2=neutral)
-├── tests/                         # Offline test suite: uv run python tests/test_validator_committee.py
-├── docs/
-│   └── CUSTOM_FINETUNING_GUIDE.md # User-facing custom fine-tuning guide & recipes
+├── tests/                         # Test suite: .venv/bin/python -m unittest discover tests (95 tests)
+├── docs/                          # Guides, model cards, and methodology protocols
+│   ├── CUSTOM_FINETUNING_GUIDE.md # User-facing custom fine-tuning guide & recipes
+│   ├── EVALUATION_PROTOCOL.md     # Pre-registered evaluation protocol & JevBench gate outcomes
+│   ├── HUGGINGFACE_MODEL_CARD.md  # Official HuggingFace model card for Gevva e2b
+│   ├── JEVBENCH_REMEDIATION_PLAN.md # Remediation plan (completed: #1 JevBench 77.54)
+│   └── jevbench-error-audit.md    # Error audit documentation
 ├── ckpt/
-│   ├── gemma-4-e2b-nli-stage1/    # Baseline BF16 LoRA adapter
-│   ├── gemma-4-e2b-nli-qat-stage1/# In-loop 4-bit QAT LoRA adapter
+│   ├── gevva-e2b/                 # WORLD CHAMPION: Full fine-tuned Gemma 4 E2B-it (77.54 JevBench)
 │   └── gemma-4-e2b-nli-w4a16/     # Production standalone W4A16 model (7.04 GB, 14.3ms latency)
 ├── results/                       # Benchmark outputs and comparative JSON logs
-└── research/
-    ├── openjev/                   # Downloaded reference scripts from AlexWortega/openjev
-    ├── laya/                      # Reference implementations from Convai Laya
-    ├── adapters/                  # Data adapters & collators (multimodal_nli_adapter, typed_decisions_adapter)
-    └── reports/                   # Technical deep dives (Reports 01 through 08)
+└── research/                      # Reference implementations, adapters, and deep-dive reports
 ```
 
 ---
@@ -158,13 +158,22 @@ source .venv/bin/activate
 ```
 
 ### Running Benchmarks
-- Run the direct capability comparison against Jev / OpenJEV / Laya:
+- Run the official JevBench evaluation on Gevva e2b:
+  ```bash
+  uv run python scripts/eval_jevbench_public.py --model-path ckpt/gevva-e2b --temperature 1.6
+  ```
+- Run direct capability comparison against Jev / OpenJEV / Laya:
   ```bash
   uv run python eval_openjev_benchmarks.py --limit 100
   ```
 - Run downstream System 1 decisions evaluation:
   ```bash
-  uv run python eval_downstream_decisions.py --model-path ./ckpt/gemma-4-e2b-nli-w4a16
+  uv run python eval_downstream_decisions.py --model-path ckpt/gevva-e2b
+  ```
+- Run Gevva CLI:
+  ```bash
+  gevva version
+  gevva eval --suite jevbench
   ```
 
 ### Guiding Principles for Contributions

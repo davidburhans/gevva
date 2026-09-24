@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gevva"
+version = "1.0.0"
+description = "Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder (#1 on JevBench)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Gevva Team & Contributors" }
+]
+keywords = [
+    "nlp",
+    "nli",
+    "cross-encoder",
+    "decision-engine",
+    "system-1",
+    "multimodal",
+    "vision",
+    "long-context",
+    "gemma-4",
+    "reranking",
+    "hallucination-detection",
+    "fast-inference"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.4.0",
+    "transformers>=4.48.0",
+    "accelerate>=0.34.0",
+    "tokenizers>=0.20.0",
+    "safetensors>=0.4.0",
+    "scipy>=1.11.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.0.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+quant = [
+    "compressed-tensors>=0.8.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/davidburhans/gevva"
+Repository = "https://github.com/davidburhans/gevva"
+Documentation = "https://github.com/davidburhans/gevva/blob/main/README.md"
+"Bug Tracker" = "https://github.com/davidburhans/gevva/issues"
+
+[project.scripts]
+gevva = "gevva.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gevva*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

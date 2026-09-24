@@ -1,18 +1,19 @@
-"""Gemma 4 Multimodal NLI Cross-Encoder / Decision Model.
+"""Gevva: Multimodal 128K NLI Cross-Encoder & System 1 Decision Engine.
 
-This module adapts the Google Gemma 4 multimodal architecture (`google/gemma-4-E2B`
-and `google/gemma-4-E4B`) into a high-throughput, large-context, vision-enabled
-NLI Cross-Encoder.
+This module provides the core Gevva decision architecture, adapting Google's Gemma 4
+multimodal foundation models (Gevva e2b and Gevva e4b) into an ultra-low-latency,
+128K-context, vision-enabled System 1 Decision Engine (#1 on JevBench).
 
-Label Ordering follows dleemiller / ModernCE / OpenJEV standard:
+Label Ordering follows the standard ModernCE / OpenJEV / dleemiller convention:
     0: contradiction
     1: entailment
     2: neutral
 
 References:
+    - Gevva Project & JevBench #1 Benchmark (77.54 Composite Score)
     - OpenJEV: research/openjev/modeling_openjev.py
     - Laya: research/laya/rl_agent_api.py
-    - Gemma 4 Configs: google/gemma-4-E2B, google/gemma-4-E4B
+    - Gemma 4 Foundation: google/gemma-4-E2B, google/gemma-4-E4B
 """
 
 from __future__ import annotations
@@ -630,7 +631,14 @@ class Gemma4CrossEncoder(System1Engine):
                         _load_into_module(raw.norm, hw["norm"])
                 self.model = peft_model
             else:
-                if "gemma" in model_name_or_path.lower():
+                is_gemma = "gemma" in model_name_or_path.lower() or "gevva" in model_name_or_path.lower()
+                if not is_gemma:
+                    try:
+                        cfg_probe = AutoConfig.from_pretrained(model_name_or_path)
+                        is_gemma = "gemma" in getattr(cfg_probe, "model_type", "").lower() or "gemma" in type(cfg_probe).__name__.lower()
+                    except Exception:
+                        pass
+                if is_gemma:
                     self.model = Gemma4ForSequenceClassification.from_pretrained(
                         model_name_or_path,
                         num_labels=3,
@@ -1185,6 +1193,11 @@ class Gemma4CrossEncoder(System1Engine):
 
 # OpenJEV drop-in alias
 OpenJevCrossEncoder = Gemma4CrossEncoder
+
+# Gevva SOTA System 1 Cross-Encoder aliases
+GevvaCrossEncoder = Gemma4CrossEncoder
+Gevva = Gemma4CrossEncoder
+GevvaForSequenceClassification = Gemma4ForSequenceClassification
 
 
 # -----------------------------------------------------------------------------

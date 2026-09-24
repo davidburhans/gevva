@@ -1,6 +1,6 @@
-# Resources & Foundation References: Multimodal 128K NLI Cross-Encoder
+# Resources & Foundation References: Gevva System 1 Decision Engine
 
-A comprehensive registry of foundational architectures, external models, training datasets, and reference implementations informing this project.
+A comprehensive registry of foundational architectures, external models, training datasets, and reference implementations informing **Gevva**.
 
 ---
 

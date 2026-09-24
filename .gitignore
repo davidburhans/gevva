@@ -1,23 +1,61 @@
-# Heavy artifacts - never in git
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Heavy artifacts & checkpoints (never committed to git)
 data/
-# bare 'data' also matches the data symlink ('data/' matches directories only)
 data
 ckpt/
-.venv/
-__pycache__/
-*.pyc
 scratch/
-results/night_queue/
-results/tonight_chain/
-results/*.log
-results/*.pid
-results/committee_alert.json
+worktrees/
 
-# Night/chain runtime state (ephemeral; logs and pids)
+# Ephemeral runtime logs & PIDs
 results/night_queue/
 results/tonight_chain/
+results/smoke/
+results/post_stage2/
 results/*.log
 results/*.pid
 results/committee_alert.json
 results/night_queue_status.json
 results/committee_watchdog.log
+
+# Editor / OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo

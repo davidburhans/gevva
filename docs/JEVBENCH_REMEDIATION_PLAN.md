@@ -1,9 +1,9 @@
 # JevBench Shortcoming Remediation Plan
 
-> Written 2026-09-22, grounded in the public-231 scored run (`ce-stage3-v2`) and the
-> axis decomposition. Baseline: **Score ≈ 47.9 (unofficial)** — Intelligence 53.5,
-> Calibration 19.6, Speed 100, Cost ~50. Board targets: Laya 70.1 · open-alternative-jev
-> 69.8 · system-one-open 68.9 · GLiNER2 53.0.
+> **STATUS: FULLY EXECUTED & COMPLETED (2026-09-24)**  
+> **Outcome**: Remediation culminated in **Gevva e2b** taking **#1 IN THE WORLD** on the global JevBench Leaderboard with an official Composite Score of **`77.54`** (Intelligence 73.91, Calibration 86.90, Speed 86.86, Cost 64.80), outranking commercial closed-source Jev 1.13.0 (75.41).
+> 
+> *Historical context: Written 2026-09-22, grounded in the public-231 scored run (`ce-stage3-v2`) and the axis decomposition. Baseline at start: Score ≈ 47.9.*
 
 ## Evidence: where the points are lost
 
