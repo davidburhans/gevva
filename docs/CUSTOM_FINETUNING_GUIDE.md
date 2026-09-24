@@ -18,10 +18,10 @@ The fine-tuning pipeline is designed for **zero boilerplate**:
 # 1-line fine-tuning starting from base Gemma 4 E2B-it (auto-detects columns and splits 85/15)
 gevva finetune --data my_data.jsonl --out-dir ./ckpt/my_domain_gevva
 
-# Continually adapt starting from the champion Gevva e2b checkpoint
+# Continually adapt starting from the champion Gevva e2b checkpoint on HuggingFace
 gevva finetune \
     --data my_data.jsonl \
-    --base-model ckpt/gevva-e2b \
+    --base-model davidburhans/gevva-e2b \
     --out-dir ./ckpt/my_domain_finetuned \
     --full-fine-tune \
     --epochs 2
@@ -34,7 +34,7 @@ from finetune import finetune_custom_data
 results = finetune_custom_data(
     train_data="my_dataset.jsonl",
     output_dir="./ckpt/my_domain_model",
-    base_model_id="ckpt/gevva-e2b",
+    base_model_id="davidburhans/gevva-e2b",
     full_fine_tune=True,
     epochs=2,
     batch_size=4,
@@ -85,7 +85,7 @@ Verify whether LLM-generated claims are faithful to source reference documentati
 ```bash
 python finetune.py \
     --data rag_grounding.jsonl \
-    --base-model ckpt/gevva-e2b \
+    --base-model davidburhans/gevva-e2b \
     --out-dir ./ckpt/medical_rag_verifier \
     --full-fine-tune \
     --epochs 2 \
@@ -110,7 +110,7 @@ prompt,candidate_tool,class
 ```bash
 python finetune.py \
     --data tool_routing.csv \
-    --base-model ckpt/gevva-e2b \
+    --base-model davidburhans/gevva-e2b \
     --out-dir ./ckpt/agent_router \
     --epochs 3
 ```

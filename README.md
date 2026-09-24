@@ -136,8 +136,8 @@ uv sync
 ```python
 import gevva
 
-# Loads the champion Gevva e2b model directly into VRAM (or CPU)
-model = gevva.load("ckpt/gevva-e2b", device="auto")
+# Loads champion Gevva e2b directly from HuggingFace (or cached locally)
+model = gevva.load("davidburhans/gevva-e2b", device="auto")
 
 # Predict semantic relationship
 probs = model.predict([
@@ -155,7 +155,7 @@ Rerank search results, multi-choice candidates, or retrieval passages:
 ```python
 import gevva
 
-model = gevva.load("ckpt/gevva-e2b")
+model = gevva.load("davidburhans/gevva-e2b")
 
 query = "Which gas do plants primarily absorb from the atmosphere during photosynthesis?"
 candidates = [
@@ -177,7 +177,7 @@ Evaluate an LLM's response against a reference answer or rubric standard:
 ```python
 import gevva
 
-model = gevva.load("ckpt/gevva-e2b")
+model = gevva.load("davidburhans/gevva-e2b")
 
 grade = model.grade(
     question="What causes the seasons to change on Earth?",
@@ -196,8 +196,8 @@ Existing code using `openjev` works without any refactoring:
 ```python
 from gevva import OpenJevCrossEncoder, LatentMLPHead
 
-# Drop-in replacement for OpenJEV
-jev = OpenJevCrossEncoder("ckpt/gevva-e2b")
+# Drop-in replacement for OpenJEV (loads from Hugging Face or local path)
+jev = OpenJevCrossEncoder("davidburhans/gevva-e2b")
 
 # Standard OpenJEV rerank call
 best_idx = jev.rerank("What is the capital of Japan?", ["Kyoto", "Tokyo", "Osaka"])
@@ -205,7 +205,7 @@ assert best_idx == 1  # Standard int indexing works out of the box!
 
 # Extract pooled latent vectors for downstream probe heads:
 latents = jev.latents([("Evidence document...", "Hypothesis statement...")])
-print("Latents shape:", latents.shape)  # (1, 2048)
+print("Latents shape:", latents.shape)  # (1, 1536)
 ```
 
 ---
@@ -260,7 +260,7 @@ probs = model.predict([(image, claim)])
 
 | Model | Checkpoint | Backbone Architecture | Parameters | Context | JevBench Score | Latency ($p_{50}$) | Primary Application |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Gevva e2b`** | [`ckpt/gevva-e2b`](ckpt/gevva-e2b) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`76.95`** (#1 Global) | **16.5 ms** (147 ms CPU) | Real-time production serving, edge & mobile |
+| **`Gevva e2b`** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | `google/gemma-4-E2B-it` | 2.3B | 128K | **`76.95`** (#1 Global) | **16.5 ms** (147 ms CPU) | Real-time production serving, edge & mobile |
 | **`Gevva e2b (W4A16)`** | `ckpt/gevva-e2b-w4a16` | Merged INT4 Group-32 | 2.3B | 128K | **`76.80`** | **14.3 ms** | Ultra-low VRAM (<5.2 GB), maximum throughput |
 | **`Gevva e4b`** | *In Staging* | `google/gemma-4-E4B-it` | 4.5B | 128K | *Targeting 80+* | ~28.0 ms | Complex legal/medical reasoning & deep documents |
 
@@ -274,10 +274,10 @@ Adapt Gevva to your proprietary domain with **zero boilerplate**:
 # 1-line command with automatic column mapping and stratified train/val split:
 gevva finetune --data my_domain_data.jsonl --out-dir ./ckpt/my_domain_gevva
 
-# Or run via Python runner with Full Fine-Tuning:
+# Or run via Python runner with Full Fine-Tuning from HuggingFace weights:
 python finetune.py \
     --data enterprise_cases.jsonl \
-    --base-model ckpt/gevva-e2b \
+    --base-model davidburhans/gevva-e2b \
     --out-dir ./ckpt/enterprise_gevva \
     --full-fine-tune \
     --epochs 2
@@ -313,15 +313,13 @@ Gevva includes a comprehensive CLI:
 # Check version and hardware capabilities
 gevva version
 
-# Evaluate premise-hypothesis pair
+# Evaluate premise-hypothesis pair (automatically loads davidburhans/gevva-e2b)
 gevva predict \
-    --model ckpt/gevva-e2b \
-    --premise "Company revenue was $4.2B in 2025." \
-    --hypothesis "Revenue exceeded four billion dollars."
+    --premise 'Company revenue was $4.2B in 2025.' \
+    --hypothesis 'Revenue exceeded four billion dollars.'
 
 # Rerank multiple choices
 gevva rerank \
-    --model ckpt/gevva-e2b \
     --query "Select the correct protocol for encrypted web traffic:" \
     --options "HTTP" "HTTPS" "FTP" "Telnet"
 

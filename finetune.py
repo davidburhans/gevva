@@ -18,7 +18,7 @@ Features:
     * Neutral (2): "neutral", "unverifiable", "unknown", "not_enough_info", "nei", "2"
 - Auto-splits train / validation (stratified) if separate validation file is not provided.
 - Continual Fine-Tuning: Can start from raw base (`google/gemma-4-E2B-it`) OR continue
-  from pre-trained Gevva checkpoints (`ckpt/gevva-e2b`).
+  from pre-trained Gevva checkpoints (`davidburhans/gevva-e2b` or local directory).
 - Full Fine-Tuning (`--full-fine-tune`) and LoRA adapter modes.
 - CLI and Python API (`finetune_custom_data(...)`).
 
@@ -26,8 +26,8 @@ Usage:
     # Fine-tune starting from base model
     python finetune.py --data my_data.jsonl --out-dir ./my_model
 
-    # Continually fine-tune starting from Gevva e2b champion
-    python finetune.py --data my_data.csv --base-model ckpt/gevva-e2b --full-fine-tune --epochs 2
+    # Continually fine-tune starting from Gevva e2b champion on HuggingFace
+    python finetune.py --data my_data.csv --base-model davidburhans/gevva-e2b --full-fine-tune --epochs 2
 
     # Python API
     from finetune import finetune_custom_data

@@ -65,21 +65,32 @@ __all__ = [
     "DEFAULT_NLI_TEMPLATE",
     "apply_quantization_aware_training",
     "load",
+    "DEFAULT_MODEL_ID",
     "__version__",
 ]
 
 
-def load(model_name_or_path: str = "ckpt/gevva-e2b", device: str = "auto", **kwargs) -> GevvaCrossEncoder:
+DEFAULT_MODEL_ID = "davidburhans/gevva-e2b"
+
+
+def load(model_name_or_path: str = DEFAULT_MODEL_ID, device: str = "auto", **kwargs) -> GevvaCrossEncoder:
     """Load a pre-trained or fine-tuned Gevva Cross-Encoder model.
 
     Args:
-        model_name_or_path: Path to checkpoint directory or HuggingFace repo (default: 'ckpt/gevva-e2b')
+        model_name_or_path: Path to local checkpoint directory or HuggingFace repo ID
+            (default: 'davidburhans/gevva-e2b'). If the default repo is requested and a local
+            'ckpt/gevva-e2b' directory exists, the local checkpoint is utilized.
         device: 'cuda', 'cpu', or 'auto' (default: 'auto')
         **kwargs: Additional arguments passed to GevvaCrossEncoder
 
     Returns:
         GevvaCrossEncoder instance ready for inference
     """
+    import os
+    if model_name_or_path == DEFAULT_MODEL_ID and not os.path.exists(DEFAULT_MODEL_ID):
+        if os.path.isdir("ckpt/gevva-e2b"):
+            model_name_or_path = "ckpt/gevva-e2b"
+
     if device == "auto":
         import torch
         device = "cuda" if torch.cuda.is_available() else "cpu"

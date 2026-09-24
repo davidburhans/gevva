@@ -458,6 +458,14 @@ class GradeResult(str):
     def label(self) -> str:
         return str(self)
 
+    @property
+    def is_correct(self) -> bool:
+        return str(self) == "entailment"
+
+    @property
+    def score(self) -> float:
+        return float(self.probabilities.get(str(self), 0.0))
+
 
 # -----------------------------------------------------------------------------
 # High-Level Cross-Encoder Interface
@@ -486,6 +494,9 @@ class Gemma4CrossEncoder(System1Engine):
         **kwargs,
     ):
         model_name_or_path = model_name_or_path or path
+        if model_name_or_path == "davidburhans/gevva-e2b" and not os.path.exists("davidburhans/gevva-e2b"):
+            if os.path.isdir("ckpt/gevva-e2b"):
+                model_name_or_path = "ckpt/gevva-e2b"
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.max_length = max_len if max_len is not None else max_length
@@ -663,9 +674,20 @@ class Gemma4CrossEncoder(System1Engine):
         # Load post-hoc validation temperature calibration if present
         # Attribution: Post-hoc temperature calibration inspired by sabeel111/OpenSourceJev (MIT License)
         self.calibrated_temperature = 1.0
-        if model_name_or_path and os.path.exists(model_name_or_path):
-            calib_file = os.path.join(model_name_or_path, "calibration.json")
-            if os.path.exists(calib_file):
+        if model_name_or_path:
+            calib_file = None
+            if os.path.isdir(model_name_or_path):
+                candidate = os.path.join(model_name_or_path, "calibration.json")
+                if os.path.exists(candidate):
+                    calib_file = candidate
+            else:
+                try:
+                    from huggingface_hub import hf_hub_download
+                    calib_file = hf_hub_download(repo_id=model_name_or_path, filename="calibration.json")
+                except Exception:
+                    calib_file = None
+
+            if calib_file and os.path.exists(calib_file):
                 try:
                     with open(calib_file, "r", encoding="utf-8") as f:
                         calib_data = json.load(f)

@@ -123,7 +123,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return subprocess.run(cmd).returncode
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gevva",
         description="Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine (#1 on JevBench)",
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # predict
     p_pred = subparsers.add_parser("predict", help="Evaluate a premise-hypothesis pair")
-    p_pred.add_argument("--model", default="ckpt/gevva-e2b", help="Model path (default: ckpt/gevva-e2b)")
+    p_pred.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
     p_pred.add_argument("--premise", required=True, help="Premise text context")
     p_pred.add_argument("--hypothesis", required=True, help="Hypothesis / claim statement")
     p_pred.add_argument("--device", default="auto", help="Compute device ('cuda', 'cpu', 'auto')")
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # rerank
     p_rerank = subparsers.add_parser("rerank", help="Rerank multiple candidate options for a query")
-    p_rerank.add_argument("--model", default="ckpt/gevva-e2b", help="Model path (default: ckpt/gevva-e2b)")
+    p_rerank.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
     p_rerank.add_argument("--query", required=True, help="Query / question text")
     p_rerank.add_argument("--options", nargs="+", required=True, help="Candidate options to rank")
     p_rerank.add_argument("--device", default="auto", help="Compute device ('cuda', 'cpu', 'auto')")
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # grade
     p_grade = subparsers.add_parser("grade", help="Grade a candidate response against a reference answer")
-    p_grade.add_argument("--model", default="ckpt/gevva-e2b", help="Model path (default: ckpt/gevva-e2b)")
+    p_grade.add_argument("--model", default="davidburhans/gevva-e2b", help="Model path or HuggingFace repo (default: davidburhans/gevva-e2b)")
     p_grade.add_argument("--question", required=True, help="Task question or prompt")
     p_grade.add_argument("--reference", required=True, help="Reference gold answer or rubric")
     p_grade.add_argument("--candidate", required=True, help="Candidate response to grade")
@@ -173,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("extra_args", nargs=argparse.REMAINDER, help="Arguments passed to the eval script")
     p_eval.set_defaults(func=cmd_eval)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):
         parser.print_help()

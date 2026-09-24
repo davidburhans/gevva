@@ -57,6 +57,27 @@ class TestGevvaSDK(unittest.TestCase):
         )
         self.assertTrue(judge.is_entailed)
 
+    def test_default_model_and_cli(self):
+        import inspect
+        import gevva
+        from gevva import cli
+
+        self.assertEqual(gevva.DEFAULT_MODEL_ID, "davidburhans/gevva-e2b")
+
+        # Verify gevva.load default argument
+        sig = inspect.signature(gevva.load)
+        self.assertEqual(sig.parameters["model_name_or_path"].default, "davidburhans/gevva-e2b")
+
+        # Verify CLI parser defaults to HuggingFace repo
+        parser = cli.build_parser()
+        pred_parser = parser._subparsers._actions[1].choices["predict"]
+        rerank_parser = parser._subparsers._actions[1].choices["rerank"]
+        grade_parser = parser._subparsers._actions[1].choices["grade"]
+
+        self.assertEqual(pred_parser.get_default("model"), "davidburhans/gevva-e2b")
+        self.assertEqual(rerank_parser.get_default("model"), "davidburhans/gevva-e2b")
+        self.assertEqual(grade_parser.get_default("model"), "davidburhans/gevva-e2b")
+
 
 if __name__ == "__main__":
     unittest.main()
