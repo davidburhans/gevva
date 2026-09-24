@@ -78,12 +78,15 @@ On the official **JevBench** global benchmark, **Gevva e2b holds the #1 rank in 
 - **Hard-Tier Calibration (ECE)**: **`0.0655`** (*with $T^* = 1.60$ post-hoc temperature calibration*)
 - **JevBench v1.2 Geometric Composite Score**: **`77.54`** (#1 Global)
 
-### 📋 Leaderboard Methodology & Disclosures
-- **Harmonic Composite (v1.4.0)**: Evaluated under JevBench v1.4's equal-weight harmonic mean composite over the 4 axes. Gevva scores **`76.95`** (leading commercial Jev 1.13.0 at 63.29 by +13.66 points).
+### 📋 Leaderboard Methodology & Transparent Disclosures
+- **Harmonic Composite (v1.4.0)**: Evaluated under JevBench v1.4's equal-weight harmonic mean composite over Intelligence, Calibration, Speed, and Cost. Gevva scores **`76.95`** (leading commercial Jev 1.13.0 at 63.29 by +13.66 points).
 - **Geometric Composite (v1.2/v1.3)**: Evaluated under the earlier 4-axis geometric mean, yielding **`77.54`** (leading Jev 1.13.0 at 75.41 by +2.13 points).
-- **Full Public Benchmark Suite (231/231 Items - 100% Evaluation)**: Evaluated across 100% of all public items in the official JevBench suite (48 easy, 72 standard, 111 hard), with zero sampling, skipping, or cherry-picking.
+- **Benchmark Scope & Split**: Evaluated across 100% of all 231 items in JevBench's official public split (48 easy, 72 standard, 111 hard) with zero sampling or cherry-picking. Submission to the maintainer's 534-item private held-out test suite is pending official verification.
 - **Calibrated Temperature**: Scores reflect the model's shipped calibration configuration ($T^* = 1.60$), optimizing probability fidelity without altering discrete choice rankings. At raw uncalibrated temperature ($T=1.00$), Gevva e2b scores **72.94** (#4 globally).
-- **Speed Axis**: JevBench applies a $\times 2 + 0.15\text{s}$ penalty to self-hosted models to simulate production network overhead. Gevva's raw hardware latency on RTX 5090 is **16.5 ms** ($p_{50}$).
+- **Hardware & Latency**: 16.5 ms represents $p_{50}$ forward latency on short sequences (~128–256 tokens) measured on an NVIDIA GeForce RTX 5090. As with all attention-based models, latency scales with sequence length (e.g. multi-page document policy items in JevBench average ~380–413 ms). On CPU, latency is 147.7 ms.
+- **Cost Axis ($0.0149 / 1k decisions)**: Calculated under standard JevBench self-hosted hardware amortization assuming continuous throughput saturation on dedicated compute. Commercial Jev's $0.0399 / 1k represents managed serverless API pricing.
+- **Context Horizon**: The underlying Gemma 4 transformer backbone natively supports 128K context via RoPE. Fine-tuning of the cross-encoder head was conducted on sequences up to 4,096 tokens; full 128K continuous haystack tuning is in active development for Phase 4.
+- **OpenJEV Latent Dimensions**: Full API signature parity (`predict`, `rerank`, `grade`, `latents`). Note that Gevva e2b outputs 1536-dimensional pooled latents (matching Gemma 4 E2B hidden state), whereas OpenJEV-2B uses 2048 dimensions.
 
 ---
 
@@ -108,9 +111,9 @@ Because Gevva operates non-autoregressively, **running Gevva on a CPU is actuall
 
 ## 🌟 Key Highlights of Gevva
 
-- **⚡ 14.3–16.5 ms Forward Latency**: Up to **38× faster** than competing System 1 models (`system-one-open` at 651 ms, commercial Jev at 236 ms).
-- **🎯 World-Class Calibration**: Expected Calibration Error (ECE) of **0.0107** on validation and **0.0655** on JevBench Hard tier. Predictions represent genuine Bayesian probabilities, not uncalibrated overconfident logits.
-- **📚 Native 128K Context Window**: Seamlessly ingests full multi-page PDFs, clinical trials, legal documents, or complete codebases without chunking artifacts.
+- **⚡ 14.3–16.5 ms Forward Latency**: Up to **38× faster** than competing System 1 models on short sequences (`system-one-open` at 651 ms, commercial Jev at 236 ms).
+- **🎯 World-Class Calibration**: Expected Calibration Error (ECE) of **0.0107** on validation and **0.0655** on JevBench Hard tier. Predictions represent rigorously calibrated empirical probabilities, eliminating overconfident logit drift.
+- **📚 128K Foundation Context Window**: Built on Gemma 4's native 128K RoPE architecture (fine-tuned up to 4K, extrapolating to long document verification).
 - **👁️ Multimodal Vision Support**: Evaluates visual inputs (charts, UI wireframes, documents) alongside text queries through Gevva's frozen SigLIP vision tower.
 - **🔄 100% Drop-In Jev & OpenJEV API Parity**: Full signature and return type compatibility with [`AlexWortega/openjev`](https://huggingface.co/AlexWortega/openjev) (`predict`, `rerank`, `grade`, `latents`, `LatentMLPHead`, `OpenJevCrossEncoder`).
 - **🛠️ 1-Line Turnkey Fine-Tuning**: Auto-detects data formats (`.jsonl`, `.csv`, `.tsv`, `.parquet`), normalizes label schemas, automatically maps columns, and runs stratified splitting with optional 4-bit QAT or Full Fine-Tuning.

@@ -77,11 +77,13 @@ Rather than generating text autoregressively (**500–3,000 ms latency**), **Gev
 
 $$\text{State} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neutral (2)}\}$$
 
-On the official **JevBench** global benchmark, **Gevva e2b achieved #1 in the world across both the latest v1.4.0 release (`76.95` harmonic) and v1.2/v1.3 (`77.54` geometric)**, outperforming commercial proprietary APIs (Jev 1.13.0 at 63.29) and leading open models.
+On the official **JevBench** public benchmark suite (231/231 problems), **Gevva e2b achieved #1 in the world across both the latest v1.4.0 release (`76.95` harmonic) and v1.2/v1.3 (`77.54` geometric)**, outperforming commercial proprietary APIs (Jev 1.13.0 at 63.29) and leading open models.
 
 ---
 
 ## 🏆 Benchmark Leaderboard (JevBench v1.4.0)
+
+*Scored via the v1.4 equal-weight harmonic mean composite over Intelligence, Calibration, Speed, and Cost on the complete official public split (231/231 items; private 534-item held-out submission pending):*
 
 | Rank | Model | Architecture | JevBench v1.4 Score | Intelligence | Calibration | Speed ($p_{50}$) | Cost / 1k | Open Source? |
 | :---: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -92,21 +94,27 @@ On the official **JevBench** global benchmark, **Gevva e2b achieved #1 in the wo
 | #5 | Winnow-12B Q8 | Mistral NeMo 12B | 55.58 | 48.30 | 64.81 | 142.0 ms | $0.0310 | Yes |
 | #6 | reflex 4B | Qwen 2.5 4B | 53.99 | 45.20 | 68.10 | 58.0 ms | $0.0220 | Yes |
 
+> **Leaderboard Notes**:
+> - **Calibration**: Evaluated with optimal validation temperature scaling ($T^* = 1.60$) pre-configured in `calibration.json`. At raw temperature ($T=1.00$), Gevva e2b scores **72.94** (#4 globally).
+> - **Latency**: 16.5 ms reflects $p_{50}$ on short sequences (~128–256 tokens) on RTX 5090 (and 147.7 ms on CPU). Long multi-page policy verification scales with sequence length (~380–413 ms).
+> - **Cost**: Amortized self-hosted dedicated compute under continuous saturation.
+> - **Latent Dimension**: Gevva e2b outputs 1536-dimensional pooled latents matching Gemma 4 E2B hidden state.
+
 ---
 
 ## 🌟 Key Capabilities
 
 1. **⚡ 16.5 ms Forward Latency**:
-   - Single forward evaluation in ~16.5 ms ($p_{50}$) on NVIDIA RTX 5090 (and ~14.3 ms in quantized INT4 W4A16).
+   - Single forward evaluation in ~16.5 ms ($p_{50}$) on short sequences on NVIDIA RTX 5090 (and ~14.3 ms in quantized INT4 W4A16; 147 ms on commodity CPUs).
    - High-throughput batch serving (>70 decisions/sec).
-2. **📚 Native 128K Context Window**:
-   - Ingests full multi-page PDFs, legal filings, and clinical transcripts without chunking or boundary loss.
+2. **📚 128K Foundation Context Window**:
+   - Built on Gemma 4's native 128K RoPE architecture (fine-tuned up to 4K, supporting long document verification).
 3. **👁️ Multimodal Vision-Language Entailment**:
    - Analyzes images (charts, UI screenshots, diagrammatic PDFs) alongside text claims through Gemma 4's SigLIP vision tower.
 4. **🎯 Superior Calibration**:
    - Hard-tier Expected Calibration Error (ECE) of **0.0655** with temperature scaling ($T^* = 1.60$).
 5. **🔄 100% Drop-In Jev & OpenJEV API Parity**:
-   - Directly replaces `AlexWortega/openjev` with full signature compatibility.
+   - Directly replaces `AlexWortega/openjev` methods (`predict`, `rerank`, `grade`, `latents`) with full signature compatibility.
 
 ---
 
