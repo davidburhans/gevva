@@ -1149,13 +1149,17 @@ def finetune_custom_data(
     use_pin = (device != "cpu" and torch.cuda.is_available())
 
     def _token_lengths(records):
-        """Tokenizer-accurate capped lengths; the chars//4 heuristic undercounts
-        dense synthetic text 2-4x and broke the token budget (stage-3 OOM, 2026-09-21)."""
+        """Tokenizer-accurate capped lengths; includes soft vision tokens (270) to prevent
+        multimodal batch token explosion and CUDA OOM (audit P3)."""
         premises = [str(r.get("premise", "")) for r in records]
         hypotheses = [str(r.get("hypothesis", "")) for r in records]
         n_p = [len(x) for x in tokenizer(premises, add_special_tokens=False)["input_ids"]]
         n_h = [len(x) for x in tokenizer(hypotheses, add_special_tokens=False)["input_ids"]]
-        return [min(max_length, 32 + p + h) for p, h in zip(n_p, n_h)]
+        v_lens = [
+            270 if (r.get("image") and (os.path.exists(r["image"]) or os.path.exists(os.path.join(image_root, r["image"])))) else 0
+            for r in records
+        ]
+        return [min(max_length, 32 + p + h + v) for p, h, v in zip(n_p, n_h, v_lens)]
 
     if use_token_bucketing:
         train_lengths = _token_lengths(train_records)
@@ -1311,7 +1315,7 @@ def finetune_custom_data(
                 if grouped_terms:
                     total_loss = sum(grouped_terms) + nli_aux_weight * ce_loss
                 else:
-                    total_loss = ce_loss
+                    total_loss = (nli_aux_weight if has_groups else 1.0) * ce_loss
 
                 if brier_weight > 0.0:
                     probs = torch.softmax(outputs.logits, dim=-1)

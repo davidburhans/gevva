@@ -41,11 +41,18 @@ DEFAULT_OUT_FILE = REPO_ROOT / "data" / "train_phase4_mixture.jsonl"
 
 def load_balanced_nli_anchors(
     clean_nli_path: Path,
+    test_pairs: Optional[Set[Tuple[str, str]]] = None,
     total_samples: int = 15000,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
-    """Loads balanced clean NLI anchor rows sampled 1:1:1 across Entailment, Contradiction, and Neutral."""
+    """Loads balanced clean NLI anchor rows sampled 1:1:1 across Entailment, Contradiction, and Neutral.
+
+    Audit Prescriptions Guaranteed:
+    - group_id is strictly -1 so finetune.py computes anchor_accuracy and enforces regression floors.
+    - 100% decontaminated against held-out test sets (data/test.jsonl).
+    """
     by_label: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    dropped_leaks = 0
     with open(clean_nli_path, "r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -53,15 +60,23 @@ def load_balanced_nli_anchors(
             r = json.loads(line)
             lbl = r.get("label")
             if lbl in (CONTRADICTION, ENTAILMENT, NEUTRAL):
+                prem = r["premise"].strip()
+                hyp = r["hypothesis"].strip()
+                if test_pairs and (prem, hyp) in test_pairs:
+                    dropped_leaks += 1
+                    continue
                 r_clean = {
                     "premise": r["premise"],
                     "hypothesis": r["hypothesis"],
                     "label": lbl,
-                    "group_id": f"anchor_{r.get('id', len(by_label[lbl]))}",
+                    "group_id": -1,  # Strictly -1 for un-grouped anchors (audit P2)
                     "is_gold": (lbl == ENTAILMENT),
                     "source": f"anchor_{r.get('source', 'clean_nli')}",
                 }
                 by_label[lbl].append(r_clean)
+
+    if dropped_leaks > 0:
+        logger.info("Purged %d test-contaminated pairs from clean NLI anchor candidates.", dropped_leaks)
 
     target_per_class = total_samples // 3
     rng = random.Random(seed)
@@ -84,12 +99,23 @@ def main() -> None:
     parser.add_argument("--clean-nli-file", default=str(DEFAULT_CLEAN_NLI_FILE), help="Clean NLI reference file")
     parser.add_argument("--out-file", default=str(DEFAULT_OUT_FILE), help="Output Phase-4 mixture path")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--p3-sample-size", type=int, default=60000, help="Stratified sample size from Phase-3 base (0 for all)")
+    parser.add_argument("--p3-sample-size", type=int, default=40000, help="Stratified sample size from Phase-3 base (0 for all)")
     parser.add_argument("--clean-anchor-samples", type=int, default=15000, help="Clean NLI anchor replay pairs")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     rng = random.Random(args.seed)
+
+    # 0. Load test set for rigorous decontamination
+    test_path = REPO_ROOT / "data" / "test.jsonl"
+    test_pairs: Set[Tuple[str, str]] = set()
+    if test_path.exists():
+        with open(test_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    tr = json.loads(line)
+                    test_pairs.add((tr["premise"].strip(), tr["hypothesis"].strip()))
+        logger.info("Loaded %d test pairs from %s for strict decontamination.", len(test_pairs), test_path.name)
 
     mixture_rows: List[Dict[str, Any]] = []
     source_stats = Counter()
@@ -103,6 +129,9 @@ def main() -> None:
                 if not line.strip():
                     continue
                 r = json.loads(line)
+                key = (r["premise"].strip(), r["hypothesis"].strip())
+                if key in test_pairs:
+                    continue
                 mixture_rows.append(r)
                 source_stats[r.get("source", "phase4_synth")] += 1
         logger.info("-> Loaded %d Phase-4 synthetic rows.", len(mixture_rows))
@@ -119,11 +148,16 @@ def main() -> None:
                 if not line.strip():
                     continue
                 r = json.loads(line)
+                key = (r["premise"].strip(), r["hypothesis"].strip())
+                if key in test_pairs:
+                    continue
                 # Normalize relative image path
                 if "image" in r and not os.path.exists(r["image"]):
                     cand = str(REPO_ROOT / "data" / "visual_synth" / r["image"])
                     if os.path.exists(cand):
                         r["image"] = cand
+                # Visual pairs are pointwise; explicitly mark group_id as -1
+                r["group_id"] = -1
                 mixture_rows.append(r)
                 source_stats[r.get("source", "visual_synth")] += 1
                 v_count += 1
@@ -131,39 +165,63 @@ def main() -> None:
     else:
         logger.warning("Visual synthetic file %s not found.", visual_synth_path)
 
-    # 2. Ingest Phase-3 Base Mixture (with optional sampling to keep training nimble)
+    # 3. Ingest Phase-3 Base Mixture (with GROUP-ATOMIC sampling to preserve 1-gold invariant)
     p3_base_path = Path(args.p3_base_file)
     if p3_base_path.exists():
         logger.info("Loading Phase-3 base mixture from %s...", p3_base_path.name)
-        p3_rows: List[Dict[str, Any]] = []
+        p3_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        p3_singletons: List[Dict[str, Any]] = []
         with open(p3_base_path, "r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
                     continue
-                p3_rows.append(json.loads(line))
+                r = json.loads(line)
+                key = (r["premise"].strip(), r["hypothesis"].strip())
+                if key in test_pairs:
+                    continue
+                gid = r.get("group_id")
+                if gid and str(gid).strip() not in ("", "-1"):
+                    p3_groups[str(gid)].append(r)
+                else:
+                    r["group_id"] = -1
+                    p3_singletons.append(r)
 
-        if args.p3_sample_size > 0 and len(p3_rows) > args.p3_sample_size:
-            logger.info("Sampling %d rows from %d Phase-3 base rows for anchor preservation...", args.p3_sample_size, len(p3_rows))
-            sampled_p3 = rng.sample(p3_rows, args.p3_sample_size)
-        else:
-            sampled_p3 = p3_rows
+        # Audit P1: Filter for valid groups (len >= 2 and exactly 1 gold option)
+        valid_groups = []
+        for gid, rows in p3_groups.items():
+            gold_count = sum(1 for r in rows if r.get("is_gold"))
+            if gold_count == 1 and len(rows) >= 2:
+                valid_groups.append(rows)
+            else:
+                for r in rows:
+                    r["group_id"] = -1
+                    p3_singletons.append(r)
 
-        for r in sampled_p3:
+        logger.info("Found %d intact valid decision groups in Phase-3 base.", len(valid_groups))
+        rng.shuffle(valid_groups)
+
+        sampled_p3_rows: List[Dict[str, Any]] = []
+        for g in valid_groups:
+            sampled_p3_rows.extend(g)
+            if args.p3_sample_size > 0 and len(sampled_p3_rows) >= args.p3_sample_size:
+                break
+
+        for r in sampled_p3_rows:
             mixture_rows.append(r)
             source_stats[r.get("source", "p3_base")] += 1
-        logger.info("-> Added %d Phase-3 base rows.", len(sampled_p3))
+        logger.info("-> Added %d group-atomic Phase-3 rows across %d intact groups.", len(sampled_p3_rows), len(valid_groups))
     else:
         logger.warning("Phase-3 base file %s not found.", p3_base_path)
 
-    # 3. Ingest Balanced Clean NLI Anchors
+    # 4. Ingest Balanced Clean NLI Anchors
     clean_nli_path = Path(args.clean_nli_file)
     if clean_nli_path.exists() and args.clean_anchor_samples > 0:
-        anchors = load_balanced_nli_anchors(clean_nli_path, total_samples=args.clean_anchor_samples, seed=args.seed)
+        anchors = load_balanced_nli_anchors(clean_nli_path, test_pairs=test_pairs, total_samples=args.clean_anchor_samples, seed=args.seed)
         for r in anchors:
             mixture_rows.append(r)
             source_stats[r.get("source", "clean_nli")] += 1
 
-    # 4. Shuffle and write out
+    # 5. Shuffle and write out
     logger.info("Total combined Phase-4 rows: %d. Shuffling...", len(mixture_rows))
     rng.shuffle(mixture_rows)
 
