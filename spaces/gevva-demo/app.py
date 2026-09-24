@@ -18,6 +18,20 @@ except Exception:
         return decorator
 
 import gradio as gr
+import gradio_client.utils as client_utils
+
+# Patch gradio_client bug where boolean additionalProperties causes TypeError in Pydantic 2.11+
+_orig_json_schema_to_python_type = client_utils._json_schema_to_python_type
+
+
+def _safe_json_schema_to_python_type(schema, defs=None):
+    if isinstance(schema, bool):
+        return "Any"
+    return _orig_json_schema_to_python_type(schema, defs)
+
+
+client_utils._json_schema_to_python_type = _safe_json_schema_to_python_type
+
 from PIL import Image
 import torch
 
@@ -352,4 +366,4 @@ Unlike autoregressive LLMs (which take 500–3,000 ms to generate tokens step-by
 """)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(show_api=False, ssr=False)
