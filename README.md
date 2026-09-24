@@ -375,6 +375,19 @@ gevva eval --suite jevbench
 - **GLM 5.3 Flash** — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)
 - **Gevva Contributors**
 
+### 🙏 Model & Quant Provider Acknowledgments
+
+The synthetic decision curriculum and multi-judge validation committee were powered by high-throughput local inference via `llama-server` (port 8080). We gratefully acknowledge and credit:
+- **Foundation Models**:
+  - **Qwen 3.6 27B** (`Qwen/Qwen3.6-27B-MTP`) & **Qwen 3.8 Flash Next** (`Qwen/Qwen3.8-Flash-Next` MoE) by the **Qwen Team / Alibaba Cloud**.
+  - **DeepSeek V4 Flash** (`deepseek-ai/DeepSeek-V4-Flash`) by **DeepSeek AI**.
+  - **Gemma 4 31B** (`google/gemma-4-31B-it`) by **Google DeepMind**.
+- **Quantization & GGUF Creators**:
+  - **Unsloth AI** ([@unsloth](https://huggingface.co/unsloth)): `unsloth/Qwen3.6-27B-MTP-GGUF` (`Qwen3.6-27B-UD-Q4_K_XL.gguf` with draft MTP) and `unsloth/Qwen3.8-Flash-Next-GGUF` (`UD-IQ4_XS`).
+  - **ISTA-DASLab** ([@ISTA-DASLab](https://huggingface.co/ISTA-DASLab)): `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` (`IQ3_XXS` via Generalized Second-Order Quantization & Residual Compensation Optimization).
+  - **Bullerwins** ([@bullerwins](https://huggingface.co/bullerwins)): `bullerwins/DeepSeek-V4-Flash-0731-GGUF` (`DSPARK`, `Q8_0`).
+  - **Google**: `google/gemma-4-31B-it-qat-q4_0-gguf`.
+
 ---
 
 ## 📄 License & Attribution

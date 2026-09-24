@@ -231,6 +231,12 @@ $$\mathcal{L} = \mathcal{L}_{\text{served\_dist}} + 0.5 \mathcal{L}_{\text{cross
 - **GLM 5.3 Flash** — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)
 - **Gevva Contributors**
 
+### 🙏 Model & Quant Provider Acknowledgments
+
+The synthetic data generation and multi-judge validation committee were powered by local high-throughput serving on `llama-server` (port 8080). We gratefully acknowledge and credit:
+- **Foundation Models**: **Qwen 3.6 27B** & **Qwen 3.8 Flash Next** by the **Qwen Team / Alibaba Cloud**; **DeepSeek V4 Flash** by **DeepSeek AI**; **Gemma 4 31B** by **Google DeepMind**.
+- **Quantization & GGUF Creators**: **Unsloth AI** ([@unsloth](https://huggingface.co/unsloth): `unsloth/Qwen3.6-27B-MTP-GGUF` UD-Q4_K_XL, `unsloth/Qwen3.8-Flash-Next-GGUF` UD-IQ4_XS), **ISTA-DASLab** ([@ISTA-DASLab](https://huggingface.co/ISTA-DASLab): `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF` IQ3_XXS), **Bullerwins** ([@bullerwins](https://huggingface.co/bullerwins): `bullerwins/DeepSeek-V4-Flash-0731-GGUF`), and **Google**.
+
 ---
 
 ## 📄 License & Terms
