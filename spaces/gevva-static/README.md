@@ -19,6 +19,7 @@ datasets:
 Official interactive hub for **Gevva**, the state-of-the-art multimodal 128K System 1 decision engine (#1 on JevBench).
 
 - **Global JevBench Rank**: **#1 Worldwide (77.54 Composite Score)**
+- **Interactive Cloud GPU**: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb) (Run in Google Colab on free NVIDIA GPU)
 - **Models**:
   - Flagship: [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b)
   - Multimodal: [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal)

@@ -59,6 +59,8 @@ model-index:
 # ⚡ Gevva e2b: SOTA Multimodal 128K System 1 Decision Engine
 
 <p align="center">
+  <a href="https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
+  <a href="https://pypi.org/project/gevva/"><img src="https://img.shields.io/pypi/v/gevva.svg?logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://huggingface.co/google/gemma-4-E2B-it"><img src="https://img.shields.io/badge/Base_Model-Gemma--4--E2B--it-blue.svg" alt="Base Model"></a>
   <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/JevBench%20v1.4-%231%20Global%20(76.95)-gold.svg" alt="JevBench #1"></a>
   <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/Context_Window-128K_(131%2C072_tokens)-purple.svg" alt="Context Window"></a>

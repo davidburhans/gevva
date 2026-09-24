@@ -14,14 +14,18 @@
 ### *Ultra-fast, non-autoregressive categorical decisions, verification & candidate ranking in 14–16 ms.*
 **#1 Global Rank on JevBench (76.95 Harmonic / 77.54 Geometric)**
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb)
+[![PyPI version](https://img.shields.io/pypi/v/gevva.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/gevva/)
+[![Hugging Face Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-yellow.svg?style=for-the-badge)](https://huggingface.co/davidburhans/gevva-e2b)
+[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Space%20Demo-blue.svg?style=for-the-badge)](https://huggingface.co/spaces/davidburhans/gevva-demo)
+
 [![Leaderboard](https://img.shields.io/badge/JevBench%20v1.4-%231%20Global%20(76.95%20Harmonic)-gold.svg?style=for-the-badge)](results/jevbench_public_gevva_e2b_summary.json)
 [![Latency](https://img.shields.io/badge/Latency%20(GPU)-14.3--16.5%20ms-blue.svg?style=for-the-badge)](results/benchmark_comparison_100.json)
 [![CPU Latency](https://img.shields.io/badge/Latency%20(CPU)-147%20ms%20(No%20GPU!)-teal.svg?style=for-the-badge)](scratch/benchmark_cpu.py)
 [![Context](https://img.shields.io/badge/Context%20Window-128K%20Tokens-purple.svg?style=for-the-badge)](https://github.com/davidburhans/gevva)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg?style=for-the-badge)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-informational.svg?style=for-the-badge)](pyproject.toml)
 
-[The Paradigm](#-the-system-1-paradigm) • [Leaderboard](#-official-jevbench-leaderboard) • [CPU Performance](#-cpu-performance-no-gpu-required) • [Quickstart](#-quickstart) • [Use Cases](#-primary-use-cases) • [Model Zoo](#-model-zoo) • [Fine-Tuning](#-custom-data-fine-tuning) • [Citation](#-citation)
+[The Paradigm](#-the-system-1-paradigm) • [Leaderboard](#-official-jevbench-leaderboard) • [Try in Colab (Free GPU)](#-interactive-cloud-gpu-quickstart) • [Quickstart](#-quickstart) • [Model Zoo](#-the-gevva-model-family) • [Fine-Tuning](#-custom-data-fine-tuning) • [Citation](#-citation)
 
 ---
 
@@ -122,16 +126,28 @@ Because Gevva operates non-autoregressively, **running Gevva on a CPU is actuall
 
 ## 🚀 Quickstart
 
+### ⚡ Interactive Cloud GPU Quickstart (No Setup Required)
+
+Want to test Gevva immediately on a free cloud GPU without installing anything on your machine?
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb)
+
+Click the badge above to open the **[Gevva Quickstart Notebook](notebooks/gevva_quickstart.ipynb)** directly in **Google Colab** on a free NVIDIA cloud GPU instance. The notebook includes runnable examples for:
+1. `pip install gevva` in 10 seconds
+2. Single-pass text System 1 prediction (~14–16 ms)
+3. Multimodal visual entailment against financial charts & tables
+4. Zero-shot tool & intent routing
+5. Automated answer rubric grading
+
 ### Installation
 
 ```bash
-# Install directly from GitHub
-git clone https://github.com/davidburhans/gevva.git
-cd gevva
-pip install -e .
+# Install official SDK & CLI from PyPI
+pip install gevva
 
-# Or using uv (recommended for speed)
-uv sync
+# Or install from source
+git clone https://github.com/davidburhans/gevva.git
+cd gevva && pip install -e .
 ```
 
 ### 1. Basic 3-Class NLI Prediction
