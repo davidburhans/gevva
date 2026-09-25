@@ -148,40 +148,65 @@ def export_model_w4a16(
     print(f"Preserve MQA:     {preserve_mqa}")
     print(f"Device:           {device}")
 
-    # 1. Load Base Model and LoRA Adapter
-    print("\n1. Loading base architecture & LoRA weights...")
-    config = AutoConfig.from_pretrained(base_model_id)
-    config.num_labels = 3
-    base_model = Gemma4ForSequenceClassification.from_pretrained(
-        base_model_id,
-        config=config,
-        torch_dtype=torch.bfloat16,
-    )
+    # 1. Load Model (either Full Fine-Tuned Checkpoint or Base + LoRA)
+    has_lora = os.path.exists(os.path.join(adapter_path, "adapter_config.json"))
+    if has_lora:
+        print("\n1. Loading base architecture & LoRA weights...")
+        config = AutoConfig.from_pretrained(base_model_id)
+        config.num_labels = 3
+        base_model = Gemma4ForSequenceClassification.from_pretrained(
+            base_model_id,
+            config=config,
+            torch_dtype=torch.bfloat16,
+        )
 
-    peft_model = PeftModel.from_pretrained(base_model, adapter_path)
+        peft_model = PeftModel.from_pretrained(base_model, adapter_path)
 
-    # Restore explicit classification head weights if available
-    head_weights_path = os.path.join(adapter_path, "head_weights.pt")
-    if os.path.exists(head_weights_path):
-        print(f"Restoring classification head from {head_weights_path}...")
-        hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
-        raw = peft_model.base_model.model if hasattr(peft_model, "base_model") else peft_model
-        if "score" in hw and hasattr(raw, "score"):
-            target_score = raw.score.modules_to_save["default"] if (hasattr(raw.score, "modules_to_save") and "default" in raw.score.modules_to_save) else raw.score
-            if "weight" in hw["score"]:
-                target_score.load_state_dict(hw["score"])
-            else:
-                raw.score.load_state_dict(hw["score"])
-        if "norm" in hw and hasattr(raw, "norm"):
-            target_norm = raw.norm.modules_to_save["default"] if (hasattr(raw.norm, "modules_to_save") and "default" in raw.norm.modules_to_save) else raw.norm
-            if "weight" in hw["norm"]:
-                target_norm.load_state_dict(hw["norm"])
-            else:
-                raw.norm.load_state_dict(hw["norm"])
+        # Restore explicit classification head weights if available
+        head_weights_path = os.path.join(adapter_path, "head_weights.pt")
+        if os.path.exists(head_weights_path):
+            print(f"Restoring classification head from {head_weights_path}...")
+            hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
+            raw = peft_model.base_model.model if hasattr(peft_model, "base_model") else peft_model
+            if "score" in hw and hasattr(raw, "score"):
+                target_score = raw.score.modules_to_save["default"] if (hasattr(raw.score, "modules_to_save") and "default" in raw.score.modules_to_save) else raw.score
+                if "weight" in hw["score"]:
+                    target_score.load_state_dict(hw["score"])
+                else:
+                    raw.score.load_state_dict(hw["score"])
+            if "norm" in hw and hasattr(raw, "norm"):
+                target_norm = raw.norm.modules_to_save["default"] if (hasattr(raw.norm, "modules_to_save") and "default" in raw.norm.modules_to_save) else raw.norm
+                if "weight" in hw["norm"]:
+                    target_norm.load_state_dict(hw["norm"])
+                else:
+                    raw.norm.load_state_dict(hw["norm"])
 
-    # 2. Merge LoRA weights into base parameters
-    print("2. Merging LoRA adapters into base model weights...")
-    merged_model = peft_model.merge_and_unload()
+        # 2. Merge LoRA weights into base parameters
+        print("2. Merging LoRA adapters into base model weights...")
+        merged_model = peft_model.merge_and_unload()
+    else:
+        print(f"\n1. Detected full fine-tuned checkpoint at {adapter_path}. Loading directly...")
+        config = AutoConfig.from_pretrained(adapter_path)
+        config.num_labels = 3
+        merged_model = Gemma4ForSequenceClassification.from_pretrained(
+            adapter_path,
+            config=config,
+            torch_dtype=torch.bfloat16,
+        )
+        head_weights_path = os.path.join(adapter_path, "head_weights.pt")
+        if os.path.exists(head_weights_path):
+            print(f"Restoring classification head from {head_weights_path}...")
+            hw = torch.load(head_weights_path, map_location="cpu", weights_only=True)
+            if "score" in hw and hasattr(merged_model, "score"):
+                if "weight" in hw["score"]:
+                    merged_model.score.load_state_dict(hw["score"])
+                else:
+                    merged_model.score.load_state_dict(hw["score"])
+            if "norm" in hw and hasattr(merged_model, "norm"):
+                if "weight" in hw["norm"]:
+                    merged_model.norm.load_state_dict(hw["norm"])
+                else:
+                    merged_model.norm.load_state_dict(hw["norm"])
 
     # Clean up any active PyTorch parametrizations to restore clean state_dict keys
     import torch.nn.utils.parametrize as parametrize
