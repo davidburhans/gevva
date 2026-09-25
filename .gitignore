@@ -42,6 +42,10 @@ ckpt/
 scratch/
 worktrees/
 research/decision_index_upstream/
+work/
+runs/
+suite/
+suite-0.2/
 
 # Ephemeral runtime logs & PIDs
 results/night_queue/
