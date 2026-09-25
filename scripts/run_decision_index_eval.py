@@ -94,7 +94,7 @@ def main():
         if scores_file.exists():
             with open(scores_file, "r") as f:
                 data = json.load(f)
-            index_val = data.get("index", {}).get("index") or data.get("index")
+            index_val = data.get("decision_index") or (data.get("index", {}).get("index") if isinstance(data.get("index"), dict) else data.get("index"))
             print(f"\n🎯 [RESULT] Gevva {m} Decision Index 0.2 Score: {index_val}")
 
     print("\nAll requested evaluations complete!")

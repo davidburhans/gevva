@@ -357,7 +357,7 @@ with gr.Blocks(title=title) as demo:
     <div class="hero-box">
         <div class="hero-title">⚡ Gevva: Instant AI Decision Engine</div>
         <div class="hero-subtitle">
-            Think of Gevva as an <strong>instant reflex engine</strong> for AI. While generative models like ChatGPT slowly type words token-by-token (taking seconds), Gevva makes <strong>split-second decisions in ~15 milliseconds</strong> (100x faster). It verifies facts, catches hallucinations, inspects charts, routes user requests, and grades answers with calibrated certainty.
+            Think of Gevva as a <strong>fast decision engine</strong> for AI. While generative models like ChatGPT slowly type words token-by-token (taking seconds), Gevva makes <strong>single-forward-pass decisions in ~15 milliseconds</strong> on modern GPUs. It verifies facts, catches hallucinations, inspects charts, routes user requests, and grades answers.
         </div>
         <div class="cards-row">
             <div class="card-item">
@@ -603,30 +603,27 @@ Psychologist Daniel Kahneman demonstrated that human thinking operates in two mo
 |         SYSTEM 1: GEVVA            |    |       SYSTEM 2: CHATGPT / CLAUDE   |
 |  - Non-autoregressive decision     |    |  - Autoregressive text generation  |
 |  - Evaluates everything in 1 pass  |    |  - Generates token-by-token        |
-|  - Latency: ~15 milliseconds       |    |  - Latency: 2,000 - 5,000 ms       |
-|  - Cost: 95% cheaper compute       |    |  - Cost: High GPU usage            |
+|  - Latency: ~15 ms (GPU)           |    |  - Latency: 2,000 - 5,000 ms       |
+|  - Fast single-pass evaluation     |    |  - High token-by-token latency     |
 |  - Use: Routing, Hallucination     |    |  - Use: Long essays, creative text |
 |         Guardrails, Fact Checking  |    |         and multi-step reasoning   |
 +------------------------------------+    +------------------------------------+
 ```
 
-Most AI agent systems waste huge amounts of time and money calling expensive System 2 models just to make simple decisions (like *"Should I refund this user?"* or *"Did the answer match the source document?"*). **Gevva solves this by acting as the AI's instant reflex.**
+Most AI agent systems waste significant time and compute calling large generative models just to make simple classification decisions (like *"Should I route to this tool?"* or *"Did the answer contradict the source document?"*). **Gevva solves this by evaluating decisions in a single forward pass.**
 
 ---
 
 ### 📊 JevBench Public Benchmark Results
 
-Evaluated locally against the open **JevBench Public Dataset** (231 evaluation tasks):
+Evaluated locally against the open **JevBench Public Dataset** (231 evaluation tasks across 18 families):
 
-| Model | Parameters | Decision Latency | Public Composite Score | Status |
-| :--- | :---: | :---: | :---: | :---: |
-| **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Open Source (Apache 2.0)** |
-| **`Gevva e4b`** | **4.5B** | **17.8 ms** | **`77.28`** | **Open Source (Apache 2.0)** |
-| OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Competitor |
-| TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | Baseline |
-| Convai Laya | 2.2B | 18.4 ms | `73.80` | Baseline |
+| Model | Parameters (Download) | Forward Latency | Public Accuracy | Public Composite Score | License |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`Gevva e2b`** | **5.1B (10.2 GB)** | **14–19 ms (RTX 5090)** | **71.43%** (47.75% Hard) | **`77.54`** | **Apache 2.0** |
+| **`Gevva e4b`** | **5.8B (15.9 GB)** | **17–22 ms (RTX 5090)** | **76.62%** (54.95% Hard) | **`77.28`** | **Apache 2.0** |
 
-> *Note: Evaluated against the open 231-item public split of JevBench. Not an official claim on the full private benchmark suite until verified.*
+> *Transparency Note: Measured locally on the 231-item open public split of JevBench. Not an official evaluation on the full private benchmark suite until evaluated by third-party maintainers.*
 
 ---
 """)
@@ -634,11 +631,11 @@ Evaluated locally against the open **JevBench Public Dataset** (231 evaluation t
             with gr.Accordion("🔬 For Machine Learning Engineers & Data Scientists (Technical Specs & SDK)", open=False):
                 gr.Markdown("""
 #### Technical Architecture
-- **Backbone Architecture**: Google Gemma 4 (`google/gemma-4-E2B-it`), 2.3B effective parameters.
-- **Vision Encoder**: Google SigLIP tower (frozen during cross-encoder classification tuning).
-- **Context Budget**: Native 128,000 token Rotary Position Embeddings (RoPE).
+- **Backbone Architecture**: Google Gemma 4 (`gemma-4-E2B-it` / `gemma-4-E4B-it`), 5.10B / 5.80B total parameters (including 262K vocabulary embedding table and SigLIP vision tower).
+- **Vision Encoder**: Google SigLIP tower (native multimodal vision input).
+- **Context Budget**: Native 128,000 token Rotary Position Embeddings (RoPE), fine-tuned on sequences up to 2,048 tokens.
 - **Pooling & Classification**: Last non-pad token pooling over backbone hidden state with linear projection head to 3 calibrated logits (0=Contradiction, 1=Entailment, 2=Neutral).
-- **Calibration**: Temperature-scaled ($T^* = 1.60$) Expected Calibration Error (ECE) compressed to **0.0655**.
+- **Calibration**: Shipped with standard default temperature $T=1.0$.
 
 #### Python SDK Usage
 Install the official package from PyPI:
@@ -650,7 +647,7 @@ Run instant predictions in Python:
 ```python
 from gevva import load
 
-# Load the champion model (runs on GPU or CPU)
+# Load model (automatically detects CUDA, MPS, or CPU)
 engine = load("davidburhans/gevva-e2b")
 
 # 1. Fact checking / Hallucination verification

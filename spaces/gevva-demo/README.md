@@ -22,7 +22,7 @@ datasets:
 Welcome to the interactive demo for **Gevva**, the open **System 1 decision engine** based on Google's Gemma 4.
 
 > **What is Gevva in Plain English?**  
-> While generative models like ChatGPT slowly type words token-by-token (taking 2 to 5 seconds), Gevva makes **instant decisions in ~15 milliseconds** (100x faster). It acts as an **AI reflex engine** that verifies facts, catches hallucinations, inspects charts, routes requests, and grades answers in the blink of an eye.
+> While generative models like ChatGPT slowly type words token-by-token (taking 2 to 5 seconds), Gevva makes **instant decisions in ~15 milliseconds** on modern GPUs. It acts as a **fast decision engine** that verifies facts, catches hallucinations, inspects charts, routes requests, and grades answers in the blink of an eye.
 
 ---
 
