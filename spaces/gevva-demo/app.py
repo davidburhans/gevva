@@ -45,6 +45,7 @@ _MODEL_CACHE: Dict[str, GevvaCrossEncoder] = {}
 MODEL_OPTIONS = [
     "davidburhans/gevva-e2b-multimodal",
     "davidburhans/gevva-e2b",
+    "davidburhans/gevva-e4b",
 ]
 
 
@@ -58,6 +59,8 @@ def load_engine(model_id: str) -> GevvaCrossEncoder:
             resolved_path = "ckpt/gevva-e2b-phase4/best"
         elif model_id == "davidburhans/gevva-e2b" and os.path.isdir("ckpt/gevva-e2b"):
             resolved_path = "ckpt/gevva-e2b"
+        elif model_id == "davidburhans/gevva-e4b" and os.path.isdir("ckpt/gevva-e4b-flagship/best"):
+            resolved_path = "ckpt/gevva-e4b-flagship/best"
 
         _MODEL_CACHE[model_id] = GevvaCrossEncoder(
             model_name_or_path=resolved_path,
@@ -310,8 +313,8 @@ with gr.Blocks(title=title) as demo:
                 <p>Verifies financial charts, supply tables, and invoices alongside text.</p>
             </div>
             <div class="card-item">
-                <h4>🏆 #1 Global Rank (77.54)</h4>
-                <p>Holds the world #1 composite score on the JevBench decision benchmark.</p>
+                <h4>🏆 77.54 on JevBench Public</h4>
+                <p>Scored 77.54 composite score on the open JevBench public evaluation suite.</p>
             </div>
         </div>
     </div>
@@ -555,17 +558,19 @@ Most AI agent systems waste huge amounts of time and money calling expensive Sys
 
 ---
 
-### 🏆 Global JevBench Leaderboard
+### 📊 JevBench Public Benchmark Results
 
-On the official **JevBench** benchmark evaluating System 1 decision-making:
+Evaluated locally against the open **JevBench Public Dataset** (231 evaluation tasks):
 
-| Global Rank | Model | Parameters | Decision Latency | Composite Score | Status |
-| :---: | :--- | :---: | :---: | :---: | :---: |
-| **🥇 #1** | **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Active World Champion** |
-| 🥈 #2 | OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Competitor |
-| 🥉 #3 | TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | Baseline |
-| #4 | Convai Laya | 2.2B | 18.4 ms | `73.80` | Baseline |
-| #5 | ModernCE Large NLI | 1.8B | 16.1 ms | `72.10` | Baseline |
+| Model | Parameters | Decision Latency | Public Composite Score | Status |
+| :--- | :---: | :---: | :---: | :---: |
+| **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Open Source (Apache 2.0)** |
+| **`Gevva e4b`** | **4.5B** | **17.8 ms** | **`77.28`** | **Open Source (Apache 2.0)** |
+| OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Competitor |
+| TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | Baseline |
+| Convai Laya | 2.2B | 18.4 ms | `73.80` | Baseline |
+
+> *Note: Evaluated against the open 231-item public split of JevBench. Not an official claim on the full private benchmark suite until verified.*
 
 ---
 """)

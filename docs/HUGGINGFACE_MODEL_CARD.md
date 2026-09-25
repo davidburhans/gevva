@@ -42,13 +42,13 @@ model-index:
   - task:
       type: natural-language-inference
     metrics:
-    - name: JevBench Composite Score
+    - name: JevBench Public Composite Score
       type: score
       value: 77.54
-    - name: JevBench Intelligence Score
+    - name: JevBench Public Intelligence Score
       type: accuracy
       value: 73.91
-    - name: JevBench Calibration Score
+    - name: JevBench Public Calibration Score
       type: expected_calibration_error
       value: 86.90
     - name: Forward Latency (P50)
@@ -63,14 +63,14 @@ model-index:
   <a href="https://pypi.org/project/gevva/"><img src="https://img.shields.io/pypi/v/gevva.svg?logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://huggingface.co/spaces/davidburhans/gevva-demo"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Space-Interactive%20Demo-blue.svg" alt="Interactive Demo"></a>
   <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/Latency-15ms%20(100x%20faster)-orange.svg" alt="Latency"></a>
-  <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/JevBench-%231%20Worldwide-gold.svg" alt="JevBench #1"></a>
+  <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/JevBench-Public%20Split%2077.54-blue.svg" alt="JevBench Public"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache--2.0-green.svg" alt="License"></a>
 </p>
 
 ---
 
 ### *15-millisecond fact checking, hallucination detection, tool routing & chart verification.*
-**100x faster than generative LLMs • Runs on laptops & cloud CPUs • Global #1 on JevBench**
+**100x faster than generative LLMs • Runs on laptops & cloud CPUs • 77.54 on JevBench Public**
 
 ---
 
@@ -199,17 +199,19 @@ You don't need an expensive datacenter GPU. Gevva was engineered to run blisteri
 
 ---
 
-## 🏆 Leaderboard & Accuracy
+## 📊 JevBench Public Benchmark Results
 
-On the official **JevBench** benchmark evaluating System 1 decision-making across hundreds of real-world scenarios:
+Evaluated locally against the open **JevBench Public Dataset** (231 evaluation tasks across 12 challenge families):
 
-| Rank | Model | Parameters | Decision Latency | Composite Score | Open Source? |
-| :---: | :--- | :---: | :---: | :---: | :---: |
-| 🥇 **#1** | **`Gevva e2b` (Ours)** | **2.3B** | **14.3 ms** | **`77.54`** | **Yes (Apache 2.0)** |
-| 🥈 #2 | OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Yes |
-| 🥉 #3 | TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | No (Closed API) |
-| #4 | Convai Laya | 2.2B | 18.4 ms | `73.80` | Proprietary |
-| #5 | ModernCE Large NLI | 1.8B | 16.1 ms | `72.10` | Yes |
+| Model | Parameters | Decision Latency | Public Composite Score | Open Source? |
+| :--- | :---: | :---: | :---: | :---: |
+| **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Yes (Apache 2.0)** |
+| **`Gevva e4b`** | **4.5B** | **17.8 ms** | **`77.28`** | **Yes (Apache 2.0)** |
+| OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Yes |
+| TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | No (Closed API) |
+| Convai Laya | 2.2B | 18.4 ms | `73.80` | Proprietary |
+
+> **Note on Benchmarking**: These scores reflect evaluation on the open 231-item public split of JevBench. They serve as transparent local reproducibility baselines prior to independent evaluation on the full private benchmark suite.
 
 ---
 
@@ -217,8 +219,9 @@ On the official **JevBench** benchmark evaluating System 1 decision-making acros
 
 | Variant | Repository | Best For |
 | :--- | :--- | :--- |
-| **Flagship (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Pure text: RAG hallucination checks, tool routing, document verification. |
-| **Multimodal (Vision Grounding)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | Text + Vision: Charts, tables, receipts, invoices, and photos. |
+| **Gevva e2b (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Pure text: RAG hallucination checks, tool routing, document verification. |
+| **Gevva e2b (Multimodal)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | Text + Vision: Charts, tables, receipts, invoices, and photos. |
+| **Gevva e4b (Deep Reasoning)** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
 
 ---
 

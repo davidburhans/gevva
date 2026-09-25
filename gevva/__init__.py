@@ -1,6 +1,6 @@
 """Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder.
 
-#1 on Global JevBench Leaderboard (77.54 Composite Score).
+77.54 Composite Score on JevBench Public Dataset.
 """
 
 from __future__ import annotations

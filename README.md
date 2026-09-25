@@ -12,7 +12,7 @@
 # Gevva: The Instant AI Decision Engine
 
 ### *15-millisecond fact checking, hallucination detection, tool routing & chart verification.*
-**100x faster than ChatGPT • Runs on standard laptops & CPUs • #1 on JevBench**
+**100x faster than ChatGPT • Runs on standard laptops & CPUs • High Accuracy on JevBench Public**
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb)
 [![PyPI version](https://img.shields.io/pypi/v/gevva.svg?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/gevva/)
@@ -161,17 +161,19 @@ You don't need a multi-thousand-dollar GPU server. Gevva was engineered to run b
 
 ---
 
-## 🏆 Leaderboard & Accuracy
+## 📊 JevBench Public Benchmark Results
 
-On the official **JevBench** benchmark evaluating System 1 decision-making across hundreds of real-world scenarios:
+Evaluated against the open **JevBench Public Dataset** (231 evaluation tasks across 12 challenge families):
 
-| Rank | Model | Parameters | Decision Latency | Composite Score | Open Source? |
-| :---: | :--- | :---: | :---: | :---: | :---: |
-| 🥇 **#1** | **`Gevva e2b` (Ours)** | **2.3B** | **14.3 ms** | **`77.54`** | **Yes (Apache 2.0)** |
-| 🥈 #2 | OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Yes |
-| 🥉 #3 | TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | No (Closed API) |
-| #4 | Convai Laya | 2.2B | 18.4 ms | `73.80` | Proprietary |
-| #5 | ModernCE Large NLI | 1.8B | 16.1 ms | `72.10` | Yes |
+| Model | Parameters | Decision Latency | Public Composite Score | Hard Accuracy | Open Weights? |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | 47.8% | **Yes (Apache 2.0)** |
+| **`Gevva e4b`** | **4.5B** | **17.8 ms** | **`77.28`** | **55.0%** | **Yes (Apache 2.0)** |
+| OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | ~45% | Yes |
+| TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | ~48% | No (Closed API) |
+| Convai Laya | 2.2B | 18.4 ms | `73.80` | ~42% | Proprietary |
+
+> **Note on Benchmarking**: These results are measured locally against the 231-item open public split of JevBench. We do not claim official standing on the full private benchmark suite until independent verification is completed by the benchmark maintainers.
 
 *For deep academic benchmarking protocols, McNemar statistical tests, and error audits, see [EVALUATION_PROTOCOL.md](docs/EVALUATION_PROTOCOL.md).*
 
@@ -181,9 +183,9 @@ On the official **JevBench** benchmark evaluating System 1 decision-making acros
 
 | Model | Hugging Face ID | Best For |
 | :--- | :--- | :--- |
-| **Gevva e2b** *(Flagship)* | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Pure text: RAG hallucination checks, customer support routing, document verification. |
+| **Gevva e2b** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Fast pure text: RAG hallucination checks, customer support routing, document verification. |
 | **Gevva e2b Multimodal** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | Text + Vision: Verifying financial charts, tables, receipts, invoices, and photos. |
-| **Gevva e4b** *(Flagship Deep Reasoning)* | Staging (`google/gemma-4-E4B-it` backbone) | Deep legal contracts, complex medical diagnostics, and enterprise multi-hop reasoning. |
+| **Gevva e4b** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
 
 ---
 

@@ -1,14 +1,14 @@
 # Agent Instructions & Project Context: Gevva Multimodal 128K System 1 Decision Engine
 
-> **Rule for All Antigravity Agent Sessions**: This repository implements **Gevva**, a state-of-the-art, large-context (128K), multilingual (100+ languages), vision-enabled System 1 decision engine and NLI cross-encoder based on Google's Gemma 4 models. **Gevva e2b holds the #1 Global Rank on JevBench (77.54 Composite Score)**. Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
+> **Rule for All Antigravity Agent Sessions**: This repository implements **Gevva**, a state-of-the-art, large-context (128K), multilingual (100+ languages), vision-enabled System 1 decision engine and NLI cross-encoder based on Google's Gemma 4 models. **Gevva e2b achieves a 77.54 Composite Score on the JevBench Public Dataset (and Gevva e4b achieves 77.28 with 55% Hard tier accuracy)**. Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
 
 ---
 
 ## 1. Project Mission & Overview
 
 This project builds **Gevva**, a family of **large-context (128K)**, **multilingual (100+ languages)**, **vision-enabled System 1 decision engines** based on Google's lightweight multimodal foundation models:
-- **`Gevva e2b`** (built on `google/gemma-4-E2B-it`, ~2.3B effective parameters, **#1 on Global JevBench: 77.54**)
-- **`Gevva e4b`** (built on `google/gemma-4-E4B-it`, ~4.5B effective parameters, deep reasoning flagship)
+- **`Gevva e2b`** (built on `google/gemma-4-E2B-it`, ~2.3B effective parameters, **77.54 on JevBench Public**)
+- **`Gevva e4b`** (built on `google/gemma-4-E4B-it`, ~4.5B effective parameters, deep reasoning model)
 
 ### What We Are Building
 A high-throughput, non-autoregressive **System 1 Decision Engine** (inspired by Daniel Kahneman's System 1 cognitive model, [TypeSafe AI Jev](http://typesafe.ai/blog/introducing-system-one-models-and-jev) and [Convai Laya](https://huggingface.co/convaiinnovations/laya)). Rather than generating tokens autoregressively, the model evaluates input pairs in a single forward pass (~14.3–16.5 ms) and outputs calibrated probability distributions over three standard states:
