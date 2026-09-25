@@ -95,6 +95,7 @@ Hypothesis: {hypothesis}
 │   ├── CUSTOM_FINETUNING_GUIDE.md # User-facing custom fine-tuning guide & recipes
 │   ├── EVALUATION_PROTOCOL.md     # Pre-registered evaluation protocol & JevBench gate outcomes
 │   ├── HUGGINGFACE_MODEL_CARD.md  # Official HuggingFace model card for Gevva e2b
+│   ├── IMPROVEMENT_OPPORTUNITIES.md # Architectural & curriculum optimizations (Prefix KV, DST)
 │   ├── JEVBENCH_REMEDIATION_PLAN.md # Remediation plan (completed: #1 JevBench 77.54)
 │   └── jevbench-error-audit.md    # Error audit documentation
 ├── ckpt/
