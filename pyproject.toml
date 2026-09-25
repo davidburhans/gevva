@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gevva"
-version = "1.0.2"
+version = "1.0.3"
 description = "Gevva: Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder based on Google Gemma 4"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -90,6 +90,7 @@ py-modules = [
     "gemma4_cross_encoder",
     "export_w4a16",
     "nli_labels",
+    "finetune",
 ]
 
 [tool.pytest.ini_options]

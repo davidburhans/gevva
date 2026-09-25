@@ -1,6 +1,6 @@
-"""Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder.
+"""Gevva: Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder.
 
-77.54 Composite Score on JevBench Public Dataset.
+Fast fact-checking, hallucination detection, tool routing & document verification based on Google Gemma 4.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
 )
 
-__version__ = "1.0.1"
+__version__ = "1.0.3"
 __all__ = [
     "Gevva",
     "GevvaCrossEncoder",
@@ -96,13 +96,15 @@ def load(
     if model_name_or_path == DEFAULT_MODEL_ID and not os.path.exists(DEFAULT_MODEL_ID):
         if revision == "multimodal" and os.path.isdir("ckpt/gevva-e2b-phase4/best"):
             model_name_or_path = "ckpt/gevva-e2b-phase4/best"
-        elif (revision is None or revision in ("main", "flagship")) and os.path.isdir("ckpt/gevva-e2b"):
+        elif (revision is None or revision == "main") and os.path.isdir("ckpt/gevva-e2b"):
             model_name_or_path = "ckpt/gevva-e2b"
     elif model_name_or_path == "davidburhans/gevva-e2b-multimodal" and not os.path.exists(model_name_or_path):
         if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
             model_name_or_path = "ckpt/gevva-e2b-phase4/best"
     elif model_name_or_path in ("davidburhans/gevva-e4b", "gevva-e4b") and not os.path.exists(model_name_or_path):
-        if os.path.isdir("ckpt/gevva-e4b-flagship/best"):
+        if os.path.isdir("ckpt/gevva-e4b"):
+            model_name_or_path = "ckpt/gevva-e4b"
+        elif os.path.isdir("ckpt/gevva-e4b-flagship/best"):
             model_name_or_path = "ckpt/gevva-e4b-flagship/best"
 
     if device == "auto":

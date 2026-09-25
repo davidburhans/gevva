@@ -110,7 +110,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
 
 def cmd_finetune(args: argparse.Namespace) -> int:
     import subprocess
-    cmd = [sys.executable, "finetune.py"] + args.extra_args
+    cmd = [sys.executable, "-m", "gevva.finetune"] + args.extra_args
     return subprocess.run(cmd).returncode
 
 

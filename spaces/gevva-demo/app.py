@@ -621,7 +621,7 @@ Evaluated locally against the open **JevBench Public Dataset** (231 evaluation t
 | Model | Parameters (Download) | Forward Latency | Public Accuracy | Public Composite Score | License |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **`Gevva e2b`** | **5.1B (10.2 GB)** | **14–19 ms (RTX 5090)** | **71.43%** (47.75% Hard) | **`77.54`** | **Apache 2.0** |
-| **`Gevva e4b`** | **5.8B (15.9 GB)** | **17–22 ms (RTX 5090)** | **76.62%** (54.95% Hard) | **`77.28`** | **Apache 2.0** |
+| **`Gevva e4b`** | **7.94B (15.88 GB)** | **17–22 ms (RTX 5090)** | **76.62%** (54.95% Hard) | **`77.28`** | **Apache 2.0** |
 
 > *Transparency Note: Measured locally on the 231-item open public split of JevBench. Not an official evaluation on the full private benchmark suite until evaluated by third-party maintainers.*
 
@@ -631,7 +631,7 @@ Evaluated locally against the open **JevBench Public Dataset** (231 evaluation t
             with gr.Accordion("🔬 For Machine Learning Engineers & Data Scientists (Technical Specs & SDK)", open=False):
                 gr.Markdown("""
 #### Technical Architecture
-- **Backbone Architecture**: Google Gemma 4 (`gemma-4-E2B-it` / `gemma-4-E4B-it`), 5.10B / 5.80B total parameters (including 262K vocabulary embedding table and SigLIP vision tower).
+- **Backbone Architecture**: Google Gemma 4 (`gemma-4-E2B-it` / `gemma-4-E4B-it`), 5.10B / 7.94B total parameters (including 262K vocabulary embedding table and SigLIP vision tower).
 - **Vision Encoder**: Google SigLIP tower (native multimodal vision input).
 - **Context Budget**: Native 128,000 token Rotary Position Embeddings (RoPE), fine-tuned on sequences up to 2,048 tokens.
 - **Pooling & Classification**: Last non-pad token pooling over backbone hidden state with linear projection head to 3 calibrated logits (0=Contradiction, 1=Entailment, 2=Neutral).

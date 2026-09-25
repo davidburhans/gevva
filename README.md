@@ -122,20 +122,21 @@ print(f"Passed: {grade.is_correct} (Confidence: {grade.score*100:.1f}%)")
 Gevva models are built on Google's multimodal `gemma-4-E2B-it` and `gemma-4-E4B-it` checkpoints. Here are real measured performance numbers across hardware:
 
 ### Model Size & Download Footprint
-- **Gevva e2b**: **5.10 Billion total parameters** (~10.2 GB download in bfloat16).
+- **Gevva e2b**: **5.10 Billion total parameters** (10.2 GB download in bfloat16).
   *(Includes 2.3B active text backbone + SigLIP vision encoder + 262K vocabulary embedding table).*
-- **Gevva e4b**: **4.5B backbone / 5.8B total parameters** (~15.9 GB download in bfloat16).
+- **Gevva e4b**: **7.94 Billion total parameters** (15.88 GB download in bfloat16).
+  *(Includes 4.5B active text backbone + SigLIP vision encoder + 262K vocabulary embedding table).*
 
 ### Measured Latency & Memory
 
-| Input Type & Size | Hardware | Latency | RAM / VRAM | Notes |
+| Input Type & Size | Hardware | Latency | Measured Memory | Notes |
 | :--- | :--- | :---: | :---: | :--- |
-| **Short sentence pair (<128 tokens)** | NVIDIA GeForce RTX 5090 | **14–19 ms** | ~4.8 GB VRAM | High-throughput GPU serving |
-| **Short sentence pair (<128 tokens)** | Apple M4 Pro GPU (MPS) | **~74 ms** | ~4.6 GB RAM | Local developer machines |
-| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (FP32) | **~205 ms** | ~11.9 GB RAM | Full-precision CPU execution |
-| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (BF16 default) | **~720 ms** | ~4.6 GB RAM | CPU emulation of bfloat16 |
-| **RAG Document Context (~900 tokens)** | Apple M4 Pro GPU (MPS) | **~0.84 s** | ~5.2 GB RAM | Realistic RAG passage check |
-| **RAG Document Context (~900 tokens)** | Apple M4 Pro CPU | **~20 s** | ~5.0 GB RAM | Heavy for CPU; GPU recommended for long docs |
+| **Short sentence pair (<128 tokens)** | NVIDIA GeForce RTX 5090 | **14–19 ms** | 9.56 GB allocated VRAM (e2b) / 15.88 GB (e4b) | High-throughput GPU serving |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro GPU (MPS) | **~74 ms** | ~4.6 GB RAM | Local developer machines (e2b default) |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (FP32) | **~205 ms** | ~11.9 GB RAM | Full-precision CPU execution (e2b) |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (BF16 default) | **~720 ms** | ~4.6 GB RAM | CPU emulation of bfloat16 (e2b) |
+| **RAG Document Context (~900 tokens)** | Apple M4 Pro GPU (MPS) | **~0.84 s** | — | Realistic RAG passage check |
+| **RAG Document Context (~900 tokens)** | Apple M4 Pro CPU | **~20 s** | — | Heavy for CPU; GPU recommended for long docs |
 
 > **Context Length Note**: Gemma 4 natively supports up to 128K context via Rotary Position Embeddings (RoPE). However, the fine-tuning curriculum for Gevva was trained on sequences up to **2,048 tokens**. For optimal accuracy and latency in RAG pipelines, chunking retrieved evidence to ~1,000–2,000 tokens is strongly recommended.
 
@@ -194,7 +195,7 @@ Every decision engine has blind spots. We encourage testing on your specific dis
 | :--- | :--- | :---: | :--- |
 | **Gevva e2b** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | ~10.2 GB (5.1B params) | Fast text NLI, RAG hallucination checks, general tool routing. |
 | **Gevva e2b Multimodal** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | ~10.2 GB (5.1B params) | Multimodal: Checking charts, invoices, and photos against text claims. |
-| **Gevva e4b** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | ~15.9 GB (5.8B params) | Deep reasoning: Multi-hop logic, complex contracts, high-stakes verification. |
+| **Gevva e4b** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | 15.88 GB (7.94B params) | Deep reasoning: Multi-hop logic, complex contracts, high-stakes verification. |
 
 ---
 

@@ -231,7 +231,7 @@ Evaluated locally against the frozen open public split of JevBench (`jevbench/da
 | :--- | :--- | :---: | :--- |
 | **Gevva e2b (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | ~10.2 GB (5.1B params) | Fast pure text: RAG hallucination checks, tool routing, document verification. |
 | **Gevva e2b (Multimodal)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | ~10.2 GB (5.1B params) | Text + Vision: Charts, tables, receipts, invoices, and photos. |
-| **Gevva e4b (Deep Reasoning)** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | ~15.9 GB (5.8B params) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
+| **Gevva e4b (Deep Reasoning)** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | 15.88 GB (7.94B params) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
 
 ---
 
