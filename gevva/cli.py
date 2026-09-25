@@ -129,7 +129,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gevva",
-        description="Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine (#1 on JevBench)",
+        description="Gevva: Multimodal 128K System 1 Decision Engine & NLI Cross-Encoder",
     )
     subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
 
@@ -183,6 +183,41 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if argv and argv[0] == "finetune":
+        import subprocess
+        cmd = [sys.executable, "finetune.py"] + argv[1:]
+        return subprocess.run(cmd).returncode
+
+    if argv and argv[0] == "eval":
+        import subprocess
+        suite = "jevbench"
+        rest = []
+        skip_next = False
+        sub_args = argv[1:]
+        for i, a in enumerate(sub_args):
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--suite" and i + 1 < len(sub_args):
+                suite = sub_args[i + 1]
+                skip_next = True
+            elif a.startswith("--suite="):
+                suite = a.split("=", 1)[1]
+            else:
+                rest.append(a)
+
+        if suite == "jevbench":
+            script = "scripts/eval_jevbench_public.py"
+        elif suite == "openjev":
+            script = "eval_openjev_benchmarks.py"
+        else:
+            script = "eval_downstream_decisions.py"
+        cmd = [sys.executable, script] + rest
+        return subprocess.run(cmd).returncode
+
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):

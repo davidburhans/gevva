@@ -51,56 +51,44 @@ model-index:
     - name: JevBench Public Calibration Score
       type: expected_calibration_error
       value: 86.90
-    - name: Forward Latency (P50)
+    - name: Forward Latency (RTX 5090 P50)
       type: latency
       value: 16.5
 ---
 
-# ⚡ Gevva e2b: The Instant AI Decision Engine
+# ⚡ Gevva e2b: Multimodal System 1 Decision Engine & NLI Cross-Encoder
 
 <p align="center">
   <a href="https://colab.research.google.com/github/davidburhans/gevva/blob/main/notebooks/gevva_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
   <a href="https://pypi.org/project/gevva/"><img src="https://img.shields.io/pypi/v/gevva.svg?logo=pypi&logoColor=white" alt="PyPI"></a>
   <a href="https://huggingface.co/spaces/davidburhans/gevva-demo"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Space-Interactive%20Demo-blue.svg" alt="Interactive Demo"></a>
-  <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/Latency-15ms%20(100x%20faster)-orange.svg" alt="Latency"></a>
+  <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/Latency-16ms%20(RTX%205090)-orange.svg" alt="Latency"></a>
   <a href="https://github.com/davidburhans/gevva"><img src="https://img.shields.io/badge/JevBench-Public%20Split%2077.54-blue.svg" alt="JevBench Public"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache--2.0-green.svg" alt="License"></a>
 </p>
 
 ---
 
-### *15-millisecond fact checking, hallucination detection, tool routing & chart verification.*
-**100x faster than generative LLMs • Runs on laptops & cloud CPUs • 77.54 on JevBench Public**
+### *Fast fact-checking, hallucination detection, tool routing & document verification based on Google Gemma 4.*
+**Single-pass sequence classification • 10.2 GB download (5.1B params) • Apache 2.0 open weights**
 
 ---
 
-## 🤔 What is Gevva? (The 30-Second Explainer)
+## 🤔 What is Gevva e2b?
 
-When you ask ChatGPT or Claude a question, it generates words **one token at a time**, like a person typing out an essay. That takes **2 to 5 seconds** and burns expensive GPU compute.
+When you ask an autoregressive LLM (like ChatGPT or Claude) to verify a fact, it generates text **token-by-token**, typically taking **1 to 3 seconds** for an answer.
 
-That is great for writing a story, but it is **painfully slow and expensive for simple decisions**:
-- *"Did the AI make up this answer, or is it actually in the PDF?"*
-- *"Should this customer's message go to billing, shipping, or technical support?"*
-- *"Does the revenue bar chart support this financial claim?"*
-- *"Did the student get the math problem right according to the answer key?"*
+For discrete decision tasks, autoregressive generation is unnecessarily slow and expensive:
+- *"Does this retrieved context support the generated claim, or is it a hallucination?"*
+- *"Which of these 4 tools should be called for this user request?"*
+- *"Did the student's answer match the reference solution?"*
 
-### The Solution: An Instant "Reflex Engine" for AI
-Psychologist Daniel Kahneman described human thinking in two modes:
-- **System 1 (Fast & Intuitive)**: The brain's instant reflex — recognizing a friend's face or dodging a ball in 15 milliseconds.
-- **System 2 (Slow & Deliberate)**: Deliberate reasoning — writing an essay or solving complex math step-by-step.
+### The System 1 Approach
+Psychologist Daniel Kahneman described human thought in two modes: **System 1** (fast, automatic reflex) and **System 2** (slow, deliberate reasoning). 
 
-```
-┌────────────────────────────────────────┐       ┌────────────────────────────────────────┐
-│           SYSTEM 1: GEVVA              │       │       SYSTEM 2: CHATGPT / CLAUDE       │
-│  ⚡ Makes instant decisions in 15 ms    │  vs   │  🐢 Generates text token-by-token      │
-│  💰 95% cheaper compute cost           │       │  ⏳ Takes 2,000 - 5,000 milliseconds   │
-│  🎯 Confident, calibrated decisions    │       │  💸 Expensive GPU server bills         │
-│  🔍 Best for: Fact-checks, routing,    │       │  ✍️ Best for: Creative writing, long   │
-│     guardrails, and grading            │       │     essays, and coding from scratch    │
-└────────────────────────────────────────┘       └────────────────────────────────────────┘
-```
+**Gevva e2b** is a **System 1 decision engine**: a sequence classification cross-encoder built on Google's lightweight `google/gemma-4-E2B-it` foundation. Rather than generating text, it evaluates premise-hypothesis pairs in a single forward pass and outputs calibrated 3-class probability distributions:
 
-**Gevva is the AI's instant reflex.** Instead of typing words slowly, Gevva reads your evidence and outputs a clear, calibrated decision in **~15 milliseconds** on a GPU (or **~147 ms on a standard laptop CPU**).
+$$\text{Class} \in \{\text{Contradiction (0)}, \text{Entailment (1)}, \text{Neutral (2)}\}$$
 
 ---
 
@@ -111,39 +99,38 @@ pip install gevva
 ```
 
 ```python
-import gevva
+from gevva import load
 
-# Load model directly from Hugging Face (runs on GPU or standard CPU)
-model = gevva.load("davidburhans/gevva-e2b")
+# Load model (automatically detects CUDA, MPS, or CPU)
+engine = load("davidburhans/gevva-e2b")
 
-# Check if a claim is True, False (Hallucination), or Unproven
-document = "The company reported $4.2B in revenue for 2025, a 15% increase over 2024."
-claim = "Company revenue exceeded four billion dollars."
+# Check evidence against a claim
+premise = "The Eiffel Tower is a wrought-iron lattice tower located on the Champ de Mars in Paris, France."
+claim = "The Eiffel Tower is located in Paris."
 
-probs = model.predict([(document, claim)])
-# Output probabilities: [Contradiction, Entailment, Neutral]
-# -> [0.01, 0.98, 0.01] ==> 98% Confidence: VERIFIED TRUE!
+probs = engine.predict([(premise, claim)])[0]
+print(f"Entailment: {probs[1]*100:.1f}%, Contradiction: {probs[0]*100:.1f}%, Neutral: {probs[2]*100:.1f}%")
+# -> Entailment: 96.1%, Contradiction: 0.9%, Neutral: 2.9%
 ```
 
 ---
 
-## ⚡ What Can Gevva Do for You?
+## ⚡ Core Use Cases
 
-### 1. 🛡️ Catch AI Hallucinations in RAG & Documents
-Traditional search pipelines waste time asking slow LLMs whether an answer is hallucinated. Gevva checks claims against up to **128,000 tokens** of source text in a single forward pass:
+### 1. 🛡️ Catch AI Hallucinations in RAG Pipelines
 ```python
-retrieved_doc = "Patients taking Medication X showed improved sleep with no reported nausea."
+retrieved_document = "Patients taking Medication X showed improved sleep duration with no reported nausea."
 ai_answer = "Medication X causes severe nausea in elderly patients."
 
-probs = model.predict([(retrieved_doc, ai_answer)])[0]
-if probs[0] > 0.80:
-    print("🚨 Alert: AI Hallucination detected! Answer contradicts the source document.")
+probs = engine.predict([(retrieved_document, ai_answer)])[0]
+# Returns [Contradiction: 75.2%, Entailment: 3.3%, Neutral: 21.5%]
+if probs[0] > 0.70:
+    print("🚨 Alert: AI Hallucination detected! Claim contradicts source document.")
 ```
 
-### 2. 🎯 Smart Action & Tool Routing (No Prompt Tuning)
-When an agent receives a message, what tool should it call next? Gevva evaluates all actions simultaneously:
+### 2. 🎯 Tool & Intent Routing
 ```python
-tools = [
+available_tools = [
     "process_refund: Refund payment to customer bank account",
     "track_package: Query live shipping milestones and courier GPS",
     "reset_password: Send authentication link to user email",
@@ -152,99 +139,112 @@ tools = [
 
 user_message = "I ordered this two weeks ago and it still hasn't arrived at my house!"
 
-best_action_idx, scores = model.rerank(user_message, tools)
-print("Chosen Action:", tools[best_action_idx])  # -> "track_package" in 15 ms!
+best_idx, scores = engine.rerank(user_message, available_tools)
+print("Chosen Action:", available_tools[best_idx])
+# -> "track_package: Query live shipping milestones and courier GPS"
 ```
 
-### 3. 👁️ Inspect Financial Charts, Tables & Images
-Need to check if a claim matches a real chart or invoice? Gevva's multimodal engine inspects images directly:
+### 3. 📝 Instant Answer & Rubric Grading
 ```python
-from PIL import Image
-
-vision_engine = gevva.load("davidburhans/gevva-e2b-multimodal")
-chart = Image.open("quarterly_sales.png")
-
-result = vision_engine.predict(
-    pairs=[("A financial bar chart is shown.", "Q3 sales were higher than Q4.")],
-    images=[chart]
-)
-print("Verdict:", result)
-```
-
-### 4. 📝 Instant Homework & AI Grader
-Grade an answer against a reference answer key without human grading fatigue:
-```python
-grade = model.grade(
+grade = engine.grade(
     question="What is the capital of Australia?",
     reference="Canberra",
     candidate="The capital city of Australia is Canberra."
 )
 print(f"Passed: {grade.is_correct} (Confidence: {grade.score*100:.1f}%)")
-# -> Passed: True (Confidence: 96.4%)
+# -> Passed: True (Confidence: 81.8%)
 ```
 
 ---
 
-## 💻 Runs Everywhere (No GPU Required!)
+## 💻 Hardware, Latency & Memory Profile
 
-You don't need an expensive datacenter GPU. Gevva was engineered to run blisteringly fast on **standard CPUs**:
-- **Runs on Ordinary Laptops**: Low memory footprint (~4.8 GB RAM).
-- **Fast Startup**: Loads in **1.2 seconds**.
-- **CPU Speed**: Makes decisions in **~147 ms on a CPU** — faster than GPT-4 can generate its very first word!
+Gevva models are built on Google's multimodal `gemma-4-E2B-it` checkpoint. Here are real measured performance numbers across hardware:
 
-| Hardware | Latency per Decision | What You Can Run |
-| :--- | :---: | :--- |
-| **NVIDIA GPU (RTX 5090)** | **14–16 ms** | High-throughput enterprise API clusters |
-| **Standard Cloud CPU / MacBook** | **147 ms** | Local agents, serverless functions, low-cost microservices |
+### Model Size & Download Footprint
+- **Total Model Parameters**: **5.10 Billion parameters** (~10.2 GB download in bfloat16).
+  *(Includes 2.3B active text backbone + SigLIP vision encoder + 262K vocabulary embedding table).*
+
+### Measured Latency & Memory
+
+| Input Type & Size | Hardware | Latency | RAM / VRAM | Notes |
+| :--- | :--- | :---: | :---: | :--- |
+| **Short sentence pair (<128 tokens)** | NVIDIA GeForce RTX 5090 | **14–19 ms** | ~4.8 GB VRAM | High-throughput GPU serving |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro GPU (MPS) | **~74 ms** | ~4.6 GB RAM | Local developer machines |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (FP32) | **~205 ms** | ~11.9 GB RAM | Full-precision CPU execution |
+| **Short sentence pair (<128 tokens)** | Apple M4 Pro CPU (BF16 default) | **~720 ms** | ~4.6 GB RAM | CPU emulation of bfloat16 |
+| **RAG Document Context (~900 tokens)** | Apple M4 Pro GPU (MPS) | **~0.84 s** | ~5.2 GB RAM | Realistic RAG passage check |
+| **RAG Document Context (~900 tokens)** | Apple M4 Pro CPU | **~20 s** | ~5.0 GB RAM | Heavy for CPU; GPU recommended for long docs |
+
+> **Context Length Note**: Gemma 4 natively supports up to 128K context via Rotary Position Embeddings (RoPE). However, fine-tuning for Gevva was trained on sequences up to **2,048 tokens**. For optimal accuracy and latency in RAG pipelines, chunking retrieved evidence to ~1,000–2,000 tokens is strongly recommended.
 
 ---
 
-## 📊 JevBench Public Benchmark Results
+## 📊 Benchmarks & Empirical Accuracy
 
-Evaluated locally against the open **JevBench Public Dataset** (231 evaluation tasks across 12 challenge families):
+### 1. Independent Evaluation on Unseen Public Test Sets
+Evaluated on 250 items per test set against a standard fact-checking baseline (`nli-deberta-v3-base`, ~184M parameters):
 
-| Model | Parameters | Decision Latency | Public Composite Score | Open Source? |
-| :--- | :---: | :---: | :---: | :---: |
-| **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Yes (Apache 2.0)** |
-| **`Gevva e4b`** | **4.5B** | **17.8 ms** | **`77.28`** | **Yes (Apache 2.0)** |
-| OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Yes |
-| TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | No (Closed API) |
-| Convai Laya | 2.2B | 18.4 ms | `73.80` | Proprietary |
+| Test Set | Gevva e2b (5.1B) | DeBERTa-v3-base (184M) | Key Observations |
+| :--- | :---: | :---: | :--- |
+| **ANLI Round 1** (Adversarial NLI) | **60.0%** | 43.0% | Stronger on tricky multi-hop negations |
+| **ANLI Round 2** (Adversarial NLI) | **47.0%** | 38.0% | Handles hard semantic shifts better |
+| **ANLI Round 3** (Adversarial NLI) | **50.0%** | 38.0% | Outperforms baseline on complex claims |
+| **MNLI Mismatched** (Standard fact-checking) | 88.4% | **89.6%** | Comparable on standard in-domain text |
+| **HANS** (Word-overlap shortcut test) | **83.0%** | 80.0% | Overall accuracy |
+| ↳ *HANS non-entailed cases only* | **68.0%** | 58.0% | Substantially more resistant to lexical traps |
+| **RAG Hallucination Checks (Handwritten)** | **17/20 (85%)** | 14/20 (70%) | Strong general fact verification |
+| **Tool / Action Routing (Handwritten)** | **15/18 (83%)** | — | Missed 3 login/auth routing edge cases |
+| **Answer Grading (Handwritten)** | **14/14 (100%)** | — | Evaluates correctness reliably |
 
-> **Note on Benchmarking**: These scores reflect evaluation on the open 231-item public split of JevBench. They serve as transparent local reproducibility baselines prior to independent evaluation on the full private benchmark suite.
+### 2. JevBench Public Dataset (231 Items)
+Evaluated locally against the frozen open public split of JevBench (`jevbench/datasets/public` across 18 task families):
+
+- **Gevva e2b**: **71.43% overall accuracy** (165/231), **47.75% on the Hard tier** (53/111).
+  - JevBench Composite Score: **77.54** (at $T=1.6$).
+- **Gevva e4b**: **76.62% overall accuracy** (177/231), **54.95% on the Hard tier** (61/111).
+  - JevBench Composite Score: **77.28** (at $T=1.6$).
+
+> **Transparency Note on JevBench**:
+> - These scores were measured locally on the 231-item open public split and have not yet been evaluated by third-party maintainers on the private benchmark suite.
+> - The JevBench composite score weights Intelligence (25%), Calibration (25%), Speed (25%), and a hard-coded Cost tariff (25%).
+> - A temperature of $T=1.6$ was fitted specifically to minimize ECE on the 111 JevBench Hard tier items. However, on standard NLI test sets, $T=1.6$ flattens probabilities (raising ECE from 0.056 to 0.163). Therefore, **Gevva ships with standard $T=1.0$ default inference**.
+
+---
+
+## ⚠️ Known Limitations & Failure Modes
+
+1. **Numerical & Arithmetic Claims**:
+   Gevva can be unreliable with subtle arithmetic discrepancies (e.g. accepting *"revenue exceeded five billion"* when the document states *"$4.2B"* at 83% confidence). For strict financial and numeric validation, pair Gevva with programmatic regex or numeric validators.
+2. **Authentication & Password Routing**:
+   In tool-routing evaluations, requests involving account security, passwords, or authentication links were occasionally misrouted to general documentation rather than password-reset actions.
+3. **CPU Latency on Long Documents**:
+   While short queries evaluate in ~200 ms on CPU, full 900+ token documents take ~20 seconds on CPU. GPU acceleration (CUDA or Apple MPS) is strongly recommended for production RAG pipelines.
+4. **Confidence Thresholding**:
+   Because real-world calibration varies by domain, do not rely on a fixed `0.80` cutoff. Evaluate your specific positive/negative tradeoff curves to choose operational thresholds.
 
 ---
 
 ## 📦 Model Variants
 
-| Variant | Repository | Best For |
-| :--- | :--- | :--- |
-| **Gevva e2b (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | Pure text: RAG hallucination checks, tool routing, document verification. |
-| **Gevva e2b (Multimodal)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | Text + Vision: Charts, tables, receipts, invoices, and photos. |
-| **Gevva e4b (Deep Reasoning)** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
-
----
-
-## 👥 Authors & Co-Authorship
-
-- **Dave Burhans** — Lead Author & Architecture
-- **Gemini 3.8 Flash** — Co-Author (Synthetic curriculum generation, 4-judge validator committee, SDK implementation)
-- **GLM 5.3** — Co-Author (Reasoning remediation curriculum, error audits, adversarial methodology review)
-- **GLM 5.3 Flash** — Co-Author (Synthetic calibration testing, loss formulation, decision metrics)
-- **Gevva Contributors**
+| Variant | Repository | Download Size | Best For |
+| :--- | :--- | :---: | :--- |
+| **Gevva e2b (Text Reasoning)** | [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b) | ~10.2 GB (5.1B params) | Fast pure text: RAG hallucination checks, tool routing, document verification. |
+| **Gevva e2b (Multimodal)** | [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal) | ~10.2 GB (5.1B params) | Text + Vision: Charts, tables, receipts, invoices, and photos. |
+| **Gevva e4b (Deep Reasoning)** | [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b) | ~15.9 GB (5.8B params) | Deep reasoning: Complex policies, multi-hop evidence, high-stakes verification. |
 
 ---
 
 ## 📄 License & Terms
 
-Gevva e2b is released under the [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0). Underlying foundation weights inherit Google's [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
+Gevva e2b is released under the open-source [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0). Underlying foundation weights inherit Google's [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
 
 ```bibtex
 @software{gevva2026,
-  author = {Burhans, Dave and {Gemini 3.8 Flash} and {GLM 5.3} and {GLM 5.3 Flash} and Contributors},
-  title = {Gevva: State-of-the-Art Multimodal 128K System 1 Decision Engine},
+  author = {Burhans, Dave and Contributors},
+  title = {Gevva: Multimodal System 1 Decision Engine},
   year = {2026},
-  publisher = {Hugging Face / GitHub},
+  publisher = {GitHub / Hugging Face},
   url = {https://github.com/davidburhans/gevva}
 }
 ```

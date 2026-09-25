@@ -155,19 +155,20 @@ print(f"Selected: {tools[best_idx]}")
 
 ---
 
-## 🏆 Benchmark Highlights: Dominating the 4B Class
+## 📊 Evaluated Benchmarks on RTX 5090
 
 Gevva e4b was evaluated on standard reasoning batteries on an **NVIDIA GeForce RTX 5090**:
 
-| Benchmark | Gevva e4b | OpenJEV-4B | Decider 4B | TypeSafe Jev 1.13 |
-| :--- | :---: | :---: | :---: | :---: |
-| **ARC-Challenge (Reasoning)** | **84.00%** | 59.20% | ~55% | ~55% |
-| **ARC-Easy (Knowledge)** | **92.00%** | 76.90% | ~65% | ~65% |
-| **WinoGrande (Commonsense)** | **75.00%** | 58.60% | ~58% | ~55% |
-| **MMLU (General Knowledge)** | **59.00%** | 47.20% | ~47% | ~45% |
-| **BoolQ (Fact Decisions)** | **91.00%** | — | — | — |
-| **Forward Latency ($p_{50}$)** | **17.83 ms** | 57.0 ms | 23.4 ms | 236 ms |
-| **Context Window** | **128,000 tokens** | 4,096 tokens | 4,096 tokens | 8,192 tokens |
+| Benchmark | Gevva e4b Accuracy | Evaluation Type |
+| :--- | :---: | :--- |
+| **ARC-Challenge (Reasoning)** | **84.00%** | Multiple-choice 4-way reranking |
+| **ARC-Easy (Knowledge)** | **92.00%** | Multiple-choice 4-way reranking |
+| **WinoGrande (Commonsense)** | **75.00%** | Binary commonsense pair reranking |
+| **MMLU (General Knowledge)** | **59.00%** | 4-way multiple-choice evaluation |
+| **BoolQ (Fact Decisions)** | **91.00%** | Boolean fact-checking |
+| **JevBench Public (Overall)** | **76.62%** | 231 tasks across 18 challenge families |
+| **JevBench Public (Hard Tier)** | **54.95%** | 111 challenging decision tasks |
+| **Forward Latency ($p_{50}$)** | **17.83 ms** | Single-pass forward latency on RTX 5090 |
 
 ---
 
