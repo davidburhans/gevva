@@ -285,12 +285,68 @@ custom_css = """
     color: #94a3b8;
 }
 .tip-banner {
-    background-color: #f8fafc;
-    border-left: 4px solid #3b82f6;
-    padding: 10px 14px;
-    border-radius: 4px;
-    margin-bottom: 14px;
+    background-color: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-left: 4px solid #2563eb;
+    color: #1e3a8a !important;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin-bottom: 16px;
     font-size: 14px;
+    line-height: 1.6;
+}
+.tip-banner strong {
+    color: #1d4ed8 !important;
+    font-weight: 600;
+}
+
+/* Dark mode support for Gradio, Hugging Face Spaces, and modern browsers */
+:root.dark .tip-banner,
+html.dark .tip-banner,
+body.dark .tip-banner,
+.dark .tip-banner,
+[data-theme='dark'] .tip-banner,
+.gradio-container.dark .tip-banner {
+    background-color: #1e293b !important;
+    border: 1px solid #334155 !important;
+    border-left: 4px solid #38bdf8 !important;
+    color: #f1f5f9 !important;
+}
+:root.dark .tip-banner strong,
+html.dark .tip-banner strong,
+body.dark .tip-banner strong,
+.dark .tip-banner strong,
+[data-theme='dark'] .tip-banner strong,
+.gradio-container.dark .tip-banner strong {
+    color: #38bdf8 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+    .tip-banner {
+        background-color: #1e293b !important;
+        border: 1px solid #334155 !important;
+        border-left: 4px solid #38bdf8 !important;
+        color: #f1f5f9 !important;
+    }
+    .tip-banner strong {
+        color: #38bdf8 !important;
+    }
+}
+
+.gradio-container:not(.dark) .tip-banner,
+.light .tip-banner,
+html.light .tip-banner,
+body.light .tip-banner {
+    background-color: #eff6ff !important;
+    border: 1px solid #bfdbfe !important;
+    border-left: 4px solid #2563eb !important;
+    color: #1e3a8a !important;
+}
+.gradio-container:not(.dark) .tip-banner strong,
+.light .tip-banner strong,
+html.light .tip-banner strong,
+body.light .tip-banner strong {
+    color: #1d4ed8 !important;
 }
 """
 
@@ -618,7 +674,8 @@ print("Is Correct:", grade.is_correct, "Score:", grade.score)
 ```
 
 - **Hugging Face Model Hub**:
-  - Text Flagship: [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b)
+  - Text Model: [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b)
+  - Deep Reasoning: [`davidburhans/gevva-e4b`](https://huggingface.co/davidburhans/gevva-e4b)
   - Vision & Multimodal: [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal)
   - Training Dataset: [`davidburhans/gevva-decisions`](https://huggingface.co/datasets/davidburhans/gevva-decisions)
 - **GitHub Repository**: [https://github.com/davidburhans/gevva](https://github.com/davidburhans/gevva)
