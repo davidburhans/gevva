@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scripts/publish_e4b_to_hf.py
 ==============================
-Publishes the Gevva E4B Flagship checkpoint to the Hugging Face Hub.
+Publishes the Gevva E4B checkpoint to the Hugging Face Hub.
 Uses HF_WRITE_TOKEN from the environment.
 """
 
@@ -159,7 +159,7 @@ print(f"Selected: {tools[best_idx]}")
 
 Gevva e4b was evaluated on standard reasoning batteries on an **NVIDIA GeForce RTX 5090**:
 
-| Benchmark | Gevva e4b Flagship | OpenJEV-4B | Decider 4B | TypeSafe Jev 1.13 |
+| Benchmark | Gevva e4b | OpenJEV-4B | Decider 4B | TypeSafe Jev 1.13 |
 | :--- | :---: | :---: | :---: | :---: |
 | **ARC-Challenge (Reasoning)** | **84.00%** | 59.20% | ~55% | ~55% |
 | **ARC-Easy (Knowledge)** | **92.00%** | 76.90% | ~65% | ~65% |
@@ -227,7 +227,7 @@ def main():
         repo_id=repo_id,
         repo_type="model",
         token=token,
-        commit_message="Initial release of Gevva e4b Flagship Decision Engine",
+        commit_message="Release Gevva e4b Decision Engine",
     )
     print(f"Successfully published Gevva e4b: https://huggingface.co/{repo_id}")
 
