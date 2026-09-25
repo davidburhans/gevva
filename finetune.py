@@ -272,6 +272,8 @@ def load_custom_file(file_path: str, convention: str = "ours") -> List[Dict[str,
         }
         if "image" in r and r["image"]:
             item["image"] = r["image"]
+        if "images" in r and r["images"]:
+            item["images"] = r["images"]
         if "group_id" in r and r["group_id"] is not None:
             item["group_id"] = str(r["group_id"])
         if "is_gold" in r:
@@ -432,28 +434,44 @@ class CustomNLICollator:
         image_pos_ids_list = []
 
         for r in batch:
-            img_field = r.get("image")
-            resolved_path = None
-            if img_field and self.image_processor is not None:
-                p_with_root = os.path.join(self.image_root, img_field)
-                if os.path.exists(p_with_root):
-                    resolved_path = p_with_root
-                elif os.path.exists(img_field):
-                    resolved_path = img_field
+            raw_images = r.get("images")
+            if raw_images is None:
+                raw_img = r.get("image")
+                if isinstance(raw_img, list):
+                    raw_images = raw_img
+                elif raw_img:
+                    raw_images = [raw_img]
+                else:
+                    raw_images = []
+            elif isinstance(raw_images, str):
+                raw_images = [raw_images]
 
-            if resolved_path is not None:
-                img = Image.open(resolved_path).convert("RGB")
-                feat = self.image_processor(img, return_tensors="pt")
-                n_soft = int(feat["num_soft_tokens_per_image"][0])
+            resolved_paths = []
+            if self.image_processor is not None:
+                for img_field in raw_images:
+                    if not img_field:
+                        continue
+                    p_with_root = os.path.join(self.image_root, str(img_field))
+                    if os.path.exists(p_with_root):
+                        resolved_paths.append(p_with_root)
+                    elif os.path.exists(str(img_field)):
+                        resolved_paths.append(str(img_field))
+
+            if resolved_paths and len(resolved_paths) == len(raw_images):
+                pil_imgs = [Image.open(p).convert("RGB") for p in resolved_paths]
+                feat = self.image_processor(pil_imgs, return_tensors="pt")
+                soft_counts = [int(x) for x in feat["num_soft_tokens_per_image"]]
                 ids = tokenize_nli_pair_safe(
                     tokenizer=self.tokenizer,
                     premise=r["premise"],
                     hypothesis=r["hypothesis"],
                     max_length=self.max_length,
-                    image_soft_tokens=n_soft,
+                    image_soft_tokens=soft_counts,
                 )
-                pixel_values_list.append(feat["pixel_values"][0])
-                image_pos_ids_list.append(feat["image_position_ids"][0])
+                for pv in feat["pixel_values"]:
+                    pixel_values_list.append(pv)
+                for pos in feat["image_position_ids"]:
+                    image_pos_ids_list.append(pos)
             else:
                 ids = tokenize_nli_pair_safe(
                     tokenizer=self.tokenizer,
@@ -871,6 +889,7 @@ def finetune_custom_data(
     batch_size: int = 8,
     grad_accum: int = 4,
     lr: float = 2e-4,
+    head_lr: Optional[float] = None,
     max_length: int = 512,
     lora_r: int = 64,
     lora_alpha: int = 128,
@@ -891,6 +910,7 @@ def finetune_custom_data(
     max_tokens_per_batch: int = 2048,
     image_root: str = "./data",
     image_processor: Optional[Any] = None,
+    use_8bit_adam: bool = False,
     label_convention: str = "ours",
     seed: int = 42,
     device: str = "cuda",
@@ -1155,10 +1175,19 @@ def finetune_custom_data(
         hypotheses = [str(r.get("hypothesis", "")) for r in records]
         n_p = [len(x) for x in tokenizer(premises, add_special_tokens=False)["input_ids"]]
         n_h = [len(x) for x in tokenizer(hypotheses, add_special_tokens=False)["input_ids"]]
-        v_lens = [
-            270 if (r.get("image") and (os.path.exists(r["image"]) or os.path.exists(os.path.join(image_root, r["image"])))) else 0
-            for r in records
-        ]
+        v_lens = []
+        for r in records:
+            imgs = r.get("images")
+            if imgs is None:
+                single = r.get("image")
+                imgs = single if isinstance(single, list) else ([single] if single else [])
+            elif isinstance(imgs, str):
+                imgs = [imgs]
+            valid_cnt = 0
+            for img_p in imgs:
+                if img_p and (os.path.exists(str(img_p)) or os.path.exists(os.path.join(image_root, str(img_p)))):
+                    valid_cnt += 1
+            v_lens.append(valid_cnt * 270)
         return [min(max_length, 32 + p + h + v) for p, h, v in zip(n_p, n_h, v_lens)]
 
     if use_token_bucketing:
@@ -1220,7 +1249,38 @@ def finetune_custom_data(
 
     # 5. Optimizer & Scheduler
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=0.01)
+    head_params = []
+    backbone_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        is_head = (
+            name.startswith("norm.") or name.startswith("score.") or
+            name.endswith(".score.weight") or name.endswith(".norm.weight") or
+            "score.modules_to_save" in name or "norm.modules_to_save" in name
+        ) and not ("layers." in name or "language_model.norm" in name or "layernorm" in name or "projection_norm" in name)
+        if is_head:
+            head_params.append(p)
+        else:
+            backbone_params.append(p)
+
+    effective_head_lr = head_lr if head_lr is not None else lr
+    if head_params and effective_head_lr != lr:
+        print(f"Using differential learning rates: Backbone={lr:.2e} ({sum(p.numel() for p in backbone_params):,} params), "
+              f"Classification Head={effective_head_lr:.2e} ({sum(p.numel() for p in head_params):,} params)")
+        param_groups = [
+            {"params": backbone_params, "lr": lr, "weight_decay": 0.01},
+            {"params": head_params, "lr": effective_head_lr, "weight_decay": 0.01},
+        ]
+    else:
+        param_groups = trainable_params
+
+    if use_8bit_adam:
+        import bitsandbytes as bnb
+        print("Using bitsandbytes PagedAdamW8bit (8-bit paged optimizer) for large model memory efficiency...")
+        optimizer = bnb.optim.PagedAdamW8bit(param_groups, lr=lr, weight_decay=0.01)
+    else:
+        optimizer = torch.optim.AdamW(param_groups, lr=lr, weight_decay=0.01)
 
     total_steps = len(train_loader) * epochs // grad_accum
     warmup_steps = max(5, int(total_steps * 0.1))
@@ -1315,7 +1375,7 @@ def finetune_custom_data(
                 if grouped_terms:
                     total_loss = sum(grouped_terms) + nli_aux_weight * ce_loss
                 else:
-                    total_loss = (nli_aux_weight if has_groups else 1.0) * ce_loss
+                    total_loss = 1.0 * ce_loss
 
                 if brier_weight > 0.0:
                     probs = torch.softmax(outputs.logits, dim=-1)
@@ -1340,8 +1400,27 @@ def finetune_custom_data(
                 optimizer.zero_grad()
                 global_step += 1
 
-                if global_step % max(1, (total_steps // 10)) == 0:
-                    curr_lr = scheduler.get_last_lr()[0]
+                # Periodic step checkpointing every 250 optimizer updates (~1 hour) for crash resilience
+                if global_step % 250 == 0:
+                    step_dir = os.path.join(output_dir, f"step_{global_step}")
+                    os.makedirs(step_dir, exist_ok=True)
+                    model.save_pretrained(step_dir)
+                    tokenizer.save_pretrained(step_dir)
+                    raw_m = _get_raw_model(model)
+                    def _clean_st(mod):
+                        if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+                            return mod.modules_to_save["default"].state_dict()
+                        return mod.state_dict()
+                    head_dict = {"score": _clean_st(raw_m.score)}
+                    if hasattr(raw_m, "norm"):
+                        head_dict["norm"] = _clean_st(raw_m.norm)
+                    torch.save(head_dict, os.path.join(step_dir, "head_weights.pt"))
+                    print(f"-> Saved periodic step checkpoint to {step_dir} (step {global_step}/{total_steps})", flush=True)
+
+                if global_step % 25 == 0 or global_step == 1:
+                    lrs = scheduler.get_last_lr()
+                    curr_lr = lrs[0]
+                    curr_head_lr = lrs[1] if len(lrs) > 1 else curr_lr
                     avg_loss = epoch_loss / (step + 1)
                     speed = (step + 1) * batch_size / (time.time() - t0)
                     extra_msg = ""
@@ -1349,9 +1428,10 @@ def finetune_custom_data(
                         extra_msg += f" | XOpt: {epoch_xopt_loss / (step + 1):.4f}"
                     if brier_weight > 0.0:
                         extra_msg += f" | Brier: {epoch_brier_loss / (step + 1):.4f}"
+                    lr_msg = f"LR: {curr_lr:.2e}" if curr_head_lr == curr_lr else f"LR: {curr_lr:.2e} (head: {curr_head_lr:.2e})"
                     print(
                         f"Epoch {epoch+1}/{start_epoch+epochs} | Step {global_step}/{total_steps} | "
-                        f"Loss: {avg_loss:.4f}{extra_msg} | LR: {curr_lr:.2e} | Speed: {speed:.1f} samples/s",
+                        f"Loss: {avg_loss:.4f}{extra_msg} | {lr_msg} | Speed: {speed:.1f} samples/s",
                         flush=True,
                     )
 
@@ -1553,6 +1633,18 @@ def main():
         help="Train the full transformer backbone (freezing embedding tables & vision tower) instead of LoRA",
     )
     parser.add_argument(
+        "--head-lr",
+        type=float,
+        default=None,
+        help="Optional higher learning rate for score head & norm (e.g. 1e-4) when cold-starting from base",
+    )
+    parser.add_argument(
+        "--use-8bit-adam",
+        action="store_true",
+        default=False,
+        help="Use bitsandbytes PagedAdamW8bit (8-bit paged optimizer) for large model memory efficiency",
+    )
+    parser.add_argument(
         "--start-epoch",
         type=int,
         default=0,
@@ -1572,6 +1664,7 @@ def main():
         batch_size=args.batch_size,
         grad_accum=args.grad_accum,
         lr=args.lr,
+        head_lr=args.head_lr,
         max_length=args.max_length,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
@@ -1591,6 +1684,7 @@ def main():
         use_token_bucketing=args.token_bucketing,
         max_tokens_per_batch=args.max_tokens_per_batch,
         image_root=args.image_root,
+        use_8bit_adam=args.use_8bit_adam,
         seed=args.seed,
     )
 

@@ -1,0 +1,47 @@
+{
+  "oracle": {
+    "avg_kills": 16.0,
+    "avg_steps": 225.0,
+    "avg_latency_ms": 0.00038809349967373744,
+    "avg_oracle_agreement": 1.0,
+    "episodes": [
+      {
+        "kills": 16,
+        "reward": 15.0,
+        "steps": 225,
+        "avg_latency_ms": 0.00038809349967373744,
+        "oracle_agreement": 1.0
+      }
+    ]
+  },
+  "random": {
+    "avg_kills": 0.0,
+    "avg_steps": 56.0,
+    "avg_latency_ms": 0.001310720108449459,
+    "avg_oracle_agreement": 0.2857142857142857,
+    "episodes": [
+      {
+        "kills": 0,
+        "reward": -1.0,
+        "steps": 56,
+        "avg_latency_ms": 0.001310720108449459,
+        "oracle_agreement": 0.2857142857142857
+      }
+    ]
+  },
+  "gevva": {
+    "avg_kills": 4.0,
+    "avg_steps": 130.0,
+    "avg_latency_ms": 105.56915978936908,
+    "avg_oracle_agreement": 0.5230769230769231,
+    "episodes": [
+      {
+        "kills": 4,
+        "reward": 3.0,
+        "steps": 130,
+        "avg_latency_ms": 105.56915978936908,
+        "oracle_agreement": 0.5230769230769231
+      }
+    ]
+  }
+}

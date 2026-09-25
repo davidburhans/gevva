@@ -101,6 +101,9 @@ def load(
     elif model_name_or_path == "davidburhans/gevva-e2b-multimodal" and not os.path.exists(model_name_or_path):
         if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
             model_name_or_path = "ckpt/gevva-e2b-phase4/best"
+    elif model_name_or_path in ("davidburhans/gevva-e4b", "gevva-e4b") and not os.path.exists(model_name_or_path):
+        if os.path.isdir("ckpt/gevva-e4b-flagship/best"):
+            model_name_or_path = "ckpt/gevva-e4b-flagship/best"
 
     if device == "auto":
         import torch

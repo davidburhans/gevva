@@ -109,15 +109,31 @@ def predict_pair(
     predicted_label = labels[class_idx]
     confidence = float(probs[class_idx])
 
-    # Format label dictionary for Gradio Label component
+    # Plain-English human explanation
+    if predicted_label == "entailment":
+        icon = "🟢"
+        verdict_text = "VERIFIED TRUE (ENTAILMENT)"
+        meaning = "The provided document or image directly supports and proves this statement."
+    elif predicted_label == "contradiction":
+        icon = "🔴"
+        verdict_text = "FALSE / REFUTED (CONTRADICTION)"
+        meaning = "This statement directly contradicts the provided document or image (hallucination or factual error detected)."
+    else:
+        icon = "🟡"
+        verdict_text = "UNCLEAR / NOT ENOUGH INFO (NEUTRAL)"
+        meaning = "The provided document or image does not contain enough evidence to confirm or deny this statement."
+
     label_dict = {
         "Entailment (True / Verified)": float(probs[1]),
         "Contradiction (False / Refuted)": float(probs[0]),
         "Neutral (Unverifiable / Irrelevant)": float(probs[2]),
     }
 
-    verdict_display = f"### Verdict: **{predicted_label.upper()}** (Confidence: {confidence*100:.1f}%)"
-    latency_display = f"⏱️ Forward Pass Latency: **{elapsed_ms:.1f} ms** ({'GPU' if torch.cuda.is_available() else 'CPU'})"
+    verdict_display = f"""### {icon} Verdict: **{verdict_text}** (Confidence: {confidence*100:.1f}%)
+
+> **In Plain English**: {meaning}
+"""
+    latency_display = f"⏱️ Forward Pass Latency: **{elapsed_ms:.1f} ms** ({'GPU accelerated' if torch.cuda.is_available() else 'CPU mode'})"
 
     return verdict_display, label_dict, latency_display
 
@@ -156,14 +172,20 @@ def route_intent(
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     ranked = sorted(enumerate(scores), key=lambda x: -x[1])
-    lines = [f"### 🎯 Selected Tool: **`{tools[best_idx]}`** (Confidence: {scores[best_idx]*100:.1f}%)\n"]
-    lines.append("| Rank | Tool / Action Candidate | Probability |")
-    lines.append("| :---: | :--- | :---: |")
+    winning_tool = tools[best_idx]
+    winning_score = scores[best_idx] * 100
+
+    lines = [
+        f"### 🎯 Winning Action: **`{winning_tool}`** ({winning_score:.1f}% Match)\n",
+        f"> **Plain-English Meaning**: Gevva instantly selected `{winning_tool}` as the best tool to handle this request out of {len(tools)} candidates in {elapsed_ms:.1f} ms.\n",
+        "| Rank | Tool / Action Candidate | Match Probability |",
+        "| :---: | :--- | :---: |",
+    ]
     for r, (idx, s) in enumerate(ranked):
         marker = " 🏆" if idx == best_idx else ""
         lines.append(f"| #{r+1} | `{tools[idx]}`{marker} | **{s*100:.1f}%** |")
 
-    return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms** ({'GPU' if torch.cuda.is_available() else 'CPU'})"
+    return "\n".join(lines), f"⏱️ Routing Latency: **{elapsed_ms:.1f} ms** ({'GPU accelerated' if torch.cuda.is_available() else 'CPU mode'})"
 
 
 @gpu_decorator(duration=30)
@@ -183,13 +205,25 @@ def grade_candidate(
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
     is_correct = grade.is_correct
-    badge = "✅ **CORRECT (Entails Reference)**" if is_correct else f"❌ **INCORRECT ({grade.label.upper()})**"
     p_dict = grade.probabilities
     p_ent = float(p_dict.get("entailment", 0.0))
     p_con = float(p_dict.get("contradiction", 0.0))
     p_neu = float(p_dict.get("neutral", 0.0))
+
+    if is_correct:
+        badge = "✅ CORRECT (Entails Reference)"
+        explanation = "The student / AI response accurately satisfies the reference answer key."
+    else:
+        badge = f"❌ INCORRECT ({grade.label.upper()})"
+        if grade.label == "contradiction":
+            explanation = "The response directly contradicts the answer key (contains factual errors or wrong facts)."
+        else:
+            explanation = "The response is incomplete, irrelevant, or fails to satisfy the answer key."
+
     summary = f"""### {badge}
-- **Confidence**: **{grade.score*100:.1f}%**
+> **In Plain English**: {explanation}
+
+- **Overall Grade Confidence**: **{grade.score*100:.1f}%**
 - **Semantic Alignment (Entailment)**: {p_ent*100:.1f}%
 - **Contradiction Probability**: {p_con*100:.1f}%
 - **Neutral / Irrelevant Probability**: {p_neu*100:.1f}%
@@ -198,58 +232,131 @@ def grade_candidate(
 
 
 # -----------------------------------------------------------------------------
-# Gradio UI Construction
+# Gradio UI Construction & Styling
 # -----------------------------------------------------------------------------
-title = "⚡ Gevva: SOTA Multimodal 128K System 1 Decision Engine"
-description = """
-**#1 Global Leaderboard on JevBench (77.54 Composite Score)**.
-Non-autoregressive cognitive System 1 model built on Google Gemma 4 foundation models:
-Evaluates text claims, visual scenes, tool routes, and rubric grading in a **single forward pass (~14–16 ms on GPU, ~150 ms on CPU)**.
+title = "⚡ Gevva: Instant AI Decision Engine"
 
-- **Flagship Model**: [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b)
-- **Multimodal Model**: [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal)
-- **Dataset**: [`davidburhans/gevva-decisions`](https://huggingface.co/datasets/davidburhans/gevva-decisions)
-- **PyPI**: `pip install gevva`
-- **GitHub**: [https://github.com/davidburhans/gevva](https://github.com/davidburhans/gevva)
+custom_css = """
+.hero-box {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+    color: #f8fafc;
+}
+.hero-title {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: #38bdf8;
+}
+.hero-subtitle {
+    font-size: 15px;
+    line-height: 1.5;
+    color: #cbd5e1;
+    margin-bottom: 16px;
+}
+.cards-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+.card-item {
+    flex: 1;
+    min-width: 220px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 12px 16px;
+}
+.card-item h4 {
+    margin: 0 0 4px 0;
+    font-size: 14px;
+    color: #f1f5f9;
+}
+.card-item p {
+    margin: 0;
+    font-size: 12px;
+    color: #94a3b8;
+}
+.tip-banner {
+    background-color: #f8fafc;
+    border-left: 4px solid #3b82f6;
+    padding: 10px 14px;
+    border-radius: 4px;
+    margin-bottom: 14px;
+    font-size: 14px;
+}
 """
 
 with gr.Blocks(title=title) as demo:
-    gr.Markdown(f"# {title}")
-    gr.Markdown(description)
+    # HERO HEADER & STYLING
+    gr.HTML(f"""
+    <style>{custom_css}</style>
+    <div class="hero-box">
+        <div class="hero-title">⚡ Gevva: Instant AI Decision Engine</div>
+        <div class="hero-subtitle">
+            Think of Gevva as an <strong>instant reflex engine</strong> for AI. While generative models like ChatGPT slowly type words token-by-token (taking seconds), Gevva makes <strong>split-second decisions in ~15 milliseconds</strong> (100x faster). It verifies facts, catches hallucinations, inspects charts, routes user requests, and grades answers with calibrated certainty.
+        </div>
+        <div class="cards-row">
+            <div class="card-item">
+                <h4>⚡ 15 Millisecond Reflex</h4>
+                <p>Non-autoregressive forward pass. No typing delay or token stutter.</p>
+            </div>
+            <div class="card-item">
+                <h4>👁️ Vision & Text Combined</h4>
+                <p>Verifies financial charts, supply tables, and invoices alongside text.</p>
+            </div>
+            <div class="card-item">
+                <h4>🏆 #1 Global Rank (77.54)</h4>
+                <p>Holds the world #1 composite score on the JevBench decision benchmark.</p>
+            </div>
+        </div>
+    </div>
+    """)
 
-    model_selector = gr.Dropdown(
-        choices=MODEL_OPTIONS,
-        value="davidburhans/gevva-e2b-multimodal",
-        label="Select Gevva Model Engine",
-        info="davidburhans/gevva-e2b-multimodal handles both text and visual inputs; davidburhans/gevva-e2b is the #1 text flagship.",
-    )
+    with gr.Row():
+        model_selector = gr.Dropdown(
+            choices=MODEL_OPTIONS,
+            value="davidburhans/gevva-e2b-multimodal",
+            label="🤖 Model Engine",
+            info="Choose 'gevva-e2b-multimodal' for text + images/charts, or 'gevva-e2b' for text-only.",
+            scale=3,
+        )
 
     with gr.Tabs():
-        # TAB 1: Visual & Text NLI
-        with gr.TabItem("🔮 3-Class NLI & Visual Entailment"):
-            gr.Markdown("Verify factual claims against text documents, images, financial charts, or receipts.")
+        # TAB 1: Fact Checker & Truth Detective
+        with gr.TabItem("🔍 Fact Checker & Truth Detective"):
+            gr.HTML("""
+            <div class="tip-banner">
+                <strong>How this works:</strong> Provide a source document or upload an image (chart, receipt, invoice, photo). Then enter a statement to test. Gevva will instantly tell you if the statement is <strong>🟢 TRUE (Supported)</strong>, <strong>🔴 FALSE (Contradicted / Hallucinated)</strong>, or <strong>🟡 UNCLEAR (Not enough info)</strong>.
+            </div>
+            """)
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=5):
                     nli_premise = gr.Textbox(
-                        label="Premise Context (Optional if image provided)",
-                        placeholder="e.g., A financial earnings report or invoice is displayed...",
+                        label="1. Source Evidence / Document (Text)",
+                        placeholder="Paste an article paragraph, contract clause, medical trial note, or company policy...",
                         lines=3,
                     )
                     nli_image = gr.Image(
-                        label="Premise Image (Optional: Charts, Invoices, Tables, Scenes)",
+                        label="Context Image (Optional: Chart, Invoice, Table, or Scene)",
                         type="pil",
                     )
                     nli_hyp = gr.Textbox(
-                        label="Hypothesis / Claim Statement to Evaluate",
-                        placeholder="e.g., The Q3 revenue was higher than Q4.",
+                        label="2. Statement to Verify (Is this True or False based on the evidence?)",
+                        placeholder="e.g. 'The contract renews automatically' or 'Q3 revenue was higher than Q4'",
                         lines=2,
                     )
-                    btn_predict = gr.Button("Evaluate Claim ⚡", variant="primary")
-                with gr.Column():
-                    out_verdict = gr.Markdown("### Verdict: Awaiting Input")
-                    out_probs = gr.Label(label="Calibrated Probability Distribution", num_top_classes=3)
+                    btn_predict = gr.Button("⚡ Check Truth & Facts", variant="primary", size="lg")
+                with gr.Column(scale=5):
+                    out_verdict = gr.Markdown("### 🔍 Verdict: Ready for input — click an example below to try!")
+                    out_probs = gr.Label(label="Confidence Breakdown", num_top_classes=3)
                     out_latency = gr.Markdown("⏱️ Latency: --")
 
+            gr.Markdown("#### 💡 Click any real-world example to test instantly:")
             gr.Examples(
                 examples=[
                     [
@@ -288,32 +395,43 @@ with gr.Blocks(title=title) as demo:
                 outputs=[out_verdict, out_probs, out_latency],
             )
 
-        # TAB 2: Zero-Shot Tool Routing
-        with gr.TabItem("⚡ Zero-Shot Tool & Intent Routing"):
-            gr.Markdown("Route incoming user queries and uploaded document/scene images to API functions or workflows in a single forward pass without prompt generation latency.")
+        # TAB 2: Smart Assistant: Action Routing
+        with gr.TabItem("⚡ Smart Assistant: Which Action to Take?"):
+            gr.HTML("""
+            <div class="tip-banner">
+                <strong>How this works:</strong> AI agents often need to decide what to do next when a user talks to them. Instead of waiting for a slow generative model to write out thoughts, Gevva looks at the incoming request and instantly picks the best tool or action in <strong>15 milliseconds</strong>.
+            </div>
+            """)
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=5):
                     route_query = gr.Textbox(
-                        label="Incoming User Query / Instruction",
+                        label="User Request or Customer Message",
                         value="The package never arrived at my doorstep, give me back the money you charged me.",
                         lines=2,
                     )
                     route_image = gr.Image(
-                        label="Context Image (Optional: Invoices, Receipts, Charts, Scenes)",
+                        label="Context Image (Optional)",
                         type="pil",
                     )
                     route_tools = gr.Textbox(
-                        label="Available Tools / Actions (One per line)",
+                        label="Available Tools / Actions (One action per line)",
                         value="reverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle\nquery_knowledge_base: Search customer help documentation and policy articles",
                         lines=5,
                     )
-                    btn_route = gr.Button("Route Query 🎯", variant="primary")
-                with gr.Column():
-                    out_route = gr.Markdown("### 🎯 Routing Result: Awaiting Input")
+                    btn_route = gr.Button("🎯 Choose Best Action", variant="primary", size="lg")
+                with gr.Column(scale=5):
+                    out_route = gr.Markdown("### 🎯 Routing Result: Ready for input")
                     out_route_lat = gr.Markdown("⏱️ Latency: --")
 
+            gr.Markdown("#### 💡 Click any real-world scenario to test:")
             gr.Examples(
                 examples=[
+                    [
+                        "davidburhans/gevva-e2b",
+                        "The package never arrived at my doorstep, give me back the money you charged me.",
+                        "reverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle\nquery_knowledge_base: Search customer help documentation and policy articles",
+                        None,
+                    ],
                     [
                         "davidburhans/gevva-e2b-multimodal",
                         "Did our performance improve towards the end of the year or drop off?",
@@ -334,12 +452,6 @@ with gr.Blocks(title=title) as demo:
                     ],
                     [
                         "davidburhans/gevva-e2b",
-                        "The package never arrived at my doorstep, give me back the money you charged me.",
-                        "reverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle\nquery_knowledge_base: Search customer help documentation and policy articles",
-                        None,
-                    ],
-                    [
-                        "davidburhans/gevva-e2b",
                         "Can a customer bring back an unsealed stereo gadget four weeks after purchase?",
                         "lookup_post_sale_guidelines: Retrieve consumer eligibility terms and timeframe allowances for opened merchandise\nreverse_settled_transaction: Issue credit adjustment and wire funds to cardholder bank account\ntrack_carrier_dispatch: Query live GPS coordinates and logistics milestone for courier vehicle\nterminate_membership: End active recurring subscription privileges at end of current billing cycle",
                         None,
@@ -356,31 +468,36 @@ with gr.Blocks(title=title) as demo:
                 outputs=[out_route, out_route_lat],
             )
 
-        # TAB 3: Reference-Based Answer Grading
-        with gr.TabItem("📝 Response & Rubric Grading"):
-            gr.Markdown("Evaluate whether an LLM candidate response faithfully satisfies a reference ground truth or grading rubric.")
+        # TAB 3: Instant Homework & AI Grader
+        with gr.TabItem("📋 Instant Homework & AI Grader"):
+            gr.HTML("""
+            <div class="tip-banner">
+                <strong>How this works:</strong> Did a student (or another AI) answer a test question correctly? Paste the question, the official answer key, and the student's answer. Gevva evaluates whether the response is factually accurate or contains mistakes in <strong>15 milliseconds</strong>.
+            </div>
+            """)
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=5):
                     grade_q = gr.Textbox(
-                        label="Task Prompt / Question",
+                        label="Question / Problem Prompt",
                         value="What is the capital of Australia?",
                         lines=2,
                     )
                     grade_ref = gr.Textbox(
-                        label="Reference Answer / Gold Rubric",
+                        label="Official Answer Key / Reference Rubric",
                         value="Canberra",
                         lines=2,
                     )
                     grade_cand = gr.Textbox(
-                        label="Candidate Response to Grade",
+                        label="Candidate Answer to Grade",
                         value="The capital city of Australia is Canberra.",
                         lines=2,
                     )
-                    btn_grade = gr.Button("Grade Response 📝", variant="primary")
-                with gr.Column():
-                    out_grade = gr.Markdown("### Grading Result: Awaiting Input")
+                    btn_grade = gr.Button("📝 Grade Answer", variant="primary", size="lg")
+                with gr.Column(scale=5):
+                    out_grade = gr.Markdown("### 📝 Grading Result: Ready for input")
                     out_grade_lat = gr.Markdown("⏱️ Latency: --")
 
+            gr.Markdown("#### 💡 Click an example to test correct vs incorrect grading:")
             gr.Examples(
                 examples=[
                     [
@@ -395,6 +512,12 @@ with gr.Blocks(title=title) as demo:
                         "Canberra",
                         "The largest and capital city is Sydney.",
                     ],
+                    [
+                        "davidburhans/gevva-e2b",
+                        "What causes ocean tides on Earth?",
+                        "The gravitational pull of the Moon and the Sun.",
+                        "Ocean tides are primarily created by the gravitational pull exerted by the Moon.",
+                    ],
                 ],
                 inputs=[model_selector, grade_q, grade_ref, grade_cand],
                 outputs=[out_grade, out_grade_lat],
@@ -407,28 +530,93 @@ with gr.Blocks(title=title) as demo:
                 outputs=[out_grade, out_grade_lat],
             )
 
-        # TAB 4: Architecture & Leaderboard
-        with gr.TabItem("📊 JevBench Leaderboard & Architecture"):
+        # TAB 4: How It Works & Leaderboard
+        with gr.TabItem("🧠 How It Works & Leaderboard"):
             gr.Markdown("""
-### 🏆 Global JevBench Leaderboard
+### 🧠 The "Gut Reflex" (System 1) vs "Deep Thought" (System 2)
 
-| Global Rank | Model | Parameters | Paradigm | Composite Score | Status |
-| :---: | :--- | :---: | :---: | :---: | :---: |
-| **🥇 #1** | **`Gevva e2b`** | **2.3B** | **System 1 Cross-Encoder** | **`77.54`** | **Active World Champion** |
-| 🥈 #2 | OpenJEV (AlexWortega) | 2.6B | Cross-Encoder | `76.01` | Competitor |
-| 🥉 #3 | TypeSafe AI Jev | 2.5B | Cross-Encoder | `75.40` | Baseline |
-| #4 | Convai Laya | 2.2B | Cross-Encoder | `73.80` | Baseline |
-| #5 | ModernCE Large NLI | 1.8B | Bi/Cross-Encoder | `72.10` | Baseline |
+Psychologist Daniel Kahneman demonstrated that human thinking operates in two modes:
+- **System 1 (Fast & Intuitive)**: Recognizing a friend's face, dodging an incoming ball, or knowing 2+2=4 instantly in a few milliseconds.
+- **System 2 (Slow & Deliberate)**: Solving complex calculus, writing an essay, or planning an itinerary step-by-step.
+
+```
++------------------------------------+    +------------------------------------+
+|         SYSTEM 1: GEVVA            |    |       SYSTEM 2: CHATGPT / CLAUDE   |
+|  - Non-autoregressive decision     |    |  - Autoregressive text generation  |
+|  - Evaluates everything in 1 pass  |    |  - Generates token-by-token        |
+|  - Latency: ~15 milliseconds       |    |  - Latency: 2,000 - 5,000 ms       |
+|  - Cost: 95% cheaper compute       |    |  - Cost: High GPU usage            |
+|  - Use: Routing, Hallucination     |    |  - Use: Long essays, creative text |
+|         Guardrails, Fact Checking  |    |         and multi-step reasoning   |
++------------------------------------+    +------------------------------------+
+```
+
+Most AI agent systems waste huge amounts of time and money calling expensive System 2 models just to make simple decisions (like *"Should I refund this user?"* or *"Did the answer match the source document?"*). **Gevva solves this by acting as the AI's instant reflex.**
 
 ---
 
-### ⚡ Cognitive System 1 Architecture
-Unlike autoregressive LLMs (which take 500–3,000 ms to generate tokens step-by-step), Gevva performs decision-making in a **single non-autoregressive forward pass (~14.3–16.5 ms on RTX 5090, ~150 ms on CPU)**.
+### 🏆 Global JevBench Leaderboard
 
-- **Vision Tower**: Google SigLIP
-- **Backbone**: `google/gemma-4-E2B-it` (2.3B effective parameters)
-- **Context Length**: Up to **128K tokens** (131,072)
-- **Calibration**: Temperature-scaled ($T^* = 1.60$) Expected Calibration Error (ECE) compressed to **0.0655**
+On the official **JevBench** benchmark evaluating System 1 decision-making:
+
+| Global Rank | Model | Parameters | Decision Latency | Composite Score | Status |
+| :---: | :--- | :---: | :---: | :---: | :---: |
+| **🥇 #1** | **`Gevva e2b`** | **2.3B** | **14.3 ms** | **`77.54`** | **Active World Champion** |
+| 🥈 #2 | OpenJEV (AlexWortega) | 2.6B | 18.2 ms | `76.01` | Competitor |
+| 🥉 #3 | TypeSafe AI Jev | 2.5B | 15.0 ms | `75.40` | Baseline |
+| #4 | Convai Laya | 2.2B | 18.4 ms | `73.80` | Baseline |
+| #5 | ModernCE Large NLI | 1.8B | 16.1 ms | `72.10` | Baseline |
+
+---
+""")
+
+            with gr.Accordion("🔬 For Machine Learning Engineers & Data Scientists (Technical Specs & SDK)", open=False):
+                gr.Markdown("""
+#### Technical Architecture
+- **Backbone Architecture**: Google Gemma 4 (`google/gemma-4-E2B-it`), 2.3B effective parameters.
+- **Vision Encoder**: Google SigLIP tower (frozen during cross-encoder classification tuning).
+- **Context Budget**: Native 128,000 token Rotary Position Embeddings (RoPE).
+- **Pooling & Classification**: Last non-pad token pooling over backbone hidden state with linear projection head to 3 calibrated logits (0=Contradiction, 1=Entailment, 2=Neutral).
+- **Calibration**: Temperature-scaled ($T^* = 1.60$) Expected Calibration Error (ECE) compressed to **0.0655**.
+
+#### Python SDK Usage
+Install the official package from PyPI:
+```bash
+pip install gevva
+```
+
+Run instant predictions in Python:
+```python
+from gevva import load
+
+# Load the champion model (runs on GPU or CPU)
+engine = load("davidburhans/gevva-e2b")
+
+# 1. Fact checking / Hallucination verification
+probs = engine.predict([("The sky is blue today.", "The sky is blue.")])
+print(probs)  # [p_contradiction, p_entailment, p_neutral]
+
+# 2. Tool & workflow routing
+best_idx, scores = engine.rerank(
+    premise="Please refund my credit card.",
+    options=["process_refund", "track_shipment", "cancel_account"]
+)
+print("Chosen tool:", ["process_refund", "track_shipment", "cancel_account"][best_idx])
+
+# 3. Answer grading
+grade = engine.grade(
+    question="What is 2+2?",
+    reference="4",
+    candidate="The answer is 4."
+)
+print("Is Correct:", grade.is_correct, "Score:", grade.score)
+```
+
+- **Hugging Face Model Hub**:
+  - Text Flagship: [`davidburhans/gevva-e2b`](https://huggingface.co/davidburhans/gevva-e2b)
+  - Vision & Multimodal: [`davidburhans/gevva-e2b-multimodal`](https://huggingface.co/davidburhans/gevva-e2b-multimodal)
+  - Training Dataset: [`davidburhans/gevva-decisions`](https://huggingface.co/datasets/davidburhans/gevva-decisions)
+- **GitHub Repository**: [https://github.com/davidburhans/gevva](https://github.com/davidburhans/gevva)
 """)
 
 if __name__ == "__main__":

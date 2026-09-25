@@ -59,3 +59,6 @@ results/committee_watchdog.log
 .idea/
 *.swp
 *.swo
+*.log
+*.ini
+data_index.json

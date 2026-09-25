@@ -13,7 +13,7 @@ Usage example:
 import json
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Union
 
 
 class LLMEndpointClient:
@@ -69,19 +69,41 @@ class LLMEndpointClient:
         response_format: Optional[Dict[str, Any]] = None,
         grammar: Optional[str] = None,
         chat_template_kwargs: Optional[Dict[str, Any]] = None,
+        images: Optional[Sequence[Any]] = None,
     ) -> Optional[str]:
         """Single chat completion; returns content (or reasoning_content fallback), None on failure.
 
-        Example: client.query_chat(sys, usr, temperature=0.0, response_format=json_schema)
+        Supports multimodal vision inputs: `images` can be file paths or PIL Image objects.
         """
+        import base64
+        import io
         import time
         import urllib.request
+        from pathlib import Path
+        from PIL import Image
+
+        if images:
+            user_content = [{"type": "text", "text": user_prompt}]
+            for img in images:
+                if isinstance(img, (str, Path)):
+                    img_path = Path(img)
+                    if img_path.exists():
+                        b64_str = base64.b64encode(img_path.read_bytes()).decode("utf-8")
+                        mime = "image/png" if img_path.suffix.lower() == ".png" else "image/jpeg"
+                        user_content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_str}"}})
+                elif isinstance(img, Image.Image):
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_str}"}})
+        else:
+            user_content = user_prompt
 
         body: Dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,

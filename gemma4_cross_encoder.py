@@ -302,7 +302,7 @@ def tokenize_nli_pair_safe(
     premise: str,
     hypothesis: str,
     max_length: int = 2048,
-    image_soft_tokens: int = 0,
+    image_soft_tokens: Union[int, Sequence[int]] = 0,
     boi_token: str = "<|image>",
     image_token: str = "<|image|>",
     eoi_token: str = "<image|>",
@@ -315,6 +315,7 @@ def tokenize_nli_pair_safe(
     3. Terminal prompt ends with fixed '\nPrediction:' token to eliminate token identity prior bias.
     4. Leading BOS token serves as dedicated attention sink for causal stability.
     5. Strips multimodal special tokens from raw premise & hypothesis to prevent Gemma4Model crashes.
+    6. Multi-image support: accepts single int or sequence of soft token counts per image.
     """
     # Sanitize raw premise & hypothesis strings: strip multimodal special tokens
     # so adversarial inputs cannot crash torch_compilable_check inside Gemma4Model.
@@ -334,21 +335,37 @@ def tokenize_nli_pair_safe(
     prem_prefix_ids = tokenizer.encode("Premise: ", add_special_tokens=False)
 
     vis_ids = []
-    if image_soft_tokens > 0:
+    if isinstance(image_soft_tokens, int):
+        counts = [image_soft_tokens] if image_soft_tokens > 0 else []
+    else:
+        counts = [int(c) for c in image_soft_tokens if int(c) > 0]
+
+    has_images = len(counts) > 0
+    if has_images:
         boi_id = tokenizer.convert_tokens_to_ids(boi_token)
         img_id = tokenizer.convert_tokens_to_ids(image_token)
         eoi_id = tokenizer.convert_tokens_to_ids(eoi_token)
-        if boi_id is not None and img_id is not None and eoi_id is not None:
-            vis_ids = [boi_id] + [img_id] * image_soft_tokens + [eoi_id] + tokenizer.encode(" ", add_special_tokens=False)
+        if len(counts) == 1:
+            n_soft = counts[0]
+            if boi_id is not None and img_id is not None and eoi_id is not None:
+                vis_ids = [boi_id] + [img_id] * n_soft + [eoi_id] + tokenizer.encode(" ", add_special_tokens=False)
+            else:
+                vis_ids = tokenizer.encode(f"{boi_token}{image_token * n_soft}{eoi_token} ", add_special_tokens=False)
         else:
-            vis_ids = tokenizer.encode(f"{boi_token}{image_token * image_soft_tokens}{eoi_token} ", add_special_tokens=False)
+            for idx, n_soft in enumerate(counts, start=1):
+                pfx = tokenizer.encode(f"Image {idx}: ", add_special_tokens=False)
+                if boi_id is not None and img_id is not None and eoi_id is not None:
+                    block = [boi_id] + [img_id] * n_soft + [eoi_id]
+                else:
+                    block = tokenizer.encode(f"{boi_token}{image_token * n_soft}{eoi_token}", add_special_tokens=False)
+                vis_ids.extend(pfx + block + tokenizer.encode(" ", add_special_tokens=False))
 
     overhead = len(bos_id) + len(prem_prefix_ids) + len(vis_ids) + len(hyp_ids)
     avail_premise = max_length - overhead
     if avail_premise < 0:
         # Tight budget: drop premise text first
         avail_premise = 0
-        if image_soft_tokens == 0:
+        if not has_images:
             overhead_no_prem = len(bos_id) + len(prem_prefix_ids) + len(hyp_ids)
             if overhead_no_prem > max_length:
                 avail_hyp_body = max(1, max_length - len(bos_id) - len(prem_prefix_ids) - len(hyp_prefix_ids) - len(pred_suffix_ids))
@@ -357,7 +374,7 @@ def tokenize_nli_pair_safe(
 
     prem_ids = tokenizer.encode(premise.strip(), add_special_tokens=False)[:max(0, avail_premise)]
     full_ids = bos_id + prem_prefix_ids + vis_ids + prem_ids + hyp_ids
-    if image_soft_tokens == 0 and len(full_ids) > max_length:
+    if not has_images and len(full_ids) > max_length:
         full_ids = full_ids[:max_length]
     return full_ids
 
@@ -528,6 +545,9 @@ class Gemma4CrossEncoder(System1Engine):
         elif model_name_or_path == "davidburhans/gevva-e2b-multimodal" and not os.path.exists("davidburhans/gevva-e2b-multimodal"):
             if os.path.isdir("ckpt/gevva-e2b-phase4/best"):
                 model_name_or_path = "ckpt/gevva-e2b-phase4/best"
+        elif model_name_or_path in ("davidburhans/gevva-e4b", "gevva-e4b") and not os.path.exists(model_name_or_path):
+            if os.path.isdir("ckpt/gevva-e4b-flagship/best"):
+                model_name_or_path = "ckpt/gevva-e4b-flagship/best"
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.max_length = max_len if max_len is not None else max_length
@@ -756,19 +776,26 @@ class Gemma4CrossEncoder(System1Engine):
         processed_position_ids = []
 
         for (premise, hypothesis), img in zip(pairs, images):
-            n_soft = 0
+            soft_counts = 0
             if img is not None:
-                feat = self.image_processor(img, return_tensors="pt")
-                n_soft = int(feat["num_soft_tokens_per_image"][0])
-                processed_pixel_values.append(feat["pixel_values"][0])
-                processed_position_ids.append(feat["image_position_ids"][0])
+                if isinstance(img, (list, tuple)):
+                    img_list = [i for i in img if i is not None]
+                else:
+                    img_list = [img]
+                if img_list:
+                    feat = self.image_processor(img_list, return_tensors="pt")
+                    soft_counts = [int(x) for x in feat["num_soft_tokens_per_image"]]
+                    for pv in feat["pixel_values"]:
+                        processed_pixel_values.append(pv)
+                    for pos in feat["image_position_ids"]:
+                        processed_position_ids.append(pos)
 
             ids = tokenize_nli_pair_safe(
                 tokenizer=self.tokenizer,
                 premise=premise,
                 hypothesis=hypothesis,
                 max_length=self.max_length,
-                image_soft_tokens=n_soft,
+                image_soft_tokens=soft_counts,
                 boi_token=self.boi_token,
                 image_token=self.image_token,
                 eoi_token=self.eoi_token,

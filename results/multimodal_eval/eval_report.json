@@ -1,0 +1,53 @@
+{
+  "total_samples": 600,
+  "overall_accuracy": 71.33,
+  "ece": 0.1316,
+  "brier": 0.4214,
+  "p50_latency_ms": 3.73,
+  "family_breakdown": {
+    "cross_chart_trend": {
+      "count": 144,
+      "accuracy": 64.58,
+      "ece": 0.3103,
+      "brier": 0.4455
+    },
+    "dashboard_metric_alert": {
+      "count": 114,
+      "accuracy": 64.91,
+      "ece": 0.1796,
+      "brier": 0.5333
+    },
+    "spatial_map_movement": {
+      "count": 123,
+      "accuracy": 66.67,
+      "ece": 0.2582,
+      "brier": 0.4249
+    },
+    "table_invoice_diff": {
+      "count": 99,
+      "accuracy": 100.0,
+      "ece": 0.3014,
+      "brier": 0.228
+    },
+    "ui_state_transition": {
+      "count": 120,
+      "accuracy": 66.67,
+      "ece": 0.3446,
+      "brier": 0.4423
+    }
+  },
+  "label_breakdown": {
+    "contradiction": {
+      "count": 200,
+      "recall": 39.0
+    },
+    "entailment": {
+      "count": 200,
+      "recall": 75.0
+    },
+    "neutral": {
+      "count": 200,
+      "recall": 100.0
+    }
+  }
+}

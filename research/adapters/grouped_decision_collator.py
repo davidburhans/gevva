@@ -281,28 +281,44 @@ class GroupedDecisionCollator:
             sources_list.append(r.get("source", "custom"))
 
             # Handle multimodal images if present
-            img_field = r.get("image")
-            resolved_path = None
-            if img_field and self.image_processor is not None:
-                p_with_root = os.path.join(self.image_root, img_field)
-                if os.path.exists(p_with_root):
-                    resolved_path = p_with_root
-                elif os.path.exists(img_field):
-                    resolved_path = img_field
+            raw_images = r.get("images")
+            if raw_images is None:
+                raw_img = r.get("image")
+                if isinstance(raw_img, list):
+                    raw_images = raw_img
+                elif raw_img:
+                    raw_images = [raw_img]
+                else:
+                    raw_images = []
+            elif isinstance(raw_images, str):
+                raw_images = [raw_images]
 
-            if resolved_path is not None:
-                img = Image.open(resolved_path).convert("RGB")
-                feat = self.image_processor(img, return_tensors="pt")
-                n_soft = int(feat["num_soft_tokens_per_image"][0])
+            resolved_paths = []
+            if self.image_processor is not None:
+                for img_field in raw_images:
+                    if not img_field:
+                        continue
+                    p_with_root = os.path.join(self.image_root, str(img_field))
+                    if os.path.exists(p_with_root):
+                        resolved_paths.append(p_with_root)
+                    elif os.path.exists(str(img_field)):
+                        resolved_paths.append(str(img_field))
+
+            if resolved_paths and len(resolved_paths) == len(raw_images):
+                pil_imgs = [Image.open(p).convert("RGB") for p in resolved_paths]
+                feat = self.image_processor(pil_imgs, return_tensors="pt")
+                soft_counts = [int(x) for x in feat["num_soft_tokens_per_image"]]
                 ids = tokenize_nli_pair_safe(
                     tokenizer=self.tokenizer,
                     premise=r["premise"],
                     hypothesis=r["hypothesis"],
                     max_length=self.max_length,
-                    image_soft_tokens=n_soft,
+                    image_soft_tokens=soft_counts,
                 )
-                pixel_values_list.append(feat["pixel_values"][0])
-                image_pos_ids_list.append(feat["image_position_ids"][0])
+                for pv in feat["pixel_values"]:
+                    pixel_values_list.append(pv)
+                for pos in feat["image_position_ids"]:
+                    image_pos_ids_list.append(pos)
             else:
                 ids = tokenize_nli_pair_safe(
                     tokenizer=self.tokenizer,
