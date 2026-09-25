@@ -70,7 +70,7 @@ model-index:
       value: 17.8
 ---
 
-# ⚡ Gevva e4b Flagship: Deep Reasoning AI Decision Engine
+# ⚡ Gevva e4b: Deep Reasoning AI Decision Engine
 
 <p align="center">
   <a href="https://huggingface.co/spaces/davidburhans/gevva-demo"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Space-Interactive%20Demo-blue.svg" alt="Interactive Demo"></a>
@@ -83,7 +83,7 @@ model-index:
 ---
 
 ### *17-millisecond deep reasoning, high-stakes fact checking, multi-tool routing & multi-image verification.*
-**Built on Google's Gemma 4 E4B (4.5B parameters, 42 layers, 128K context) • 84% on ARC-Challenge • 76.19% on JevBench**
+**Built on Google's Gemma 4 E4B (4.5B parameters, 42 layers, 128K context) • 84% on ARC-Challenge • 76.6% on JevBench**
 
 ---
 
@@ -102,7 +102,7 @@ Psychologist Daniel Kahneman famously described human thought in two modes:
 - **System 1 (Fast Reflexes)**: Instant decisions in 15–20 milliseconds (dodging a ball, recognizing a face).
 - **System 2 (Slow Reasoning)**: Writing essays or working out long equations step-by-step.
 
-**Gevva e4b** is the deep reasoning flagship of the Gevva family. In a single **17.8 millisecond forward pass**, it evaluates evidence and outputs confident, mathematically calibrated decision probabilities.
+**Gevva e4b** is the 4.5B deep reasoning model in the Gevva family. In a single **17.8 millisecond forward pass**, it evaluates evidence and outputs confident, mathematically calibrated decision probabilities.
 
 ```
 ┌────────────────────────────────────────┐       ┌────────────────────────────────────────┐
@@ -122,7 +122,7 @@ Psychologist Daniel Kahneman famously described human thought in two modes:
 ```python
 from gevva import load
 
-# 1. Load the flagship decision engine (GPU or CPU)
+# 1. Load the decision engine (GPU or CPU)
 engine = load("davidburhans/gevva-e4b")
 
 # 2. Instant Fact Check / Hallucination Detection
