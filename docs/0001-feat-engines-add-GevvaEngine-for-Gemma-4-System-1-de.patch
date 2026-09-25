@@ -1,0 +1,376 @@
+From 554e1cf75529068973b0315d842f4d85df945143 Mon Sep 17 00:00:00 2001
+From: David Burhans <david.burhans@gmail.com>
+Date: Fri, 25 Sep 2026 08:35:26 -0500
+Subject: [PATCH] feat(engines): add GevvaEngine for Gemma 4 System 1 decision
+ models
+
+---
+ decision_index/engines/__init__.py     |   1 +
+ decision_index/engines/gevva_engine.py | 206 +++++++++++++++++++++++++
+ pyproject.toml                         |   3 +
+ tests/test_gevva_engine.py             | 114 ++++++++++++++
+ 4 files changed, 324 insertions(+)
+ create mode 100644 decision_index/engines/gevva_engine.py
+ create mode 100644 tests/test_gevva_engine.py
+
+diff --git a/decision_index/engines/__init__.py b/decision_index/engines/__init__.py
+index 2f9b826..0117caf 100644
+--- a/decision_index/engines/__init__.py
++++ b/decision_index/engines/__init__.py
+@@ -4,6 +4,7 @@ REGISTRY = {
+     "http": "decision_index.engines.http:HttpSystemOne",
+     "transformers": "decision_index.engines.transformers_engine:TransformersEngine",
+     "random": "decision_index.engines.base:RandomEngine",
++    "gevva": "decision_index.engines.gevva_engine:GevvaEngine",
+ }
+ 
+ 
+diff --git a/decision_index/engines/gevva_engine.py b/decision_index/engines/gevva_engine.py
+new file mode 100644
+index 0000000..821ef90
+--- /dev/null
++++ b/decision_index/engines/gevva_engine.py
+@@ -0,0 +1,206 @@
++"""decision_index.engines.gevva_engine
++======================================
++In-process Decision Index Engine adapter for Gevva (Gemma 4 Multimodal System 1 Decision Engine).
++Non-autoregressive cross-encoder: scores typed decisions in a single forward pass without token generation.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++from typing import Any, Dict, List, Optional, Sequence, Tuple
++
++import numpy as np
++
++from decision_index.engines.base import Engine, Unsupported, text
++
++
++def _softmax(logits: Sequence[float], temperature: float = 1.0) -> List[float]:
++    arr = np.array(logits, dtype=np.float64) / max(temperature, 1e-4)
++    exp = np.exp(arr - np.max(arr))
++    probs = exp / np.sum(exp)
++    probs = probs / np.sum(probs)
++    return probs.tolist()
++
++
++class GevvaEngine(Engine):
++    name = "gevva"
++    latency = "Device-synchronized in-process request wall time including NLI formatting and cross-encoder inference."
++
++    def __init__(
++        self,
++        model: str = "davidburhans/gevva-e4b",
++        device: Optional[str] = None,
++        dtype: Optional[str] = None,
++        max_length: int = 4096,
++        temperature: float = 1.0,
++        scoring: str = "margin",
++        batch_size: int = 16,
++        **options,
++    ):
++        super().__init__(**options)
++        try:
++            import torch
++            from gevva import load
++        except ImportError as e:
++            raise ImportError(
++                "The gevva package and PyTorch are required to run GevvaEngine. "
++                "Install with: pip install gevva"
++            ) from e
++
++        self.torch = torch
++        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
++        self.temperature = float(temperature)
++        self.scoring = scoring
++        self.model_id = model
++        self.max_length = max_length
++        self.batch_size = batch_size
++
++        self.model = load(
++            model,
++            device=self.device,
++            dtype=dtype,
++            max_length=max_length,
++            batch_size=batch_size,
++        )
++
++        self.provenance = {
++            "kind": "gevva_cross_encoder",
++            "repo": model,
++            "device": self.device,
++            "dtype": dtype or "bfloat16",
++            "scoring": scoring,
++            "temperature": self.temperature,
++            "max_length": max_length,
++            "architecture": "Gemma 4 Multimodal System 1 Decision Engine",
++            "policy": "Non-autoregressive cross-encoder scoring each candidate option via calibrated NLI entailment-contradiction margin. No autoregressive generation tokens.",
++        }
++
++    def runtime(self) -> Dict[str, Any]:
++        info = {
++            "torch": self.torch.__version__,
++            "device": self.device,
++            "model": self.model_id,
++        }
++        if self.device == "cuda" and self.torch.cuda.is_available():
++            info.update(
++                cuda=self.torch.version.cuda,
++                gpu=self.torch.cuda.get_device_name(),
++            )
++        try:
++            import gevva
++            info["gevva"] = getattr(gevva, "__version__", "1.0.0")
++        except Exception:
++            pass
++        return info
++
++    def synchronize(self):
++        if self.device == "cuda" and self.torch.cuda.is_available():
++            self.torch.cuda.synchronize()
++
++    def warmup(self):
++        warm = {
++            "warmup": {
++                "type": "choice",
++                "instructions": "Which color is named?",
++                "criteria": {"red": "red", "blue": "blue"},
++            }
++        }
++        self("The color is red.", warm)
++
++    def __call__(self, state: Any, questions: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
++        state_str = text(state) if state not in ("", None, {}, []) else ""
++        answers: Dict[str, Dict[str, Any]] = {}
++        raw: Dict[str, Any] = {}
++        total_tokens = 0
++
++        for q_id, q_dict in questions.items():
++            q_type = q_dict.get("type", "choice")
++            if q_type not in ("choice", "noul"):
++                raise Unsupported(f"Unsupported question type: {q_type}")
++
++            instructions = text(q_dict.get("instructions", ""))
++            criteria = q_dict.get("criteria", {})
++
++            if q_type == "choice":
++                keys = list(criteria.keys())
++                if not keys:
++                    raise Unsupported(f"Question '{q_id}' has no criteria options.")
++
++                if state_str and instructions:
++                    premise = f"{state_str}\n\nQuestion: {instructions}"
++                elif state_str:
++                    premise = state_str
++                else:
++                    premise = instructions
++
++                pairs = []
++                for k in keys:
++                    desc = text(criteria[k])
++                    if desc and desc.lower() != str(k).lower():
++                        hyp = f"The correct answer is {k}: {desc}."
++                    else:
++                        hyp = f"The correct answer is: {k}."
++                    pairs.append((premise, hyp))
++
++                probs = self.model.predict(pairs)
++                # NLI indices: 0=contradiction, 1=entailment, 2=neutral
++                p_con = probs[:, 0]
++                p_ent = probs[:, 1]
++
++                if self.scoring == "contrastive":
++                    scores = (p_ent / (p_ent + p_con + 1e-6)).tolist()
++                elif self.scoring == "entailment":
++                    scores = p_ent.tolist()
++                else:  # margin
++                    scores = (p_ent - p_con).tolist()
++
++                probs_list = _softmax(scores, temperature=self.temperature)
++                choice = keys[int(np.argmax(probs_list))]
++                prob_map = {k: float(p) for k, p in zip(keys, probs_list)}
++
++                answers[q_id] = {
++                    "type": "choice",
++                    "choice": choice,
++                    "probabilities": prob_map,
++                }
++                raw[q_id] = {
++                    "option_scores": dict(zip(keys, scores)),
++                    "pair_count": len(pairs),
++                }
++
++            elif q_type == "noul":
++                if state_str and instructions:
++                    premise = state_str
++                    hypothesis = instructions
++                elif state_str:
++                    premise = state_str
++                    hypothesis = "The claim is true."
++                else:
++                    premise = instructions
++                    hypothesis = "The statement is true."
++
++                probs = self.model.predict([(premise, hypothesis)])
++                p_con, p_ent, p_neu = probs[0]
++                if p_ent + p_con > 1e-6:
++                    p_true = float(p_ent / (p_ent + p_con))
++                else:
++                    p_true = float(p_ent)
++                p_true = float(np.clip(p_true, 0.0, 1.0))
++
++                answers[q_id] = {
++                    "type": "noul",
++                    "noul": p_true,
++                }
++                raw[q_id] = {
++                    "p_entailment": float(p_ent),
++                    "p_contradiction": float(p_con),
++                    "p_neutral": float(p_neu),
++                }
++
++        response = {
++            "model": self.model_id,
++            "answers": answers,
++            "usage": {"input_tokens": total_tokens},
++        }
++        return response, raw
+diff --git a/pyproject.toml b/pyproject.toml
+index 56aa3f0..94d63f0 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -21,6 +21,9 @@ transformers = [
+   "accelerate>=1.0",
+   "safetensors>=0.4",
+ ]
++gevva = [
++  "gevva>=1.0.0",
++]
+ rebuild = [
+   "pyarrow>=20",
+   "pandas>=2.0",
+diff --git a/tests/test_gevva_engine.py b/tests/test_gevva_engine.py
+new file mode 100644
+index 0000000..63782fa
+--- /dev/null
++++ b/tests/test_gevva_engine.py
+@@ -0,0 +1,114 @@
++import math
++import sys
++import unittest
++from unittest.mock import MagicMock, patch
++import numpy as np
++import pytest
++
++pytest.importorskip("torch")
++
++# Ensure mock gevva module exists even in CI environments where gevva is not yet installed
++mock_gevva = MagicMock()
++sys.modules.setdefault("gevva", mock_gevva)
++
++from decision_index.engines import load_engine, validate
++from decision_index.engines.gevva_engine import GevvaEngine, _softmax
++
++
++def test_softmax_helper():
++    probs = _softmax([1.0, 2.0, 3.0])
++    assert len(probs) == 3
++    assert abs(sum(probs) - 1.0) < 1e-5
++    assert probs[2] > probs[1] > probs[0]
++
++
++@patch("gevva.load")
++def test_gevva_engine_registry(mock_load):
++    mock_model = MagicMock()
++    mock_load.return_value = mock_model
++    engine = load_engine("gevva", model="davidburhans/gevva-e4b", device="cpu")
++    assert isinstance(engine, GevvaEngine)
++    assert engine.name == "gevva"
++    assert engine.model_id == "davidburhans/gevva-e4b"
++
++
++@patch("gevva.load")
++def test_gevva_engine_call_and_validate(mock_load):
++    mock_model = MagicMock()
++    mock_load.return_value = mock_model
++
++    # Option scoring mocks
++    # predict returns np.ndarray of shape (N, 3) [p_con, p_ent, p_neu]
++    mock_model.predict.side_effect = [
++        # Choice question (3 options):
++        np.array([
++            [0.2, 0.7, 0.1],  # A (high entailment)
++            [0.8, 0.1, 0.1],  # B (high contradiction)
++            [0.1, 0.1, 0.8],  # C (neutral)
++        ]),
++        # Noul question (1 pair):
++        np.array([
++            [0.1, 0.9, 0.0],  # true statement
++        ]),
++    ]
++
++    engine = GevvaEngine(model="davidburhans/gevva-e4b", device="cpu")
++
++    questions = {
++        "q1": {
++            "type": "choice",
++            "instructions": "Which city is the capital of Australia?",
++            "criteria": {
++                "A": "Canberra",
++                "B": "Sydney",
++                "C": "Melbourne",
++            },
++        },
++        "q2": {
++            "type": "noul",
++            "instructions": "Canberra is the federal capital of Australia.",
++            "criteria": {
++                "false": "False",
++                "true": "True",
++            },
++        },
++    }
++
++    response, raw = engine("Australia context.", questions)
++
++    # Must pass official Decision Index validator
++    validate(questions, response)
++
++    # Check choice response
++    q1_ans = response["answers"]["q1"]
++    assert q1_ans["type"] == "choice"
++    assert q1_ans["choice"] == "A"
++    assert set(q1_ans["probabilities"]) == {"A", "B", "C"}
++    assert abs(sum(q1_ans["probabilities"].values()) - 1.0) < 0.01
++    assert q1_ans["probabilities"]["A"] > q1_ans["probabilities"]["B"]
++
++    # Check noul response
++    q2_ans = response["answers"]["q2"]
++    assert q2_ans["type"] == "noul"
++    assert 0.0 <= q2_ans["noul"] <= 1.0
++    assert q2_ans["noul"] > 0.5  # Supported by high entailment
++
++    # Check raw diagnostics
++    assert "q1" in raw
++    assert "q2" in raw
++
++
++@patch("gevva.load")
++def test_gevva_warmup_and_runtime(mock_load):
++    mock_model = MagicMock()
++    mock_model.predict.return_value = np.array([[0.1, 0.9, 0.0], [0.9, 0.1, 0.0]])
++    mock_load.return_value = mock_model
++
++    engine = GevvaEngine(model="davidburhans/gevva-e2b", device="cpu")
++    engine.warmup()
++    engine.synchronize()
++
++    rt = engine.runtime()
++    assert "torch" in rt
++    assert "device" in rt
++    assert rt["model"] == "davidburhans/gevva-e2b"
+-- 
+2.55.0
+

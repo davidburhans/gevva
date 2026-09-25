@@ -41,6 +41,7 @@ data
 ckpt/
 scratch/
 worktrees/
+research/decision_index_upstream/
 
 # Ephemeral runtime logs & PIDs
 results/night_queue/

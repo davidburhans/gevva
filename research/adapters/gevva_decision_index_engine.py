@@ -7,7 +7,7 @@ Native Gevva Engine Adapter for the Hugging Face Jev Decision Index
 Implements the official Decision Index protocol:
 - Supports `choice` multiple-choice questions with full probability distributions
 - Supports `noul` (yes/no / binary) questions with calibrated true-probabilities
-- Seamlessly evaluates both Gevva E2B and Gevva E4B Flagship models
+- Seamlessly evaluates both Gevva E2B and Gevva E4B models
 """
 
 from __future__ import annotations
