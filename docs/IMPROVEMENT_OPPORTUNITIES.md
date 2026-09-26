@@ -189,7 +189,61 @@ To systematically eliminate this variance and bring all categories to frontier p
 
 ---
 
-## 9. Comprehensive Tracking Matrix
+## 9. Training Dataset Availability & Sourcing Inventory
+
+Before executing Phase 5 training, the following inventory categorizes existing open-source assets vs gaps requiring synthetic generation:
+
+| Target Gap / Benchmark | Existing Open-Source Datasets | Source Location / Status | Synthetic GenAI Required? |
+| :--- | :--- | :--- | :---: |
+| **Dense Legal Clause Reasoning** *(ContractNLI: 54.5%)* | • **CaseHOLD** (100k+ judicial holdings)<br>• **ContractNLI** (NDA training split)<br>• **CUAD** (510 contracts, 41 clause types) | **Ready on disk**: `data/staged/mc_qa/casehold_train.jsonl` (364 MB) & `work/.../contractnli`. CUAD on HF (`theatticusproject/cuad`). | Optional (open data sufficient for baseline) |
+| **Adversarial Negations & Traps** *(ANLI: 31.0%)* | • **ANLI R1–R3** (162k adversarial pairs)<br>• **WANLI** (102k worker-AI adversarial pairs)<br>• **Counterfactually Augmented Data (CAD)** | **Ready on Hugging Face**: `facebook/anli` and `alisawuffles/WANLI` (permissive open-source). | **YES**: Controlled minimal pairs via teacher LLM |
+| **Dense Intent Classification** *(BANKING77: 65.6%)* | • **BANKING77** (13k queries, 77 intents)<br>• **HWU64** (64 intents across 21 domains)<br>• **CLINC150** (150 intents + OOS) | **Ready on Hugging Face**: `PolyAI/banking77` and `clinc_oos` have standardized train splits. | **YES**: Boundary paraphrases for near-synonyms |
+| **Multi-Turn Dialogue Tracking** *(API-Bank: 49.6%)* | • **API-Bank** (Level 1–3 train dialogues)<br>• **Schema-Guided Dialogue (SGD)**<br>• **MultiWOZ 2.4** (Belief tracking) | **Ready on disk & HF**: `work/.../apibank` & `work/.../sgd` on disk; MultiWOZ 2.4 on HF (`multiwoz_v22`). | Supplementary |
+| **Discrete State Machines** *(Home Appliance: 15.0%)* | • **None available in standard NLI format.** Public benchmarks only contain raw test instances without modular NLI training splits. | **MISSING FROM OPEN WEB**. | **CRITICAL**: Pure programmatic + GenAI synthesis |
+
+---
+
+## 10. Generative AI Synthetic Data Generation Strategy
+
+Because open-source web scrapes suffer from uncontrolled reporting bias and lexical shortcuts, Generative AI will be deployed as a primary data engineering instrument for the Phase 5 mixture:
+
+### A. The Hybrid Programmatic-FSM + Generative Narrative Architecture
+To fix the severe blind spot in state-machine transitions (Home Appliance: 15.0%):
+1. **Symbolic FSM Generator**: Programmatically instantiate 50 distinct domain state charts (smart home appliances, network protocols, cloud resource lifecycles, workflow approvals). Each state chart defines explicit states $S$, alphabet events $E$, guard conditions $G$, and deterministic transitions $\delta: S \times E \times G \to S'$.
+2. **GenAI Narrative Wrapper**: Pass the symbolic execution trace through a local frontier teacher LLM (via `llm_client.py`) with strict prompt constraints:
+   * Convert the telemetry/event log into realistic natural-language assistant dialogues or system execution logs.
+   * Generate three balanced, unambiguous hypotheses:
+     - **Entailment**: Legal transition to valid next state.
+     - **Hard Contradiction**: State mutation violating an explicit guard condition.
+     - **Neutral**: Missing prerequisite sensor data; outcome cannot be deduced from context.
+3. **Volume Target**: 25,000 verified state-machine triplets.
+
+### B. Controlled Counterfactual Minimal-Pair Engine
+To fix the ANLI negation and lexical shortcut collapse (31.0%):
+1. Take verified premise-claim pairs from Stage 1 anchor data.
+2. Prompt the teacher LLM to generate **exact minimal pairs** by applying atomic logical transformations:
+   * **Scope Particle Inversion**: Swap *"only authorized users"* $\leftrightarrow$ *"any user"*.
+   * **Quantifier Perturbation**: Swap *"all servers were patched"* $\leftrightarrow$ *"at least one server was patched"*.
+   * **Negation Insertion**: Insert subtle grammatical negations (*"failed to detect"*, *"neither...nor"*).
+3. **Training Objective**: The cross-encoder is trained with symmetric contrastive regularization, penalizing any model that assigns similar representations to minimal pairs with inverted truth values.
+4. **Volume Target**: 30,000 balanced counterfactual minimal pairs.
+
+### C. Boundary Paraphraser for Dense Intent Disambiguation
+To close the gap on dense intent catalogs (BANKING77: 65.6% vs 89.8%):
+1. Identify confusable intent pairs using the empirical confusion matrix (e.g., `card_arrival` vs `card_delivery_estimate`).
+2. Prompt the teacher LLM to generate boundary queries designed to sit on the exact semantic edge between the two intents, explicitly highlighting distinguishing parameters (e.g. asking for a tracking number vs reporting that a physical envelope has not arrived).
+3. **Volume Target**: 15,000 hard-negative intent pairs.
+
+### D. Quality Control & Multi-Judge Consensus Verification
+All synthetic data generated via GenAI must satisfy the pre-registered quality gates before inclusion into the master training mixture:
+1. **Transport**: Executed through [`llm_client.py`](file:///home/dave/workspaces/nli-cross-encoder/llm_client.py) with GBNF grammar constraints to enforce schema validity.
+2. **Committee Validation**: Every synthetic pair must pass the 4-judge committee in [`validator_committee.py`](file:///home/dave/workspaces/nli-cross-encoder/validator_committee.py) requiring $\ge 75\%$ consensus.
+3. **Decontamination Gate**: Every generated pair is filtered against all 151,034 Decision Index 0.2 requests using an 8-gram rolling hash to guarantee zero test leakage.
+4. **Metrics Audit**: All verdicts, consensus scores, and judge agreement latencies are logged idempotently into SQLite ([`validation_metrics.db`](file:///home/dave/workspaces/nli-cross-encoder/validation_metrics.db)).
+
+---
+
+## 11. Comprehensive Tracking Matrix
 
 | ID | Initiative | Category | Target Problem / Benchmark | Complexity | Expected Impact | Target Release |
 | :---: | :--- | :---: | :--- | :---: | :--- | :---: |
@@ -203,4 +257,9 @@ To systematically eliminate this variance and bring all categories to frontier p
 | **TR-03** | Dense Legal Clause & Contract Grounding | Curriculum | **ContractNLI (54.5% $\to$ 75%+)** | Medium | **Enables multi-page dense clause cross-referencing** | Gevva Phase 5 |
 | **TR-04** | In-Batch Hard Negative Intent Mining | Curriculum | **BANKING77 (65.6% $\to$ 85%+)** | Low | **Disambiguates dense, near-synonym intent classes** | Gevva Phase 5 |
 | **TR-05** | Multi-Turn Dialogue State Curriculum | Curriculum | **API-Bank (49.6% $\to$ 75%+)** | Medium | **Enables multi-turn conversational tool tracking** | Gevva Phase 5 |
+| **SYN-01** | Synthetic FSM State Transition Generator | GenAI Data | **Home Appliance (15.0% $\to$ 70%+)** | Medium | **25k FSM transitions with programmatic ground-truth** | Gevva Phase 5 |
+| **SYN-02** | Counterfactual Minimal-Pair Synthesizer | GenAI Data | **ANLI R1–R3 (31.0% $\to$ 60%+)** | Medium | **30k atomic scope & polarity perturbations** | Gevva Phase 5 |
+| **SYN-03** | Hard-Negative Intent Boundary Paraphraser | GenAI Data | **BANKING77 (65.6% $\to$ 85%+)** | Low | **15k borderline confusion queries for near-synonyms** | Gevva Phase 5 |
+| **SYN-04** | Multi-Judge Consensus Verification Pipeline | Data Quality | All Phase 5 Synthetic Data | Low | **Zero label noise; 100% committee verification** | Gevva Phase 5 |
+
 
