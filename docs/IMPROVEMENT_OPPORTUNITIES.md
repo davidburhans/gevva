@@ -110,12 +110,97 @@ For benchmarks and applications involving unknown intents (e.g., Catalog 5: CLIN
 
 ---
 
-## 7. Tracking Matrix
+## 7. Empirical Benchmark Variance Analysis
 
-| ID | Initiative | Target Area | Complexity | Expected Impact | Target Release |
-| :---: | :--- | :--- | :---: | :--- | :---: |
-| **OPT-01** | Prefix KV Caching (`predict_candidates`) | Inference Engine | Medium | **~90× speedup on multi-candidate tasks (16.9s $\to$ 180ms)** | gevva 1.1.0 |
-| **OPT-02** | Dynamic Token-Budget Inference Batching | Inference Engine | Low | **2–4× speedup on short-context benchmarks** | gevva 1.1.0 |
-| **OPT-03** | Multi-Turn Dialogue State Curriculum | Training / Data | Medium | **Closes API-Bank gap (+15–20% accuracy)** | Gevva Phase 5 |
-| **OPT-04** | W4A16 Engine in `decision_index` | Export / Serving | Low | **Reduces RAM/VRAM footprint to 4.5 GB** | gevva 1.1.0 |
-| **OPT-05** | Native OOS Routing via Neutral Mass | SDK / Routing | Low | **Robust zero-shot out-of-domain rejection** | gevva 1.1.0 |
+The 12 completed catalogs on Gevva e4b reveal significant variance across problem types:
+* In structured schema evaluation, single-turn tool calling, and model routing, Gevva is **world-class (including #1 worldwide on SGD/SGD-X)**.
+* In adversarial negation (ANLI), discrete state-machine transitions (Home Appliance), dense legal reasoning (ContractNLI), and dense intent overlapping (BANKING77), performance drops significantly.
+
+### The Divergence Map
+
+| Performance Tier | Benchmark (Catalog) | Gevva e4b Result | Competitor Ceiling | Diagnosis / Missing Muscle |
+| :--- | :--- | :---: | :---: | :--- |
+| **World Class (#1)** | **SGD / SGD-X (10)** | **65.16%** *(#1 of 58)* | 64.97% *(Jevfire)* | Slot-filling & parameter schemas align natively with factual NLI. |
+| **Top Tier (Top 25%)** | **BFCL (1)** | **92.62%** *(#18 of 58)* | 97.99% *(Solomon)* | Excellent single-turn function calling; #1 among all Gemma 4 models. |
+| **Top Tier (Top 25%)** | **ToolRet (2)** | **43.85%** *(#15 of 58)* | 46.18% *(AutoJev)* | Strong candidate reranking (+5.3% over BM25 baseline). |
+| **Top Tier (Top 25%)** | **RouterBench (6)** | **79.86%** *(#16 of 58)* | 80.07% *(Kev 4B)* | 83.1% Oracle Optimal model selection rate across 10,000 queries. |
+| **Mid Tier** | **CLINC150+OOS (5)** | **71.74%** *(#19 of 58)* | 94.68% *(Decider)* | Good zero-shot intent routing across 151 classes; trails specialized intent models. |
+| **Mid Tier** | **Humicroedit (21)** | **59.82%** *(#21 of 58)* | 67.88% *(AutoJev)* | Nuanced humor change detection; solid semantic comparison. |
+| **Mid Tier** | **BPoMP (20)** | **72.14%** *(#28 of 58)* | 83.84% *(AutoJev)* | Pragmatic metaphor interpretation. |
+| **Trailing** | **BANKING77 (4)** | **65.58%** *(#27 of 58)* | 89.79% *(Decider)* | Highly overlapping intents (77 classes); near-synonyms receive high false scores. |
+| **Trailing** | **API-Bank (3)** | **49.61%** *(#25 of 58)* | 88.19% *(Jev Ref)* | Multi-turn conversation history (turns 6–10) with authentication token tracking. |
+| **Weak Gap** | **ContractNLI (11)** | **54.47%** *(#32 of 58)* | 78.03% *(AutoJev)* | Multi-page dense legal document reasoning; clause cross-referencing. |
+| **Severe Blind Spot** | **Home Appliance (9)** | **15.00%** *(#20 of 58)* | 75.00% *(Decider)* | Discrete state-machine transition modeling (FSM states, events, guards). |
+| **Severe Blind Spot** | **ANLI R1–R3 (12)** | **31.01%** | 61.05% *(AutoJev)* | Adversarial negations and deceptive word-swap traps; near random chance (33%). |
+
+---
+
+## 8. Prescribed Training Remediations
+
+To systematically eliminate this variance and bring all categories to frontier parity, five specific training interventions are scheduled for the next curriculum iteration:
+
+### TR-01: Adversarial Hard-Anchor Replay & Anti-Negation Contrastive Loss (Fixing ANLI 31.0%)
+* **Root Cause**: Catastrophic forgetting of adversarial edge cases during Phase 3/4 decision fine-tuning. The model relies on lexical correlation shortcuts that fail when adversarial negations or deceptive distractors are introduced.
+* **Curriculum Fix**:
+  1. Mandate a permanent, protected **15% anchor slice** in all fine-tuning mixtures consisting of **ANLI (R1, R2, R3)**, **WANLI**, and **Counterfactually Augmented Data (CAD)**.
+  2. Implement **Minimal-Pair Contrastive Loss**: For each premise-hypothesis pair $(P, H)$, generate a counterfactual minimal pair $(P, H')$ where a single token modification (e.g. inserting/removing "not", antonym swap) flips the ground-truth from Entailment $\to$ Contradiction. Penalize representations that assign high similarity to both:
+     $$\mathcal{L}_{\text{anti-shortcut}} = \max\left(0, \gamma - |s(P, H) - s(P, H')|\right)$$
+
+### TR-02: Discrete State-Machine Transition Modeling (Fixing Home Appliance 15.0%)
+* **Root Cause**: Gevva has seen extensive static premise-hypothesis claims, but zero dynamic state-transition graphs. In Home Appliance Simulation, the model must evaluate whether an event $e$ validly triggers a transition from state $S_{\text{current}} \to S_{\text{next}}$ given guard conditions $G$.
+* **Curriculum Fix**:
+  1. Programmatically generate 25,000 synthetic state-machine verification pairs covering:
+     * IoT appliance state charts (ovens, thermostats, washing machines).
+     * Network protocol state transitions (TCP handshakes, HTTP connection pools).
+     * Game state / turn-based rule engines.
+  2. Input framing format:
+     ```
+     Current State: {mode: "preheating", target_temp: 350, door: "closed"}
+     Event: user_opens_door
+     Guards: if door opens during preheating, heating element pauses and safety alert activates.
+     Hypothesis: Next state is {mode: "preheat_paused", alert: "active"}. -> ENTAILMENT
+     ```
+
+### TR-03: Dense Legal Clause Grounding (Fixing ContractNLI 54.5% vs 78.0%)
+* **Root Cause**: Gevva's long-context training relied predominantly on needle-in-a-haystack verification rather than dense, multi-page legal clause cross-referencing.
+* **Curriculum Fix**:
+  1. Ingest real-world contract and regulatory compliance corpora:
+     * **ContractNLI** (full training split of Non-Disclosure Agreements with 11 standard NDAs clauses).
+     * **CUAD** (Contract Understanding Atticus Dataset, 510 contracts with 41 clause types).
+     * **CaseHOLD** (judicial holding legal reasoning pairs).
+  2. Train with multi-page premises (1,000–4,096 tokens) requiring negative clause identification (e.g. determining whether an NDA lacks a non-compete clause or an explicit jurisdiction waiver).
+
+### TR-04: In-Batch Hard Negative Mining for Dense Intent Catalogs (Fixing BANKING77 65.6% vs 89.8%)
+* **Root Cause**: BANKING77 features 77 closely related intent classes (e.g., `card_arrival`, `card_delivery_estimate`, `card_linking`, `card_not_working`). When trained with isolated pointwise cross-entropy, the model predicts high entailment scores for multiple near-synonym intents.
+* **Curriculum Fix**:
+  1. Implement **In-Batch Hard Negative Mining**: During intent fine-tuning, dynamically identify the top-3 highest-scoring false intent hypotheses for each query and apply a margin ranking penalty:
+     $$\mathcal{L}_{\text{intent-margin}} = \sum_{j \in \text{hard negatives}} \max\left(0, \gamma - (s_{\text{gold}} - s_j)\right)$$
+  2. Ingest dense intent benchmarks with confusion matrix awareness: BANKING77, HWU64, and CLINC150 training splits.
+
+### TR-05: Multi-Turn Conversation History & Token Authorization (Fixing API-Bank 49.6% vs 88.2%)
+* **Root Cause**: Gevva evaluated single-turn requests well (BFCL 92.6%), but struggled when the target tool depended on a conversation history 6–10 turns long involving user authentication tokens (`GetUserToken`), confirmation steps, and error corrections.
+* **Curriculum Fix**:
+  1. Ingest multi-turn conversational datasets: **MultiWOZ 2.4**, **Taskmaster-1/2/3**, and the **API-Bank Level 2/3 training split**.
+  2. Format premises using Gemma 4 native conversation role delimiters:
+     ```
+     <start_of_turn>user\n...\n<end_of_turn>\n<start_of_turn>model\n...\n<end_of_turn>
+     ```
+  3. Formulate hypotheses as specific state assertions: `"The assistant's next action must be: GetUserToken(username='...')"` to directly mirror API-Bank and SGD evaluation patterns.
+
+---
+
+## 9. Comprehensive Tracking Matrix
+
+| ID | Initiative | Category | Target Problem / Benchmark | Complexity | Expected Impact | Target Release |
+| :---: | :--- | :---: | :--- | :---: | :--- | :---: |
+| **OPT-01** | Prefix KV Caching (`predict_candidates`) | Architecture | Multi-candidate latency & VRAM | Medium | **~90× speedup on multi-candidate tasks (16.9s $\to$ 180ms)** | gevva 1.1.0 |
+| **OPT-02** | Dynamic Token-Budget Inference Batching | Architecture | Short-context throughput | Low | **2–4× speedup on short-context benchmarks** | gevva 1.1.0 |
+| **OPT-03** | Adaptive Batch Slicing on OOM | Architecture | Memory fragmentation resilience | Low | **Zero OOM crashes during long evaluation runs** | gevva 1.1.0 |
+| **OPT-04** | W4A16 Quantized Inference Pipeline | Serving | Low-VRAM / Edge serving | Low | **Reduces RAM/VRAM footprint to 4.5 GB** | gevva 1.1.0 |
+| **OPT-05** | Native OOS Routing via Neutral Mass | Architecture | Out-of-scope intent rejection | Low | **Zero-shot out-of-domain rejection without fallback classes** | gevva 1.1.0 |
+| **TR-01** | Adversarial Hard-Anchor Replay & Anti-Shortcut Loss | Curriculum | **ANLI R1–R3 (31.0% $\to$ 60%+)** | Medium | **Eliminates negation and word-swap vulnerability** | Gevva Phase 5 |
+| **TR-02** | State-Machine Transition Modeling | Curriculum | **Home Appliance (15.0% $\to$ 70%+)** | Medium | **Enables dynamic state-chart and transition verification** | Gevva Phase 5 |
+| **TR-03** | Dense Legal Clause & Contract Grounding | Curriculum | **ContractNLI (54.5% $\to$ 75%+)** | Medium | **Enables multi-page dense clause cross-referencing** | Gevva Phase 5 |
+| **TR-04** | In-Batch Hard Negative Intent Mining | Curriculum | **BANKING77 (65.6% $\to$ 85%+)** | Low | **Disambiguates dense, near-synonym intent classes** | Gevva Phase 5 |
+| **TR-05** | Multi-Turn Dialogue State Curriculum | Curriculum | **API-Bank (49.6% $\to$ 75%+)** | Medium | **Enables multi-turn conversational tool tracking** | Gevva Phase 5 |
+
