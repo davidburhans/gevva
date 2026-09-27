@@ -16,7 +16,7 @@ class TestAdaptiveForward(unittest.TestCase):
         """Simulate an OOM on batch size 4, verifying it bisects to batch size 2 and succeeds."""
         # Create a mock cross encoder instance
         encoder = object.__new__(GevvaCrossEncoder)
-        encoder.device = "cpu"
+        encoder.device = "cuda"
         encoder.batch_size = 4
         encoder.calibrated_temperature = 1.0
 
