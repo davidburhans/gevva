@@ -840,8 +840,10 @@ class Gemma4CrossEncoder(System1Engine):
             is_oom = isinstance(e, (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError)) or "out of memory" in str(e).lower()
             if not is_oom:
                 raise e
-            if "cuda" in str(self.device) or torch.cuda.is_available():
+            try:
                 torch.cuda.empty_cache()
+            except Exception:
+                pass
             if len(pairs) <= 1:
                 raise e
             mid = len(pairs) // 2
@@ -873,85 +875,122 @@ class Gemma4CrossEncoder(System1Engine):
             pairs = [(premise, h) for h in hypotheses]
             return self._forward_adaptive(pairs).cpu().numpy()
 
+        # Sanitize multimodal delimiter tokens if present
+        for tok_str in ("<|image|>", "<image|>", "<|image_pad|>", "<|vision_start|>", "<|vision_end|>"):
+            premise = premise.replace(tok_str, "")
+            hypotheses = [h.replace(tok_str, "") for h in hypotheses]
+
         tok = self.tokenizer
         bos_id = [tok.bos_token_id] if tok.bos_token_id is not None else []
         pred_suffix_ids = tok.encode("\nPrediction:", add_special_tokens=False)
         hyp_prefix_ids = tok.encode("\nHypothesis: ", add_special_tokens=False)
         prem_prefix_ids = tok.encode("Premise: ", add_special_tokens=False)
 
-        max_prem_budget = max(16, self.max_length - 64 - len(bos_id) - len(prem_prefix_ids) - len(hyp_prefix_ids))
-        prem_body_ids = tok.encode(premise.strip(), add_special_tokens=False)[:max_prem_budget]
+        # Stage 0: Dynamically budget premise and hypothesis lengths to match tokenize_nli_pair_safe exactly
+        max_hyp_body_len = max(16, (self.max_length // 2) - len(pred_suffix_ids) - len(hyp_prefix_ids))
+        candidate_suffixes = []
+        raw_cand_body_ids = []
+        for h in hypotheses:
+            body = tok.encode(h.strip(), add_special_tokens=False)[:max_hyp_body_len]
+            raw_cand_body_ids.append(body)
+            candidate_suffixes.append(body + pred_suffix_ids)
+
+        max_cand_suf_len = max(len(cs) for cs in candidate_suffixes)
+        overhead = len(bos_id) + len(prem_prefix_ids) + len(hyp_prefix_ids) + max_cand_suf_len
+        avail_premise = max(16, self.max_length - overhead)
+        prem_body_ids = tok.encode(premise.strip(), add_special_tokens=False)[:avail_premise]
         prefix_ids = bos_id + prem_prefix_ids + prem_body_ids + hyp_prefix_ids
         L_pre = len(prefix_ids)
 
         pre_tensor = torch.tensor([prefix_ids], dtype=torch.long, device=self.device)
         pre_mask = torch.ones_like(pre_tensor)
 
-        # Stage 1: Pre-fill premise into past_key_values
-        pre_out = bb(
-            input_ids=pre_tensor,
-            attention_mask=pre_mask,
-            use_cache=True,
-            return_dict=True,
-        )
-        base_cache = getattr(pre_out, "past_key_values", None)
-        if base_cache is None or not hasattr(base_cache, "batch_repeat_interleave"):
+        # Stage 1: Pre-fill premise into past_key_values (guarded against long-context OOM)
+        try:
+            pre_out = bb(
+                input_ids=pre_tensor,
+                attention_mask=pre_mask,
+                use_cache=True,
+                return_dict=True,
+            )
+            base_cache = getattr(pre_out, "past_key_values", None)
+            if base_cache is None or not hasattr(base_cache, "batch_repeat_interleave"):
+                pairs = [(premise, h) for h in hypotheses]
+                return self._forward_adaptive(pairs).cpu().numpy()
+        except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError, RuntimeError) as e:
+            is_oom = isinstance(e, (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError)) or "out of memory" in str(e).lower()
+            if not is_oom:
+                raise e
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
             pairs = [(premise, h) for h in hypotheses]
             return self._forward_adaptive(pairs).cpu().numpy()
 
-        # Stage 2: Tokenize candidate suffixes
-        max_hyp_budget = max(16, (self.max_length // 2) - len(pred_suffix_ids))
-        candidate_suffixes = []
-        for h in hypotheses:
-            body = tok.encode(h.strip(), add_special_tokens=False)[:max_hyp_budget]
-            candidate_suffixes.append(body + pred_suffix_ids)
-
+        # Stage 2: Evaluate candidate suffixes in adaptive chunks with recursive OOM bisection
         n_hyp = len(candidate_suffixes)
         pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
-        all_logits = []
+        norm_layer = getattr(self.model, "norm", None)
+        score_layer = getattr(self.model, "score", None)
 
+        def _eval_suffix_chunk_adaptive(chunk_sufs: List[List[int]]) -> torch.Tensor:
+            try:
+                M = len(chunk_sufs)
+                max_suf_len = max(len(cs) for cs in chunk_sufs)
+                padded_sufs = []
+                full_masks = []
+                for cs in chunk_sufs:
+                    pad_len = max_suf_len - len(cs)
+                    padded_sufs.append(cs + [pad_id] * pad_len)
+                    full_masks.append([1] * (L_pre + len(cs)) + [0] * pad_len)
+
+                hyp_tensor = torch.tensor(padded_sufs, dtype=torch.long, device=self.device)
+                full_mask_tensor = torch.tensor(full_masks, dtype=torch.long, device=self.device)
+                pos_tensor = torch.arange(L_pre, L_pre + max_suf_len, device=self.device).unsqueeze(0).expand(M, -1)
+
+                c_expanded = copy.deepcopy(base_cache)
+                c_expanded.batch_repeat_interleave(M)
+
+                hyp_out = bb(
+                    input_ids=hyp_tensor,
+                    attention_mask=full_mask_tensor,
+                    position_ids=pos_tensor,
+                    past_key_values=c_expanded,
+                    return_dict=True,
+                )
+
+                suffix_mask = full_mask_tensor[:, L_pre:]
+                rev_mask = suffix_mask.flip(dims=[-1])
+                last_idx = (suffix_mask.shape[-1] - 1 - rev_mask.argmax(dim=-1)).long()
+                pooled = hyp_out.last_hidden_state[torch.arange(M, device=hyp_out.last_hidden_state.device), last_idx]
+                if norm_layer is not None:
+                    pooled = norm_layer(pooled)
+                chunk_logits = score_layer(pooled) if score_layer is not None else pooled
+
+                del c_expanded, hyp_out, hyp_tensor, full_mask_tensor, pos_tensor
+                return chunk_logits
+            except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError, RuntimeError) as e:
+                is_oom = isinstance(e, (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError)) or "out of memory" in str(e).lower()
+                if not is_oom or len(chunk_sufs) <= 1:
+                    raise e
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                mid = len(chunk_sufs) // 2
+                out1 = _eval_suffix_chunk_adaptive(chunk_sufs[:mid])
+                out2 = _eval_suffix_chunk_adaptive(chunk_sufs[mid:])
+                return torch.cat([out1, out2], dim=0)
+
+        all_logits = []
         chunk_size = min(max_candidate_batch_size, max(self.batch_size * 2, 16))
         for s in range(0, n_hyp, chunk_size):
             chunk_sufs = candidate_suffixes[s : s + chunk_size]
-            M = len(chunk_sufs)
-            max_suf_len = max(len(cs) for cs in chunk_sufs)
+            logits_tensor = _eval_suffix_chunk_adaptive(chunk_sufs)
+            all_logits.append(logits_tensor.float().cpu().numpy())
 
-            padded_sufs = []
-            full_masks = []
-            for cs in chunk_sufs:
-                pad_len = max_suf_len - len(cs)
-                padded_sufs.append(cs + [pad_id] * pad_len)
-                full_masks.append([1] * (L_pre + len(cs)) + [0] * pad_len)
-
-            hyp_tensor = torch.tensor(padded_sufs, dtype=torch.long, device=self.device)
-            full_mask_tensor = torch.tensor(full_masks, dtype=torch.long, device=self.device)
-            pos_tensor = torch.arange(L_pre, L_pre + max_suf_len, device=self.device).unsqueeze(0).expand(M, -1)
-
-            c_expanded = copy.deepcopy(base_cache)
-            c_expanded.batch_repeat_interleave(M)
-
-            hyp_out = bb(
-                input_ids=hyp_tensor,
-                attention_mask=full_mask_tensor,
-                position_ids=pos_tensor,
-                past_key_values=c_expanded,
-                return_dict=True,
-            )
-
-            suffix_mask = full_mask_tensor[:, L_pre:]
-            rev_mask = suffix_mask.flip(dims=[-1])
-            last_idx = (suffix_mask.shape[-1] - 1 - rev_mask.argmax(dim=-1)).long()
-            pooled = hyp_out.last_hidden_state[torch.arange(M, device=hyp_out.last_hidden_state.device), last_idx]
-            norm_layer = getattr(self.model, "norm", None)
-            if norm_layer is not None:
-                pooled = norm_layer(pooled)
-            score_layer = getattr(self.model, "score", None)
-            if score_layer is not None:
-                chunk_logits = score_layer(pooled)
-            else:
-                chunk_logits = pooled
-            all_logits.append(chunk_logits.float().cpu().numpy())
-
+        del base_cache
         return np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 3))
 
     @torch.no_grad()

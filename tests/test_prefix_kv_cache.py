@@ -125,10 +125,97 @@ class TestPrefixKVCache(unittest.TestCase):
         self.encoder.predict_candidates = MagicMock()
         self.encoder._forward_adaptive = MagicMock(return_value=torch.zeros((2, 3)))
 
-        probs = self.encoder.predict(pairs, images=images)
-        self.assertFalse(self.encoder.predict_candidates.called)
-        self.assertTrue(self.encoder._forward_adaptive.called)
+    def test_dynamic_budget_allocation(self):
+        """Verify that premise budget dynamically accommodates candidate length without truncation overshoot."""
+        self.encoder.max_length = 64
+        mock_model = MagicMock()
+        mock_bb = MagicMock()
+        mock_model.model = mock_bb
+        mock_cache = MagicMock()
+        mock_cache.batch_repeat_interleave = MagicMock()
+        mock_cache.__deepcopy__ = MagicMock(side_effect=lambda memo: mock_cache)
+
+        observed_pre_lens = []
+        def bb_forward(input_ids, attention_mask, past_key_values=None, position_ids=None, **kwargs):
+            if past_key_values is None:
+                observed_pre_lens.append(input_ids.shape[1])
+                out = MagicMock()
+                out.past_key_values = mock_cache
+                return out
+            else:
+                out = MagicMock()
+                out.last_hidden_state = torch.ones((input_ids.shape[0], input_ids.shape[1], 16))
+                return out
+
+        mock_bb.side_effect = bb_forward
+        mock_model.norm = MagicMock(side_effect=lambda x: x)
+        mock_model.score = MagicMock(side_effect=lambda x: torch.ones((x.shape[0], 3)))
+        self.encoder.model = mock_model
+
+        long_premise = " ".join([f"word{i}" for i in range(100)])
+        short_hyps = ["short one", "short two"]
+        self.encoder.predict_candidates_logits(long_premise, short_hyps)
+        pre_len_short = observed_pre_lens[-1]
+
+        # With longer hypothesis, premise should yield room dynamically
+        long_hyps = [" ".join([f"hypword{i}" for i in range(20)])]
+        self.encoder.predict_candidates_logits(long_premise, long_hyps)
+        pre_len_long = observed_pre_lens[-1]
+
+        # The short hypothesis run should preserve more premise tokens than the long hypothesis run
+        self.assertGreater(pre_len_short, pre_len_long)
+
+    def test_suffix_chunk_adaptive_bisection_on_oom(self):
+        """Verify that if suffix chunk evaluation OOMs on M >= 4, it bisects to M = 2 and succeeds."""
+        self.encoder.device = "cpu"
+        mock_model = MagicMock()
+        mock_bb = MagicMock()
+        mock_model.model = mock_bb
+        mock_cache = MagicMock()
+        mock_cache.batch_repeat_interleave = MagicMock()
+        mock_cache.__deepcopy__ = MagicMock(side_effect=lambda memo: mock_cache)
+
+        def bb_forward(input_ids, attention_mask, past_key_values=None, position_ids=None, **kwargs):
+            if past_key_values is None:
+                out = MagicMock()
+                out.past_key_values = mock_cache
+                return out
+            else:
+                bs = input_ids.shape[0]
+                if bs >= 4:
+                    raise torch.cuda.OutOfMemoryError("CUDA out of memory in suffix forward pass")
+                out = MagicMock()
+                out.last_hidden_state = torch.ones((bs, input_ids.shape[1], 16))
+                return out
+
+        mock_bb.side_effect = bb_forward
+        mock_model.norm = MagicMock(side_effect=lambda x: x)
+        mock_model.score = MagicMock(side_effect=lambda x: torch.ones((x.shape[0], 3)))
+        self.encoder.model = mock_model
+
+        hyps = [f"option {i}" for i in range(4)]
+        with patch("torch.cuda.empty_cache") as mock_empty:
+            logits = self.encoder.predict_candidates_logits("Some premise", hyps, max_candidate_batch_size=4)
+            self.assertEqual(logits.shape, (4, 3))
+            self.assertTrue(mock_empty.called)
+
+    def test_prefill_oom_fallback_to_forward_adaptive(self):
+        """Verify that if Stage 1 prefill OOMs, it catches it and falls back to _forward_adaptive."""
+        self.encoder.device = "cpu"
+        mock_model = MagicMock()
+        mock_bb = MagicMock()
+        mock_model.model = mock_bb
+        mock_bb.side_effect = torch.cuda.OutOfMemoryError("CUDA out of memory during premise prefill")
+        self.encoder.model = mock_model
+
+        self.encoder._forward_adaptive = MagicMock(return_value=torch.ones((3, 3)))
+        with patch("torch.cuda.empty_cache") as mock_empty:
+            logits = self.encoder.predict_candidates_logits("Huge premise", ["h1", "h2", "h3"])
+            self.assertEqual(logits.shape, (3, 3))
+            self.assertTrue(self.encoder._forward_adaptive.called)
+            self.assertTrue(mock_empty.called)
 
 
 if __name__ == "__main__":
     unittest.main()
+

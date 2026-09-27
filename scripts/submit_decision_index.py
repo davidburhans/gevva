@@ -80,6 +80,7 @@ def score_run_v02(run_dir: Path) -> dict:
         "-m", "decision_index", "score",
         "--results", str(run_dir / "results.jsonl"),
         "--out", str(run_dir),
+        "--suite-dir", str(ROOT / "suite-0.2"),
     ]
     res = subprocess.run(cmd, cwd=str(UPSTREAM_DIR), capture_output=True, text=True)
     if res.returncode != 0:
