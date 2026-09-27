@@ -97,17 +97,18 @@ def upload_run_to_hf(run_dir: Path, repo_id: str, public: bool = True) -> Option
     from huggingface_hub import HfApi
     from huggingface_hub.errors import HfHubHTTPError
 
+    token = os.environ.get("HF_WRITE_TOKEN") or os.environ.get("HF_TOKEN")
     print(f"\n[Upload] Preparing and uploading {run_dir.name} to Hugging Face dataset {repo_id}...")
-    api = HfApi()
+    api = HfApi(token=token)
 
     try:
         user_info = api.whoami()
         role = user_info.get("auth", {}).get("accessToken", {}).get("role", "unknown")
-        if role == "read":
+        if role == "read" and not os.environ.get("HF_WRITE_TOKEN"):
             print("\n" + "!" * 72)
             print("WARNING: Current Hugging Face token has 'read' permission only.")
             print("To upload benchmark results to Hugging Face Hub, set a write token:")
-            print("    export HF_TOKEN=\"hf_...\"  (with Write access)")
+            print("    export HF_WRITE_TOKEN=\"hf_...\"  (or export HF_TOKEN=\"hf_...\")")
             print("or run: huggingface-cli login")
             print("!" * 72 + "\n")
             return None
