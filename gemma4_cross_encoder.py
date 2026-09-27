@@ -824,6 +824,34 @@ class Gemma4CrossEncoder(System1Engine):
 
         return batch
 
+    def _forward_adaptive(
+        self,
+        pairs: Sequence[Tuple[str, str]],
+        images: Optional[Sequence[Optional[Image.Image]]] = None,
+    ) -> torch.Tensor:
+        """Executes model forward pass on a chunk of pairs/images.
+        If a CUDA OutOfMemoryError is encountered, catches it, clears the CUDA cache,
+        and dynamically splits the chunk in half recursively down to batch size 1.
+        """
+        try:
+            batch = self._prepare_batch(pairs, images)
+            return self.model(**batch).logits.float()
+        except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError, RuntimeError) as e:
+            is_oom = isinstance(e, (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError)) or "out of memory" in str(e).lower()
+            if not is_oom:
+                raise e
+            if "cuda" in str(self.device) or torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if len(pairs) <= 1:
+                raise e
+            mid = len(pairs) // 2
+            p1, p2 = pairs[:mid], pairs[mid:]
+            i1 = images[:mid] if images is not None else None
+            i2 = images[mid:] if images is not None else None
+            logits1 = self._forward_adaptive(p1, i1)
+            logits2 = self._forward_adaptive(p2, i2)
+            return torch.cat([logits1, logits2], dim=0)
+
     @torch.no_grad()
     def predict(
         self,
@@ -842,9 +870,7 @@ class Gemma4CrossEncoder(System1Engine):
         for s in range(0, n_items, self.batch_size):
             chunk_pairs = pairs[s : s + self.batch_size]
             chunk_images = images[s : s + self.batch_size] if images is not None else None
-            batch = self._prepare_batch(chunk_pairs, chunk_images)
-
-            logits = self.model(**batch).logits.float()
+            logits = self._forward_adaptive(chunk_pairs, chunk_images)
             probs = torch.softmax(logits / temp, dim=-1).cpu().numpy()
             all_probs.append(probs)
 
@@ -863,9 +889,7 @@ class Gemma4CrossEncoder(System1Engine):
         for s in range(0, n_items, self.batch_size):
             chunk_pairs = pairs[s : s + self.batch_size]
             chunk_images = images[s : s + self.batch_size] if images is not None else None
-            batch = self._prepare_batch(chunk_pairs, chunk_images)
-
-            logits = self.model(**batch).logits.float().cpu().numpy()
+            logits = self._forward_adaptive(chunk_pairs, chunk_images).cpu().numpy()
             all_logits.append(logits)
 
         return np.concatenate(all_logits, axis=0) if all_logits else np.empty((0, 3))

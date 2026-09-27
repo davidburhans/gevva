@@ -9,7 +9,7 @@ import unittest
 class TestGevvaSDK(unittest.TestCase):
     def test_imports_and_version(self):
         import gevva
-        self.assertEqual(gevva.__version__, "1.0.1")
+        self.assertEqual(gevva.__version__, "1.0.3")
         self.assertTrue(hasattr(gevva, "GevvaCrossEncoder"))
         self.assertTrue(hasattr(gevva, "Gevva"))
         self.assertTrue(hasattr(gevva, "GevvaForSequenceClassification"))
