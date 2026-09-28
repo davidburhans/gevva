@@ -83,7 +83,7 @@ Instead of full sequence concatenation:
 
 The full e2b run proved that several poor benchmark scores were caused by engine-level framing mismatches rather than model reasoning failures:
 
-### ENG-01: `noul` State Decomposition (Fixing RAGTruth 15.6% F1)
+### ENG-01: Generalized State Formatting & Counterfactual Grounding for `noul` (RAGTruth)
 * **The Diagnostic**: On Catalog 59 (**RAGTruth**), e2b scored **15.56% F1** on the hallucinated class (Skill: **0.0%**), while overall field accuracy was **67.44%**.
 * **Root Cause Found**: 
   In `decision_index`, RAGTruth is structured as a `"type": "noul"` boolean question:
@@ -91,27 +91,24 @@ The full e2b run proved that several poor benchmark scores were caused by engine
   "state": {"prompt": "Summarize...", "response": "..."},
   "questions": {"q": {"type": "noul", "instructions": "The response contains content that is not supported by the context in the prompt."}}
   ```
-  In `gevva_engine.py`, `state` was stringified as a raw Python dictionary:
-  `premise = "{'prompt': '...', 'response': '...'}"`
-  `hypothesis = "The response contains content that is not supported by the context in the prompt."`
-  The model was asked whether a raw JSON string *entailed* that the response was unsupported! Because the JSON didn't explicitly assert "this response is unsupported", the model predicted $P(\text{entailment}) \approx 0.03$. Consequently, $p_{\text{true}} = 0.036$, falling well below the 0.5 decision threshold on 99% of samples. Recall on the hallucinated class collapsed to near zero, destroying F1.
-* **The Fix**: In `gevva_engine.py`, unpack dictionary states:
-  * When `state` contains `{"prompt": context, "response": text}`:
-    $$\text{Premise} = \text{context}, \quad \text{Hypothesis} = \text{text}$$
-    $$p_{\text{hallucinated}} = P(\text{contradiction}) + 0.5 \times P(\text{neutral})$$
-  * Expected Score Jump: RAGTruth F1 leaps from **15.6% $\to$ 65%+** immediately without retraining.
+  In early engine runs, `state` was stringified as a raw Python dictionary string (`"{'prompt': '...', 'response': '...'}"`). The model was asked whether a raw JSON string entailed that the response was unsupported. Because the JSON didn't assert this, the model predicted $P(\text{entailment}) \approx 0.03$.
+* **The Protocol-Compliant Fix & Empirical Reality**:
+  * Upstream Decision Index rules strictly mandate: *"Do not adapt the prompt per benchmark; refuse instead."* Therefore, the engine must NOT use hardcoded benchmark sniffing (`if "prompt" in state`). Instead, generalize dictionary unpacking: format all structured `state` dictionaries into clean, standardized markdown blocks (`Prompt:\n{prompt}\n\nResponse:\n{response}`).
+  * **Critical Empirical Finding**: Formatting alone does NOT solve RAGTruth. An adversarial test on actual RAGTruth samples confirmed that setting $p_{\text{true}} = 1.0 - p_{\text{ent}}$ without retraining yielded **0.0% F1** on hallucinations. Because generated summaries share 90%+ lexical overlap with source passages, standard NLI cross-encoders strongly predict Entailment even when subtle facts are mutated. Resolving RAGTruth requires dedicated sentence-level counterfactual fine-tuning (**TR-06**), not superficial engine tricks.
 
-### ENG-02: Multi-Field Independence Multiplication Mitigation (Fixing ACOS 1.8% Case Exact Accuracy)
+### ENG-02: Calibrated Margin Thresholding for High-Cardinality Multi-Field Cases (ACOS)
 * **The Diagnostic**: On Catalog 38 (**ACOS**), e2b achieved **90.04% field accuracy**, but its `case_exact_accuracy` collapsed to **1.75%**.
-* **Root Cause Found**: ACOS presents ~50–100 candidate aspect-category-sentiment tuples per review. Because case exact accuracy requires 100% of all fields in a case to match simultaneously, an independent error rate of 10% across 30 fields results in $0.90^{30} \approx 0.042$ (4.2%). Furthermore, positive micro-F1 was only 6.07% because predicting the negative majority class maximizes field accuracy at the expense of recall.
-* **The Fix**: Implement a two-stage hierarchical evaluation in the engine:
-  1. Detect candidate aspect/category spans present in the text with a tuned detection threshold.
-  2. Evaluate sentiment and opinion polarity only for detected spans.
+* **Root Cause Found**: Decision Index evaluates **64 fixed binary queries per review** under Case Exact Accuracy. Case Exact requires 100% of all 64 fields in a case to match simultaneously. An independent error rate of 10% across 64 fields mathematically results in $0.90^{64} \approx 0.0011$ (0.11%). Furthermore, the positive class represents $<5\%$ of all queries. A default decision threshold of 0.0 predicts the negative majority class, achieving 90% field accuracy while zeroing positive recall (micro-F1: 6.07%).
+* **The Fix**: 
+  * Note: ACOS in Decision Index does not accept or evaluate spans; it evaluates fixed category/sentiment decisions.
+  * Apply **Calibrated Decision Threshold Tuning**: Fit a class-prior-adjusted threshold $\tau \in [-0.2, 0.2]$ on held-out validation cases to maximize the joint F1/Case Exact objective rather than naive 0.0 margin splitting. Combined with compositional training (**TR-07**), this targets **12–15% Case Exact Accuracy** and **95%+ field accuracy**.
 
-### ENG-03: Distractor Scaling Compensation for Large $K$ (MMLU vs MMLU-Pro)
+### ENG-03: Cardinality-Scaled Softmax Temperature for Large $K$ (MMLU vs MMLU-Pro)
 * **The Diagnostic**: On standard 4-choice MMLU (Catalog 24), e2b scored **54.93%** (Skill **39.9%**). On 10-choice MMLU-Pro (Catalog 57), accuracy dropped by nearly half to **28.62%** (Skill **19.7%**).
-* **Root Cause**: When choices expand from 4 to 10, distractors become finer-grained. Pointwise independent cross-encoder scoring accumulates variance, causing near-tie noise where a distractor narrowly edges out the gold option.
-* **The Fix**: Apply a temperature-scaled relative margin ranking head or calibrate scoring by normalizing option scores against candidate hypothesis lengths: $s'_k = s_k / \sqrt{\text{len}(\text{hyp}_k)}$.
+* **Root Cause**: As candidate count grows from $K=4$ to $K=10$, distractors become finer-grained. Independent cross-encoder scores exhibit variance $\sigma^2$. The probability that at least one distractor score fluctuates above the gold score scales as $1 - (1 - F(\mu_{\text{gold}}))^{K-1}$.
+* **The Fix**: Apply a **Cardinality-Scaled Softmax Temperature**:
+  $$T(K) = T_0 \cdot \sqrt{\frac{\ln 4}{\ln K}}$$
+  Scaling temperature inversely with $\sqrt{\ln K}$ dynamically contracts distractor variance and sharpens the top-ranked margin as $K$ expands from 4 to 10, without arbitrarily penalizing longer, detailed correct choices.
 
 ---
 
@@ -224,10 +221,10 @@ Analyzing all 44 datasets reveals 8 fundamental findings that define our researc
   5. **Clinical Trial Protocol Claim Verification (NLI4CT)**: **68.87%** (Skill **39.44%**, 31 ms)
 
 ### Insight 9: The Model-Scale & Exposure Disparity (Why e4b Appeared Undertrained)
-* In head-to-head evaluation, Gevva e4b scored **77.28 Composite** on JevBench public vs e2b's **77.54 Composite**, despite having more than double the active parameters (3.98B vs 1.88B) and 42 transformer layers (vs 26).
-* **Root Cause: Severe Token-Exposure Undershoot & Cold-Start Head Initialization**:
+* In head-to-head evaluation, Gevva e4b scored **77.28 Composite** on JevBench public vs e2b's **77.54 Composite**, despite having more than double the active parameters (3.98B vs 1.88B) and 42 transformer layers (vs 35 layers in e2b).
+* **Root Cause: Single-Epoch Schedule Clamping & Cold-Start Head Initialization**:
   1. *Curriculum Depth Asymmetry*: e2b was trained across multiple progressive stages (Stage 1 pretrain, Stage 2 mid-context, Stage 3 long-context, Phase 1 served distribution loss, Phase 2 weak-family remediation, Phase 3 judge calibration, Phase 4 tuning)—accumulating dozens of effective epochs and millions of gradient steps. In contrast, e4b was trained in **a single 1-epoch cold-start pass** (2,362 optimizer updates, ~4.9 hours total) starting from raw `google/gemma-4-E4B-it` with randomly initialized head weights.
-  2. *Unconverged Optimization*: At step 2,350/2,362 in `training_e4b.log`, e4b's training loss was 0.9372 and descending monotonically at ~0.001 loss per 25 steps; it had not plateaued or leveled off when training halted.
+  2. *Cosine Schedule Clamping vs Cumulative Averaging*: In `training_e4b.log`, the logged `avg_loss = epoch_loss / (step + 1)` is an expanding cumulative average from step 0, which drifted downward from 0.95 to 0.93 even after instantaneous interval loss had flattened at $\sim 0.85$. The model stopped learning because the 1-epoch cosine schedule decayed the learning rate to **$2.36 \times 10^{-10}$** (effective zero) by step 2,350. The model was not halted prematurely mid-stride; rather, its 1-epoch schedule clamped optimization before the 42 transformer layers could fully re-align with the new pooled classification head.
   3. *Premature Context Truncation*: Prior to Prefix KV Caching, e4b was trained with `--max-length 1024` to avoid OOM, truncating all long-context documents.
   4. *Benchmark Speed/Cost Penalties Masking Intelligence*: On pure reasoning capability, e4b already outpaced e2b: **54.95% on JevBench Hard tier** (vs ~50% for e2b) and **84.0% on ARC-Challenge** (vs 73.7% for e2b, a +10.3% leap). However, JevBench's composite geometric score heavily penalizes e4b's higher latency (~25ms vs 14ms) and parameter count on the Speed and Cost axes, artificially compressing its overall composite score.
 
@@ -241,11 +238,13 @@ To systematically address these findings, 14 targeted training interventions are
 * Permanent 15% anchor slice of ANLI (R1–R3), WANLI, and Counterfactually Augmented Data (CAD).
 * Minimal-pair contrastive loss penalizing models that assign identical scores when polarity is flipped by single-word negations.
 
-### TR-02: Discrete State-Machine Transition Modeling (Home Appliance: 0.0% $\to$ 70%+)
-* Programmatic generation of 25,000 synthetic FSM transition triplets (IoT appliances, network TCP states, workflow approvals) with deterministic states, events, and guards.
+### TR-02: Discrete State-Machine Transition Modeling (Home Appliance: 0.0% $\to$ 20–25% Case Exact)
+* **The Combinatorial Reality**: Home Appliance evaluates 18–25 simultaneous questions per request under Case Exact Accuracy. While e2b achieves 29.3% on `resolution`, 63.9% on `target_member`, and 53.1% on `outcome`, achieving Case Exact requires all 18+ fields to match simultaneously ($0.98^{18} \approx 0.69$). 
+* Ingest 25,000 synthetic FSM transition triplets (IoT appliances, network TCP states, workflow approvals) with deterministic states, events, guards, and alias resolution to lift Case Exact Accuracy from 0.0% to **20–25%** (and field accuracy to >92%).
 
-### TR-03: Dense Legal Clause Grounding (ContractNLI: 52.4% $\to$ 75%+)
-* Ingest ContractNLI, CUAD (510 contracts, 41 clause types), and CaseHOLD across multi-page (1,000–4,096 token) agreements.
+### TR-03: Dense Legal Clause Grounding (ContractNLI: 52.4% $\to$ 62–66% Macro-F1)
+* Non-disclosure agreements span 2,000–5,000 tokens with negative obligation clauses often residing in late sections.
+* Ingest ContractNLI, CUAD (510 contracts, 41 clause types), and CaseHOLD across full-length 4,096-token agreements, targeting **62–66% Macro-F1**.
 
 ### TR-04: In-Batch Hard Negative Intent Mining (BANKING77: 63.3% $\to$ 85%+)
 * Dynamic margin ranking loss applied to the top-3 highest-scoring false intent hypotheses for each query across dense 77-class intent spaces.
@@ -255,17 +254,17 @@ To systematically address these findings, 14 targeted training interventions are
 
 ### TR-06: High-Overlap Sentence-Level Hallucination Grounding (RAGTruth: 15.6% $\to$ 65%+)
 * Ingest the full RAGTruth training split (CNN/DailyMail, MS MARCO, Yelp) and HaluEval.
-* Train specifically on pairs with 90%+ word overlap where subtle entity or temporal mutations invert ground-truth from Entailment $\to$ Contradiction.
+* Train specifically on pairs with 90%+ word overlap where subtle entity or temporal mutations invert ground-truth from Entailment $\to$ Contradiction to cure lexical overlap bias.
 
-### TR-07: Structured Multi-Attribute Tuple Extraction (ACOS: 1.8% $\to$ 35%+)
-* Ingest SemEval and ACOS quadruple annotations formatted as compositional NLI conjunctions:
-  `Hypothesis: The review asserts that [Aspect] has [Sentiment] regarding [Category] due to [Opinion].`
+### TR-07: Structured Multi-Attribute Calibration (ACOS: 1.8% $\to$ 12–15% Case Exact, 95%+ Field)
+* ACOS evaluates 64 binary classification decisions per review. An independent error rate of 10% mathematically caps Case Exact at $0.90^{64} \approx 0.0011$.
+* Ingest compositional quadruple annotations formatted as NLI conjunctions, combined with validation threshold tuning ($\tau$) to lift Case Exact from 1.8% to **12–15%** while pushing overall field accuracy beyond **95%**.
 
 ### TR-08: Multi-Hop Evidence Bridging (HoVer: 58.0% $\to$ 75%+)
 * Compile 30,000 multi-hop claim verification pairs from HoVer and 2WikiMultiHop requiring multi-document entity linking.
 
 ### TR-09: Causal Ladder & Counterfactual Reasoning (CLadder: 56.4% $\to$ 75%+)
-* Ingest CLadder training instances covering Pearl's causal hierarchy (associational, interventional $do(X)$, and counterfactual queries).
+* Ingest CLadder training instances covering Pearl's causal hierarchy (associational, interventional $do(X)$, and counterfactual queries). Note: System 1 models verify causal graph invariants and d-separation; numerical probability computations ($P(Y \mid do(X))$) are routed to System 2.
 
 ### TR-10: Pragmatic & Figurative Rhetoric (iSarcasmEval: 11.1% $\to$ 40%+)
 * Ingest iSarcasmEval, FigQA, and FLUTE pairs with explicit figurative tag annotations (irony, hyperbole, understatement).
@@ -276,42 +275,44 @@ To systematically address these findings, 14 targeted training interventions are
 ### TR-12: E4B Deep Capacity Realization & Multi-Epoch Scaling Curriculum (Unlocking 42-Layer Potential)
 * **Objective**: Decisively separate Gevva e4b from e2b on high-depth deductive verification, multi-hop reasoning, and complex policy constraints.
 * **Continual Multi-Epoch Training**: Resume training directly from `ckpt/gevva-e4b-flagship/best` for an additional 3–4 epochs across the master curriculum (effective 4–5 epochs total).
-* **Cosine Annealing with LR Floor**: Utilize a cosine decay schedule with a gentle minimum floor learning rate ($1.0 \times 10^{-6}$ for backbone, $1.5 \times 10^{-5}$ for head) to allow deep representation refinement without gradient starvation.
-* **Full Context Window Exposure ($L = 4,096 \to 16,384$)**: Leverage the newly validated Shared Prefix KV Cache and adaptive bisection collators to train e4b on full multi-page contracts (ContractNLI), full legal cases (CaseHOLD), and multi-document retrieval chains without truncation.
-* **Upweighted Deductive Reasoning Slice**: Rebalance the mixture for e4b toward high-hop tasks: 2.0x sampling weight on HoVer, LogiQA 2.0, ReClor, and Pearl's Causal Hierarchy (CLadder), where the 42-layer depth has an inductive expressive advantage over 26-layer models.
+* **Cosine Annealing with Non-Zero LR Floor**: Utilize a cosine decay schedule with a strictly enforced minimum floor learning rate ($\eta_{\min} = 1.0 \times 10^{-6}$ for backbone, $1.5 \times 10^{-5}$ for head) with warm restarts to prevent schedule clamping.
+* **Full Context Window Exposure ($L = 4,096$ tokens)**: Train e4b on full 4,096-token sequences without truncation, maximizing the RTX 5090 VRAM budget.
+* **Upweighted Deductive Reasoning Slice**: Rebalance the mixture for e4b toward high-hop tasks: 2.0x sampling weight on HoVer, LogiQA 2.0, ReClor, and causal graph invariants (CLadder), where the 42-layer depth has an inductive expressive advantage over 35-layer models.
 
 ### TR-13: Optimal Dual-Regime Training Strategy for 2.3B vs 4.5B Backbones
 * Rather than applying an identical training recipe across scales, establish size-optimized hyperparameters tailored to their distinct parameter depths and deployment profiles:
 
-| Training Dimension | Gevva e2b (~2.3B / 26 Layers) | Gevva e4b (~4.5B / 42 Layers) |
+| Training Dimension | Gevva e2b (~2.3B / 35 Layers) | Gevva e4b (~4.5B / 42 Layers) |
 | :--- | :--- | :--- |
 | **Primary Deployment Role** | Ultra-low latency edge/inline router (<15 ms) | Deep reasoning, legal/medical audit, multi-hop |
-| **Backbone Learning Rate** | $2.5 \times 10^{-6}$ to $3.5 \times 10^{-6}$ | $1.8 \times 10^{-6}$ to $2.5 \times 10^{-6}$ (with 10% warmup) |
+| **Backbone Learning Rate** | $2.5 \times 10^{-6}$ to $3.5 \times 10^{-6}$ | $1.8 \times 10^{-6}$ to $2.5 \times 10^{-6}$ (with $\eta_{\min} = 1.0 \times 10^{-6}$) |
 | **Classification Head LR** | $1.0 \times 10^{-4}$ (standard) | $1.0 \times 10^{-4}$ (cold-start) $\to 2.5 \times 10^{-5}$ (refinement) |
 | **Effective Training Epochs** | 2–3 epochs per stage (fast convergence) | 4–6 epochs (deep representation alignment) |
-| **Context Length (Train / Eval)** | 4,096 tokens / 128K context | 8,192–16,384 tokens / 128K context |
-| **Batch Token Budget & Accum** | 2,048 tokens/batch, grad accum 16 (32k tokens) | 2,048 tokens/batch, grad accum 32 (effective 64k tokens) |
-| **Auxiliary Loss Regularization** | Brier: 0.5, NLI Aux: 0.25 (preserves anchor stability) | Brier: 0.5, NLI Aux: 0.15 (enables head specialization) |
+| **Context Length (Train FFT)**| 4,096 tokens / 128K eval context | 4,096 tokens (FFT) / 16,384 tokens (LoRA/multi-GPU) |
+| **Batch Token Budget & Accum** | 2,048 tokens/batch, grad accum 16 (32k tokens) | 4,096 tokens/batch, grad accum 16 (64k tokens) |
+| **Auxiliary Loss Regularization**| Brier: 0.5, NLI Aux: 0.25 (preserves anchor stability) | Brier: 0.5, NLI Aux: 0.20 (balanced specialization) |
 | **Reporting Focus** | Composite score (rewards speed & cost) | Raw Hard-Tier Accuracy & Macro-F1 (intelligence) |
 
+> **VRAM Realism Note for Single-GPU Training (32 GB RTX 5090)**:
+> In full fine-tuning (FFT), E4B requires 15.88 GB (weights) + 7.96 GB (gradients) + ~2.5 GB (paged optimizer buffers) + ~1.5 GB (CUDA context/overhead) = **27.84 GB static baseline**, leaving ~4.0 GB free for activations. With gradient checkpointing and FlashAttention-2, $L = 4,096$ tokens operates safely within this 4 GB headroom. Training beyond $L = 4,096$ (e.g. 8K–16K) requires **LoRA** (which slashes gradient memory from 7.96 GB to <0.5 GB) or multi-GPU FSDP/ZeRO-3.
+
 ### TR-14: Dynamic Loss Plateau Detection & Adaptive Non-Early-Stopping Engine
-* **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter regardless of whether the model is still learning rapidly (e4b stopped at step 2,362 while loss was descending monotonically at ~0.001 loss per 25 steps). Conversely, static epoch limits waste compute once a model converges.
-* **The Solution**: Implement an automated **Rolling EMA Loss Slope Tracker & Adaptive Training Controller** in `finetune.py`:
-  1. **Sliding-Window Exponential Moving Average (EMA)**:
-     Maintain rolling EMA of training loss $\bar{L}_{\text{train}}$ and validation loss $\bar{L}_{\text{val}}$ across a window of $W = 250$ optimizer steps (smoothing batch-to-batch variance from heterogeneous token bucketing).
-  2. **Relative Descent Slope Metric**:
-     Compute the descent velocity:
-     $$\text{Slope}_t = \frac{\bar{L}_{t-W} - \bar{L}_t}{\bar{L}_{t-W}}$$
-  3. **Non-Early-Stopping Guard (Active Descent)**:
-     If nominal epoch completion is reached but $\text{Slope}_t > \epsilon_{\text{active}}$ (e.g. $\text{Slope}_t \ge 0.25\%$ relative improvement per window), training **automatically extends** dynamically for additional intervals of $K=250$ steps up to a configured safety ceiling (`--max-epochs 6` or `--max-steps 15000`).
-  4. **Multi-Metric Plateau Detection & Learning Rate Annealing**:
-     When $\text{Slope}_t < \epsilon_{\text{plateau}}$ (e.g. $< 0.05\%$ over $P=3$ consecutive evaluation windows):
-     - Trigger an adaptive LR reduction (`ReduceLROnPlateau`: decay backbone LR by $0.5\times$).
-     - If the plateau persists across 2 consecutive LR reductions AND validation Decision Accuracy has not improved by $>0.1\%$, trigger graceful convergence termination.
-  5. **Triple-Metric Validation Checkpoint Gate**:
-     Track checkpoint ranking via composite validation score:
-     $$\text{Score}_{\text{val}} = \text{DecisionAcc}_{\text{val}} - 0.2 \times \text{Brier}_{\text{val}} + 0.1 \times \text{AnchorAcc}_{\text{val}}$$
-     Automatically retain the top-3 best validation snapshots and the last 2 step checkpoints, rotating older checkpoints to prevent disk saturation.
+* **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter. In e4b, optimization was clamped by the 1-epoch cosine decay schedule decaying LR to zero. Conversely, static epoch limits waste compute once a model converges.
+* **The Solution**: Implement an automated **Rolling EMA Instantaneous Loss Tracker & Adaptive Controller** in `finetune.py`:
+  1. **Instantaneous Sliding-Window Loss (Not Cumulative Epoch Mean)**:
+     Compute the true instantaneous interval loss over a sliding window of $W = 250$ optimizer steps:
+     $$L_{\text{interval}} = \frac{S_t - S_{t-W}}{W}, \quad \text{where } S_t = \sum_{i=1}^t L_i$$
+     This eliminates the expanding cumulative averaging illusion where $\bar{L}_k$ drifts down even after true batch loss has flattened.
+  2. **Non-Early-Stopping Guard (Active Descent)**:
+     If nominal epoch completion is reached but instantaneous slope $\text{Slope}_t = \frac{L_{t-W} - L_t}{L_{t-W}} \ge 0.25\%$ (active learning), training **automatically extends** dynamically for additional intervals of $K=250$ steps up to a safety ceiling (`--max-epochs 5`).
+  3. **Validation Divergence Circuit Breaker (Anti-Overfitting)**:
+     If validation loss increases by $>1.5\%$ over 2 consecutive validation checks while training loss continues to fall, halt training immediately and restore the best validation checkpoint.
+  4. **Multi-Metric Plateau Handling**:
+     When $\text{Slope}_t < 0.05\%$ over $P=2$ consecutive evaluation windows:
+     - Trigger adaptive LR decay ($0.5\times$).
+     - If plateau persists across 2 consecutive LR reductions and validation accuracy has not improved by $>0.1\%$, trigger graceful convergence termination.
+  5. **Decoupled Evaluation Scheduling**:
+     Run validation checks at epoch boundaries or every 1,000 steps to avoid excessive validation latency overhead.
 
 ---
 
@@ -350,14 +351,15 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 │             Single Forward Pass (~15-30 ms)            │             Multi-Token Sequential Generation          │
 ├────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────┤
 │ • Zero-shot Tool & API Routing (BFCL: 92.6%)          │ • Multi-step arithmetic calculation (GSM8K)            │
-│ • Tool Invocation Gating (When2Call: 75.1%)           │ • Code interpreter execution simulation (CRUXEval)     │
-│ • Document Factual Attribution & Guardrails            │ • Combinatorial search & game tree minimax (Chess)     │
-│ • Candidate Reranking & Retrieval Filtering           │ • Recursive planning & scratchpad reasoning            │
-│ • Security, Phishing & Stance Classification          │ • Open-ended conversational generation                 │
+│ • Tool Invocation Gating (When2Call: 75.1%)           │ • do-calculus numerical probability fractions (CLadder)│
+│ • Document Factual Attribution & Hallucination Guard   │ • Code interpreter execution simulation (CRUXEval)     │
+│ • Candidate Reranking & Retrieval Filtering           │ • Combinatorial search & game tree minimax (Chess)     │
+│ • Causal graph d-separation & invariant checking       │ • Combinatorial multi-field state machines & overrides │
+│ • Security, Phishing & Stance Classification          │ • Recursive planning & open-ended generation           │
 └────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────┘
 ```
 
-**Rule for Production Deployments**: If a task requires computing intermediate scratchpad states where token $t_i$ depends on token $t_{i-1}$, route to System 2. Use Gevva System 1 as the high-speed front-door gatekeeper, validator, and router.
+**Rule for Production Deployments**: If a task requires computing intermediate scratchpad states where token $t_i$ depends on token $t_{i-1}$, or requires multi-step arithmetic calculations ($s_t = f(s_{t-1})$), route to System 2. Use Gevva System 1 as the high-speed front-door gatekeeper, invariant verifier, and router.
 
 ---
 
@@ -370,27 +372,27 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **OPT-03** | Architecture | Adaptive Batch Slicing on OOM | Long-context memory crashes | Low | **Zero OOM crashes during long runs** | gevva 1.1.0 |
 | **OPT-04** | Serving | W4A16 Quantized Inference Pipeline | Edge device memory constraints | Low | **Reduces RAM/VRAM footprint to ~4.5 GB** | gevva 1.1.0 |
 | **OPT-05** | Architecture | Native OOS Routing via Neutral Mass | Open-set intent rejection | Low | **Zero-shot out-of-scope intent rejection** | gevva 1.1.0 |
-| **ENG-01** | Engine | Dictionary State Unpacking for `noul` | **RAGTruth (15.6% $\to$ 65%+)** | Low | **Eliminates prompt stringification failure** | gevva 1.1.0 |
-| **ENG-02** | Engine | Hierarchical Span-First Tuple Evaluation | **ACOS (1.8% $\to$ 35%+)** | Medium | **Cures multi-field independence penalty** | gevva 1.1.0 |
-| **ENG-03** | Engine | Distractor Scaling Normalization | **MMLU-Pro (28.6% $\to$ 40%+)** | Low | **Mitigates score noise on large option sets** | gevva 1.1.0 |
-| **TR-01** | Curriculum | Adversarial Hard-Anchor Replay | **ANLI R1–R3 (31.0% $\to$ 60%+)** | Medium | **Eliminates negation/word-swap vulnerability** | Gevva Phase 5 |
-| **TR-02** | Curriculum | Discrete State-Machine Modeling | **Home Appliance (0.0% $\to$ 70%+)** | Medium | **Enables dynamic state-chart verification** | Gevva Phase 5 |
-| **TR-03** | Curriculum | Dense Legal Clause Grounding | **ContractNLI (52.4% $\to$ 75%+)** | Medium | **Enables multi-page contract reasoning** | Gevva Phase 5 |
-| **TR-04** | Curriculum | In-Batch Hard Negative Intent Mining | **BANKING77 (63.3% $\to$ 85%+)** | Low | **Disambiguates dense near-synonym intents** | Gevva Phase 5 |
-| **TR-05** | Curriculum | Multi-Turn Dialogue Tracking | **API-Bank (46.1% $\to$ 75%+)** | Medium | **Tracks multi-turn conversational tool state** | Gevva Phase 5 |
-| **TR-06** | Curriculum | High-Overlap Hallucination Grounding | **RAGTruth (15.6% $\to$ 75%+)** | Medium | **Cures false-negative hallucination bias** | Gevva Phase 5 |
-| **TR-07** | Curriculum | Compositional Multi-Attribute Tuples | **ACOS (1.8% $\to$ 45%+)** | Medium | **Enables joint multi-attribute verification** | Gevva Phase 5 |
-| **TR-08** | Curriculum | Multi-Hop Evidence Bridging | **HoVer (58.0% $\to$ 75%+)** | Medium | **Bridges multi-document entity links** | Gevva Phase 5 |
-| **TR-09** | Curriculum | Causal Hierarchy & Counterfactuals | **CLadder (56.4% $\to$ 75%+)** | Medium | **Teaches interventional do-calculus reasoning** | Gevva Phase 5 |
-| **TR-10** | Curriculum | Pragmatic Rhetoric & Figurative Language | **iSarcasmEval (11.1% $\to$ 40%+)** | Medium | **Recognizes irony, satire, and litotes** | Gevva Phase 5 |
+| **ENG-01** | Engine | Generalized State Formatting for `noul` | **RAGTruth (Format parity & compliance)** | Low | **Eliminates prompt stringification error** | gevva 1.1.0 |
+| **ENG-02** | Engine | Calibrated Decision Thresholding | **ACOS (1.8% $\to$ 12–15% Exact, 95%+ Field)** | Medium | **Mitigates class-imbalance recall collapse** | gevva 1.1.0 |
+| **ENG-03** | Engine | Cardinality-Scaled Softmax Temperature | **MMLU-Pro (28.6% $\to$ 35%+)** | Low | **Dampens distractor noise on large option sets** | gevva 1.1.0 |
+| **TR-01** | Curriculum | Adversarial Hard-Anchor Replay | **ANLI R1–R3 (31.0% $\to$ 60%+)** | Medium | **Eliminates negation/word-swap vulnerability** | gevva 1.1.0 |
+| **TR-02** | Curriculum | Discrete State-Machine Modeling | **Home Appliance (0.0% $\to$ 20–25% Case Exact)** | Medium | **Enables dynamic state-chart verification** | gevva 1.1.0 |
+| **TR-03** | Curriculum | Dense Legal Clause Grounding | **ContractNLI (52.4% $\to$ 62–66% Macro-F1)** | Medium | **Enables multi-page contract reasoning** | gevva 1.1.0 |
+| **TR-04** | Curriculum | In-Batch Hard Negative Intent Mining | **BANKING77 (63.3% $\to$ 85%+)** | Low | **Disambiguates dense near-synonym intents** | gevva 1.1.0 |
+| **TR-05** | Curriculum | Multi-Turn Dialogue Tracking | **API-Bank (46.1% $\to$ 75%+)** | Medium | **Tracks multi-turn conversational tool state** | gevva 1.1.0 |
+| **TR-06** | Curriculum | High-Overlap Hallucination Grounding | **RAGTruth (15.6% $\to$ 65%+)** | Medium | **Cures false-negative hallucination bias** | gevva 1.1.0 |
+| **TR-07** | Curriculum | Compositional Multi-Attribute Tuples | **ACOS (1.8% $\to$ 12–15% Exact, 95%+ Field)** | Medium | **Enables joint multi-attribute verification** | gevva 1.1.0 |
+| **TR-08** | Curriculum | Multi-Hop Evidence Bridging | **HoVer (58.0% $\to$ 75%+)** | Medium | **Bridges multi-document entity links** | gevva 1.1.0 |
+| **TR-09** | Curriculum | Causal Hierarchy & Counterfactuals | **CLadder (56.4% $\to$ 75%+)** | Medium | **Teaches interventional do-calculus reasoning** | gevva 1.1.0 |
+| **TR-10** | Curriculum | Pragmatic Rhetoric & Figurative Language | **iSarcasmEval (11.1% $\to$ 40%+)** | Medium | **Recognizes irony, satire, and litotes** | gevva 1.1.0 |
 | **TR-11** | Curriculum | E-Commerce Search Taxonomy Discrimination | **Amazon ESCI (32.3% $\to$ 65%+)** | Low | **Distinguishes substitute vs exact products** | gevva 1.1.0 |
 | **TR-12** | Curriculum | E4B Multi-Epoch Deep Capacity Scaling | **ARC-Challenge, Hard-Tier, HoVer, LogiQA** | Medium | **Pulls E4B decisively ahead of E2B (+8-12% Hard Acc)** | gevva 1.1.0 |
-| **TR-13** | Training | Dual-Regime Model Size Optimization | **Capacity vs Latency Tradeoffs (2.3B vs 4.5B)** | Low | **Tailored LR, context & loss weighting per size** | gevva 1.1.0 |
-| **TR-14** | Training | Dynamic Loss Plateau & Non-Early-Stopping Engine | **Premature training halts & unconverged models** | Low | **Prevents undertraining; guarantees convergence** | gevva 1.1.0 |
-| **SYN-01** | GenAI Data | Synthetic FSM State Transition Generator | **Home Appliance (0.0% $\to$ 70%+)** | Medium | **25k FSM transitions with programmatic ground-truth** | Gevva Phase 5 |
-| **SYN-02** | GenAI Data | Counterfactual Minimal-Pair Synthesizer | **ANLI (31.0% $\to$ 60%+)** | Medium | **30k atomic scope & polarity perturbations** | Gevva Phase 5 |
-| **SYN-03** | GenAI Data | Hard-Negative Intent Boundary Paraphraser | **BANKING77 (63.3% $\to$ 85%+)** | Low | **15k borderline confusion queries** | Gevva Phase 5 |
-| **SYN-04** | GenAI Data | High-Overlap Entity/Temporal Mutator | **RAGTruth (15.6% $\to$ 75%+)** | Medium | **25k high-overlap counterfactual edits** | Gevva Phase 5 |
-| **SYN-05** | GenAI Data | Causal DAG Intervention Synthesizer | **CLadder (56.4% $\to$ 75%+)** | Medium | **20k causal DAG associational/interventional queries** | Gevva Phase 5 |
-| **SYN-06** | Data Quality | 4-Judge Validation & Decontamination Gate | All Phase 5 Synthetic Data | Low | **Guarantees zero label noise and zero contamination** | Gevva Phase 5 |
+| **TR-13** | Training | Dual-Regime Model Size Optimization | **Capacity vs Latency Tradeoffs (35-layer vs 42-layer)** | Low | **Tailored LR, context & loss weighting per size** | gevva 1.1.0 |
+| **TR-14** | Training | Dynamic Instantaneous Loss Plateau Engine | **Premature training halts & unconverged models** | Low | **Prevents undertraining; guards against divergence** | gevva 1.1.0 |
+| **SYN-01** | GenAI Data | Synthetic FSM State Transition Generator | **Home Appliance (0.0% $\to$ 20–25% Case Exact)** | Medium | **25k FSM transitions with programmatic ground-truth** | gevva 1.1.0 |
+| **SYN-02** | GenAI Data | Counterfactual Minimal-Pair Synthesizer | **ANLI (31.0% $\to$ 60%+)** | Medium | **30k atomic scope & polarity perturbations** | gevva 1.1.0 |
+| **SYN-03** | GenAI Data | Hard-Negative Intent Boundary Paraphraser | **BANKING77 (63.3% $\to$ 85%+)** | Low | **15k borderline confusion queries** | gevva 1.1.0 |
+| **SYN-04** | GenAI Data | High-Overlap Entity/Temporal Mutator | **RAGTruth (15.6% $\to$ 65%+)** | Medium | **25k high-overlap counterfactual edits** | gevva 1.1.0 |
+| **SYN-05** | GenAI Data | Causal DAG Intervention Synthesizer | **CLadder (56.4% $\to$ 75%+)** | Medium | **20k causal DAG associational/interventional queries** | gevva 1.1.0 |
+| **SYN-06** | Data Quality | 4-Judge Validation & Decontamination Gate | All Phase 5 Synthetic Data | Low | **Guarantees zero label noise and zero contamination** | gevva 1.1.0 |
 
