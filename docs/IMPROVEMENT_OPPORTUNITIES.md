@@ -2,7 +2,7 @@
 
 > **Status**: Active Engineering & Research Backlog  
 > **Origin**: Empirical audit and full 151,476-request Decision Index 0.2 suite profiling on NVIDIA GeForce RTX 5090.  
-> **Last Updated**: 2026-09-26  
+> **Last Updated**: 2026-09-28  
 
 ---
 
@@ -223,11 +223,19 @@ Analyzing all 44 datasets reveals 8 fundamental findings that define our researc
   4. **Security & Phishing Filtering (PhishNChips)**: **67.55%** (Skill **35.10%**, 152 ms)
   5. **Clinical Trial Protocol Claim Verification (NLI4CT)**: **68.87%** (Skill **39.44%**, 31 ms)
 
+### Insight 9: The Model-Scale & Exposure Disparity (Why e4b Appeared Undertrained)
+* In head-to-head evaluation, Gevva e4b scored **77.28 Composite** on JevBench public vs e2b's **77.54 Composite**, despite having more than double the active parameters (3.98B vs 1.88B) and 42 transformer layers (vs 26).
+* **Root Cause: Severe Token-Exposure Undershoot & Cold-Start Head Initialization**:
+  1. *Curriculum Depth Asymmetry*: e2b was trained across multiple progressive stages (Stage 1 pretrain, Stage 2 mid-context, Stage 3 long-context, Phase 1 served distribution loss, Phase 2 weak-family remediation, Phase 3 judge calibration, Phase 4 tuning)—accumulating dozens of effective epochs and millions of gradient steps. In contrast, e4b was trained in **a single 1-epoch cold-start pass** (2,362 optimizer updates, ~4.9 hours total) starting from raw `google/gemma-4-E4B-it` with randomly initialized head weights.
+  2. *Unconverged Optimization*: At step 2,350/2,362 in `training_e4b.log`, e4b's training loss was 0.9372 and descending monotonically at ~0.001 loss per 25 steps; it had not plateaued or leveled off when training halted.
+  3. *Premature Context Truncation*: Prior to Prefix KV Caching, e4b was trained with `--max-length 1024` to avoid OOM, truncating all long-context documents.
+  4. *Benchmark Speed/Cost Penalties Masking Intelligence*: On pure reasoning capability, e4b already outpaced e2b: **54.95% on JevBench Hard tier** (vs ~50% for e2b) and **84.0% on ARC-Challenge** (vs 73.7% for e2b, a +10.3% leap). However, JevBench's composite geometric score heavily penalizes e4b's higher latency (~25ms vs 14ms) and parameter count on the Speed and Cost axes, artificially compressing its overall composite score.
+
 ---
 
-## 8. Prescribed Training Remediations (TR-01 through TR-11)
+## 8. Prescribed Training Remediations (TR-01 through TR-14)
 
-To systematically address these findings, 11 targeted training interventions are defined for the Gevva Phase 5 master curriculum:
+To systematically address these findings, 14 targeted training interventions are defined for the Gevva Phase 5 / 1.1 master curriculum:
 
 ### TR-01: Adversarial Hard-Anchor Replay & Anti-Shortcut Loss (ANLI: 31.0% $\to$ 60%+)
 * Permanent 15% anchor slice of ANLI (R1–R3), WANLI, and Counterfactually Augmented Data (CAD).
@@ -264,6 +272,46 @@ To systematically address these findings, 11 targeted training interventions are
 
 ### TR-11: E-Commerce Product Relevance Taxonomy (Amazon ESCI: 32.3% $\to$ 65%+)
 * Ingest Amazon ESCI training split with 4-way contrastive margin ranking between Exact, Substitute, Complement, and Irrelevant items.
+
+### TR-12: E4B Deep Capacity Realization & Multi-Epoch Scaling Curriculum (Unlocking 42-Layer Potential)
+* **Objective**: Decisively separate Gevva e4b from e2b on high-depth deductive verification, multi-hop reasoning, and complex policy constraints.
+* **Continual Multi-Epoch Training**: Resume training directly from `ckpt/gevva-e4b-flagship/best` for an additional 3–4 epochs across the master curriculum (effective 4–5 epochs total).
+* **Cosine Annealing with LR Floor**: Utilize a cosine decay schedule with a gentle minimum floor learning rate ($1.0 \times 10^{-6}$ for backbone, $1.5 \times 10^{-5}$ for head) to allow deep representation refinement without gradient starvation.
+* **Full Context Window Exposure ($L = 4,096 \to 16,384$)**: Leverage the newly validated Shared Prefix KV Cache and adaptive bisection collators to train e4b on full multi-page contracts (ContractNLI), full legal cases (CaseHOLD), and multi-document retrieval chains without truncation.
+* **Upweighted Deductive Reasoning Slice**: Rebalance the mixture for e4b toward high-hop tasks: 2.0x sampling weight on HoVer, LogiQA 2.0, ReClor, and Pearl's Causal Hierarchy (CLadder), where the 42-layer depth has an inductive expressive advantage over 26-layer models.
+
+### TR-13: Optimal Dual-Regime Training Strategy for 2.3B vs 4.5B Backbones
+* Rather than applying an identical training recipe across scales, establish size-optimized hyperparameters tailored to their distinct parameter depths and deployment profiles:
+
+| Training Dimension | Gevva e2b (~2.3B / 26 Layers) | Gevva e4b (~4.5B / 42 Layers) |
+| :--- | :--- | :--- |
+| **Primary Deployment Role** | Ultra-low latency edge/inline router (<15 ms) | Deep reasoning, legal/medical audit, multi-hop |
+| **Backbone Learning Rate** | $2.5 \times 10^{-6}$ to $3.5 \times 10^{-6}$ | $1.8 \times 10^{-6}$ to $2.5 \times 10^{-6}$ (with 10% warmup) |
+| **Classification Head LR** | $1.0 \times 10^{-4}$ (standard) | $1.0 \times 10^{-4}$ (cold-start) $\to 2.5 \times 10^{-5}$ (refinement) |
+| **Effective Training Epochs** | 2–3 epochs per stage (fast convergence) | 4–6 epochs (deep representation alignment) |
+| **Context Length (Train / Eval)** | 4,096 tokens / 128K context | 8,192–16,384 tokens / 128K context |
+| **Batch Token Budget & Accum** | 2,048 tokens/batch, grad accum 16 (32k tokens) | 2,048 tokens/batch, grad accum 32 (effective 64k tokens) |
+| **Auxiliary Loss Regularization** | Brier: 0.5, NLI Aux: 0.25 (preserves anchor stability) | Brier: 0.5, NLI Aux: 0.15 (enables head specialization) |
+| **Reporting Focus** | Composite score (rewards speed & cost) | Raw Hard-Tier Accuracy & Macro-F1 (intelligence) |
+
+### TR-14: Dynamic Loss Plateau Detection & Adaptive Non-Early-Stopping Engine
+* **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter regardless of whether the model is still learning rapidly (e4b stopped at step 2,362 while loss was descending monotonically at ~0.001 loss per 25 steps). Conversely, static epoch limits waste compute once a model converges.
+* **The Solution**: Implement an automated **Rolling EMA Loss Slope Tracker & Adaptive Training Controller** in `finetune.py`:
+  1. **Sliding-Window Exponential Moving Average (EMA)**:
+     Maintain rolling EMA of training loss $\bar{L}_{\text{train}}$ and validation loss $\bar{L}_{\text{val}}$ across a window of $W = 250$ optimizer steps (smoothing batch-to-batch variance from heterogeneous token bucketing).
+  2. **Relative Descent Slope Metric**:
+     Compute the descent velocity:
+     $$\text{Slope}_t = \frac{\bar{L}_{t-W} - \bar{L}_t}{\bar{L}_{t-W}}$$
+  3. **Non-Early-Stopping Guard (Active Descent)**:
+     If nominal epoch completion is reached but $\text{Slope}_t > \epsilon_{\text{active}}$ (e.g. $\text{Slope}_t \ge 0.25\%$ relative improvement per window), training **automatically extends** dynamically for additional intervals of $K=250$ steps up to a configured safety ceiling (`--max-epochs 6` or `--max-steps 15000`).
+  4. **Multi-Metric Plateau Detection & Learning Rate Annealing**:
+     When $\text{Slope}_t < \epsilon_{\text{plateau}}$ (e.g. $< 0.05\%$ over $P=3$ consecutive evaluation windows):
+     - Trigger an adaptive LR reduction (`ReduceLROnPlateau`: decay backbone LR by $0.5\times$).
+     - If the plateau persists across 2 consecutive LR reductions AND validation Decision Accuracy has not improved by $>0.1\%$, trigger graceful convergence termination.
+  5. **Triple-Metric Validation Checkpoint Gate**:
+     Track checkpoint ranking via composite validation score:
+     $$\text{Score}_{\text{val}} = \text{DecisionAcc}_{\text{val}} - 0.2 \times \text{Brier}_{\text{val}} + 0.1 \times \text{AnchorAcc}_{\text{val}}$$
+     Automatically retain the top-3 best validation snapshots and the last 2 step checkpoints, rotating older checkpoints to prevent disk saturation.
 
 ---
 
@@ -335,7 +383,10 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **TR-08** | Curriculum | Multi-Hop Evidence Bridging | **HoVer (58.0% $\to$ 75%+)** | Medium | **Bridges multi-document entity links** | Gevva Phase 5 |
 | **TR-09** | Curriculum | Causal Hierarchy & Counterfactuals | **CLadder (56.4% $\to$ 75%+)** | Medium | **Teaches interventional do-calculus reasoning** | Gevva Phase 5 |
 | **TR-10** | Curriculum | Pragmatic Rhetoric & Figurative Language | **iSarcasmEval (11.1% $\to$ 40%+)** | Medium | **Recognizes irony, satire, and litotes** | Gevva Phase 5 |
-| **TR-11** | Curriculum | E-Commerce Search Taxonomy Discrimination | **Amazon ESCI (32.3% $\to$ 65%+)** | Low | **Distinguishes substitute vs exact products** | Gevva Phase 5 |
+| **TR-11** | Curriculum | E-Commerce Search Taxonomy Discrimination | **Amazon ESCI (32.3% $\to$ 65%+)** | Low | **Distinguishes substitute vs exact products** | gevva 1.1.0 |
+| **TR-12** | Curriculum | E4B Multi-Epoch Deep Capacity Scaling | **ARC-Challenge, Hard-Tier, HoVer, LogiQA** | Medium | **Pulls E4B decisively ahead of E2B (+8-12% Hard Acc)** | gevva 1.1.0 |
+| **TR-13** | Training | Dual-Regime Model Size Optimization | **Capacity vs Latency Tradeoffs (2.3B vs 4.5B)** | Low | **Tailored LR, context & loss weighting per size** | gevva 1.1.0 |
+| **TR-14** | Training | Dynamic Loss Plateau & Non-Early-Stopping Engine | **Premature training halts & unconverged models** | Low | **Prevents undertraining; guarantees convergence** | gevva 1.1.0 |
 | **SYN-01** | GenAI Data | Synthetic FSM State Transition Generator | **Home Appliance (0.0% $\to$ 70%+)** | Medium | **25k FSM transitions with programmatic ground-truth** | Gevva Phase 5 |
 | **SYN-02** | GenAI Data | Counterfactual Minimal-Pair Synthesizer | **ANLI (31.0% $\to$ 60%+)** | Medium | **30k atomic scope & polarity perturbations** | Gevva Phase 5 |
 | **SYN-03** | GenAI Data | Hard-Negative Intent Boundary Paraphraser | **BANKING77 (63.3% $\to$ 85%+)** | Low | **15k borderline confusion queries** | Gevva Phase 5 |
