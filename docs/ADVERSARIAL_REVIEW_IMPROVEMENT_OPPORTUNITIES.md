@@ -34,8 +34,11 @@ Severity: **C** = changes decisions or invalidates projections; **M** = wrong/un
 ### F-03 (M) — ENG-03 temperature scaling is a mathematical no-op for top-1 accuracy
 Dividing every candidate's logits by a shared temperature $T(K)$ is a monotone transformation: argmax, ranking, and top-1 accuracy are unchanged. The stated rationale ("contracts distractor variance") is backwards — affine scaling multiplies score mean and dispersion together, leaving $\mu/\sigma$ and hence $P(\text{gold ranks first})$ invariant. Temperature only matters where *absolute* probabilities are compared to thresholds. The genuine lever for large-$K$ robustness is training-time grouped/listwise exposure to $K$ distractors, which §11 Insight 3 already names ("group-atomic ranking loss"). **Required change**: recategorize ENG-03 as (small) threshold calibration; move the accuracy claim to a new listwise training initiative (now TR-21 in the revised roadmap).
 
-### F-04 (M) — ForecastBench projection ignores the discrimination bound
-Isotonic/Platt calibration maps scores to empirical frequencies; it cannot manufacture signal. If the model's score has no rank correlation with outcomes, calibration collapses output to the base rate → Brier ≈ 0.25 → skill ≈ 0. The claimed 4.80% → 28%+ assumes discrimination that was never measured. **Required change**: measure AUC of $p_{\text{true}}$ against resolved outcomes first; book uplift only as a function of measured AUC. Also: the calibration set must contain only *temporally resolved* questions (no leakage from post-hoc knowledge). Revised booking: +0.1 to +0.5, gated.
+### F-04 (M) — ForecastBench projection ignores the discrimination bound — **RESOLVED BY MEASUREMENT (2026-09-28)**
+AUC audit on run artifacts (n = 10,139 resolved ForecastBench items, base rate 0.353):
+- **e4b: AUC 0.585** — raw predictions (Brier 0.2380) are *worse than the base rate* (0.2283). 5-fold CV isotonic bound: **Brier 0.2189 → 12.4% skill**. The pre-review "28%+" is unreachable for e4b; its weakness is discrimination (capability), not calibration. The pre-review root-cause story ("saturated sigmoid, p≈0.05/0.95") was empirically wrong — outputs cluster 0.4–0.6.
+- **e2b: AUC 0.761**, underconfident — CV isotonic: **Brier 0.1814 → 27.4% skill** (from 17.9%), a near-free +0.2 index-point win booked in §17.4.
+Bookings updated in §5 ENG-05, §11 Insight 11, §17 Phase A. Production calibration must use held-out, temporally valid resolved questions and be refit on a schedule.
 
 ### F-05 (M) — Executive summary overstates implementation status
 Code audit 2026-09-28 (`grep` across `gemma4_cross_encoder.py`, `train_cross_encoder.py`, `finetune.py`, `gevva/`):
@@ -70,10 +73,8 @@ Attentive pooling replaces the input to the score head; existing champion checkp
 ### F-10 (M) — τ_attn "entropy invariance" is mislabeled and unproven
 The quoted values (1.0 / 1.15 / 1.38) are the *scaling factors* $\tau$, not entropies; attention entropy is not "1.0" at L=512 (that would be near-uniform). $\sqrt{\ln L / \ln 512}$ is a plausible heuristic under random-key assumptions, not settled math, and it stacks with YaRN's own softmax temperature $t = 1 + 0.1\ln s$ — two overlapping damping knobs with no ablation isolating either. **Required change**: present as an ablatable heuristic (optionally a learned per-layer scalar initialized at the formula), gated by the short-context regression check in F-08's gate set.
 
-### F-11 (M) — Phase B baselines look copy-pasted from e2b
-- HoVer baseline "58.00%" matches e2b's 57.98% (§10), not a verified e4b figure.
-- "Home Appliance (Cat 40)" — Cat 40 is iSarcasmEval; Home Appliance is Cat 9.
-**Required change**: pull every e4b baseline from the run artifacts before using it in a projection; projections built on the wrong baseline inherit the error.
+### F-11 (M) — Phase B baselines look copy-pasted from e2b — **RESOLVED (2026-09-28, all e4b baselines re-verified from `runs/gevva-e4b-0.2/benchmark-summary.json`)**
+Verified e4b figures: HoVer 57.77 (≈ e2b's 57.97 — no scale advantage without multi-hop training), ContractNLI 54.47 (was misquoted 52.40), MMLU-Pro 36.41 raw / ≈28.5 skill (was misquoted 19.70 — the pre-review Phase A even "projected" e4b to 28.50, a value it already had), RAGTruth 36.68 raw F1 (0.00 is only the skill clamp below the 41.13 random baseline), Home Appliance 15.00 ✓, MuSR 58.64 raw / 34.24 skill ✓, ANLI 31.01 ✓. §17 Phase B table updated with verified values; the "Home Appliance (Cat 40)" mislabel fixed to Cat 9.
 
 ### F-12 (m) — Request-count inconsistency
 §1 origin line says **151,476**; §10 and the scorecard say **151,034** (twice, as completed counts). Standardize on the completed count and note the delta (442 requests) if it is real (e.g., retried/voided items).
@@ -133,7 +134,7 @@ TR-03 targets ContractNLI "62–66%" while TR-15 targets "70%+" for the same ben
 1. Fix §17 arithmetic per F-01/F-02/F-04 (done in the revised roadmap, 2026-09-28).
 2. Relabel implementation status everywhere (done; see roadmap §18 status log).
 3. ~~Investigate e4b ANLI = 0.00% as a probable engine bug~~ **Done (2026-09-28)**: curriculum gap, not a bug — e4b's training mixture had zero ANLI/adversarial-NLI rows; neutral recall 2.9%. Fix = TR-01 in the Phase 5 mixture; booked in Phase B (§17). See F-07 above.
-4. Measure ForecastBench AUC before booking ENG-05 uplift.
+4. ~~Measure ForecastBench AUC before booking ENG-05 uplift~~ **Done (2026-09-28)**: e4b AUC 0.585 → calibration ceiling 12.4% skill; e2b AUC 0.761 → 27.4%. Bookings updated.
 5. Written confirmation (or safe default) on per-benchmark threshold legality (F-18).
 6. Run EXP-01 exactly as pre-registered (the arms on disk are a different, earlier experiment) — it gates the entire Phase B mixture design.
 7. De-sliding and attentive pooling land only behind ablation gates with rollback (F-08, F-09), including quantized-export parity.

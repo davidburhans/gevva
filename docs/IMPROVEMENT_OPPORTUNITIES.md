@@ -130,17 +130,15 @@ The full e2b run proved that several poor benchmark scores were caused by engine
   * *Engine-side (small, threshold-only)*: retain a $K$-dependent temperature solely where the harness compares absolute probabilities to thresholds; otherwise drop it.
   * *Training-side (the real lever, now **TR-21**)*: listwise grouped-candidate training — sample $K \in [4, 16]$ distractors per premise and apply a group-atomic ranking loss so the gold margin is optimized against live distractors rather than pointwise labels.
 
-### ENG-05: Post-Hoc Isotonic Probability Calibration for Brier Metrics (ForecastBench)
+### ENG-05: Post-Hoc Isotonic Probability Calibration for Brier Metrics (ForecastBench) — AUC AUDIT COMPLETE 2026-09-28
 * **The Diagnostic**: On Catalog 48 (**ForecastBench**), Gevva e4b scored only **4.80% Skill** across 10,139 requests.
-* **Root Cause Found**:
-  ForecastBench evaluates binary probability predictions against the 0.25 uniform Brier baseline:
-  $$\text{Skill} = \max\left(0, \frac{0.25 - \text{Brier}}{0.25}\right)$$
-  Because the NLI cross-encoder is trained with classification cross-entropy, its output logits saturate the sigmoid ($p \approx 0.05$ or $0.95$). On open-ended macroeconomic, geopolitical, and scientific forecasting questions where ground-truth uncertainty is high, extreme predictions that turn out incorrect incur severe quadratic Brier penalties $(p - y)^2 \approx (0.95 - 0)^2 = 0.9025$.
-* **The Fix**:
-  Apply **Post-Hoc Isotonic Regression or Platt Temperature Scaling** specifically for continuous probability forecasts:
-  - Fit an isotonic calibration curve $f(z)$ over a held-out calibration set of real-world forecast claims.
-  - Re-center probabilities toward the empirical base rate, damping overconfident tails into the $[0.25, 0.75]$ calibrated confidence corridor.
-  - Achievable uplift is **bounded by the model's measured discrimination** (review F-04): first compute the AUC of $p_{\text{true}}$ against resolved outcomes on a held-out, temporally valid calibration set; book uplift only as a function of that AUC. If discrimination is near zero, calibration collapses to the base rate (Brier ≈ 0.25, skill ≈ 0) and no calibration method can help. Phase A books **+0.1–0.5**, gated on this audit (§17).
+* **Measured Root Cause (artifact audit, review F-04 — supersedes the earlier "saturated sigmoid" narrative, which was empirically wrong: engine probabilities cluster at 0.4–0.6, not 0.05/0.95)**:
+  - **e4b has weak discrimination on this benchmark**: AUC of $p_{\text{yes}}$ vs resolved outcomes = **0.585** (n = 10,139, base rate 0.353). Its raw predictions (Brier 0.2380) are *worse than predicting the base rate* (Brier 0.2283).
+  - **e2b has genuinely good discrimination**: AUC = **0.761**, but is underconfident (predictions centered 0.4–0.5 against a 0.353 base rate), costing Brier.
+* **The Fix & Measured Bound** (5-fold CV PAVA isotonic, clipped to [0.02, 0.98]):
+  - **e4b: Brier 0.2380 → 0.2189 (skill 4.8% → 12.4%)**. This is close to the discrimination ceiling; the pre-review "28%+" projection is unreachable for e4b.
+  - **e2b: Brier 0.2054 → 0.1814 (skill 17.9% → 27.4%)** — a near-free +0.2 index-point win for the e2b 1.1 plan (§17.4).
+  - Production calibration must be fit on held-out resolved questions and refit on a schedule (resolutions are point-in-time); CV estimates are mildly optimistic vs true out-of-sample.
 
 ---
 
@@ -578,8 +576,8 @@ Analyzing all 44 datasets reveals 8 fundamental findings that define our researc
 * On **ForecastBench (Cat 48)**, e4b scored only **4.80% Skill** across 10,139 requests.
 * ForecastBench evaluates continuous probability predictions on future world events against a uniform 0.25 Brier baseline:
   $$\text{Skill} = \max\left(0, \frac{0.25 - \text{Brier}}{0.25}\right)$$
-* Standard NLI cross-encoders output saturated probabilities ($p \approx 0.05$ or $0.95$). On highly uncertain macroeconomic or geopolitical questions, confident false predictions incur massive quadratic penalties $(p - y)^2 \approx (0.95 - 0)^2 = 0.9025$.
-* **Remediation**: Post-hoc isotonic regression / Platt temperature scaling (`ENG-05`) removes the overconfidence penalty, but the achievable skill is **bounded by the model's measured discrimination** (rank correlation between $p_{\text{true}}$ and resolved outcomes). Measure that AUC first (review F-04); if discrimination is near zero, calibration collapses output to the base rate (Brier ≈ 0.25, skill ≈ 0) and no calibration method can help. Calibration data must use only temporally resolved questions.
+* **Corrected root cause (artifact audit 2026-09-28, review F-04)**: the earlier "saturated probabilities" narrative was wrong (engine outputs cluster at 0.4–0.6). The real story splits by model: **e4b lacks discrimination here (AUC 0.585 — worse than the base rate)**, while **e2b discriminates well (AUC 0.761) but is underconfident**. e4b's forecasting weakness is a *capability* gap on this benchmark, not a calibration artifact.
+* **Remediation**: Post-hoc isotonic calibration (`ENG-05`) with **measured bounds**: e4b 4.8% → **12.4% skill** (5-fold CV), e2b 17.9% → **27.4%**. Raising e4b beyond that requires improving discrimination itself (TR-17-style forecast-grounded training), not calibration. Calibration must be fit on temporally valid resolved questions and refit on a schedule.
 
 ---
 
@@ -926,21 +924,21 @@ These fixes require no gradient updates and are applied at the engine serializat
 | :--- | :---: | :--- | :---: | :---: |
 | **RAGTruth (Cat 59)** | 0.00% | `ENG-01`: format parity removes the stringification bug so the model answers the intended question. **Accuracy recovery requires TR-06 (Phase B)** — the on-repo adversarial test measured 0.0% F1 for formatting-only (§5) | **0–8%** | **+0.0–0.25** |
 | **ANLI R1–R3 (Cat 12)** | 0.00% | **Investigated 2026-09-28 (review F-07): not an engine bug** — the e4b training mixture contained zero adversarial-NLI rows, producing neutral-class collapse (2.9% recall on gold-neutral) and below-baseline macro-F1 (31.0%). Fix is TR-01 training, **booked in Phase B** | — | **+0.0** |
-| **ForecastBench (Cat 48)** | 4.80% | `ENG-05`: isotonic/Platt, **gated on measured discrimination (AUC vs resolved outcomes) before booking** — calibration cannot manufacture signal (review F-04) | **8–20%** | **+0.1–0.5** |
+| **ForecastBench (Cat 48)** | 4.80% | `ENG-05`: isotonic calibration — **AUC audit complete (F-04)**: e4b AUC 0.585 (weak); measured CV-isotonic bound **10–12.4% skill**. Pre-review 28%+ unreachable | **10–12%** | **+0.1–0.2** |
 | **ACOS (Cat 38)** | 0.25% | `ENG-02`: class-prior threshold policy. **Per-benchmark τ fitting on suite validation data pending a written rules check** (review F-18); global policy is the safe default | **2–10%** | **+0.05–0.25** |
 | **Phase A Subtotal** | **29.88%** | *Protocol & Engine Calibration (gated)* | **30.2–31.6%** | **+0.3–0.9** |
 
 ### Phase B: Deep Reasoning Curriculum & Multi-Epoch Scaling (+1.8 to +3.9 Skill Points, Gated)
-Continual fine-tuning across 3–4 epochs (`TR-12`) with deep reasoning skew (`TR-20`), listwise ranking exposure (`TR-21`), and the remediation curriculum. Ranges are wider than pre-review because (a) synthetic-slice gains are unproven until gated (review F-06), and (b) several e4b baselines in the pre-review table were copy-pasted from e2b and must be re-verified from run artifacts (review F-11):
+Continual fine-tuning across 3–4 epochs (`TR-12`) with deep reasoning skew (`TR-20`), listwise ranking exposure (`TR-21`), and the remediation curriculum. All e4b baselines below were **verified from run artifacts on 2026-09-28** (review F-11 resolved — the pre-review table had mixed e2b figures into e4b rows); ranges remain wide because synthetic-slice gains are unproven until gated (review F-06):
 
 | Benchmark / Category | Baseline e4b Skill | Curriculum / Training Intervention | Projected Skill | Index Delta |
 | :--- | :---: | :--- | :---: | :---: |
-| **HoVer (Cat 61)** | *58.0% (e2b figure; e4b baseline TBC — F-11)* | `TR-08` & `TR-20`: multi-hop evidence bridging & sampling skew | **65–75%** | **+0.2–0.5** |
-| **LogiQA / ReClor / MuSR** | 34.24% | `TR-20`: formal deductive logic & constraint satisfaction | **42–50%** | **+0.3–0.8** |
-| **ContractNLI (Cat 11)** | 52.40% | `TR-03` & `TR-15`: dense legal grounding & attention de-sliding (de-sliding accuracy counted **here only** — F-02) | **60–68%** | **+0.3–0.6** |
-| **Home Appliance (Cat 9)** | *15.0% (verify from artifacts)* | `TR-02` & `SYN-01`: FSM state chart modeling (synthetic — gated, F-06) | **20–35%** | **+0.2–0.7** |
-| **RAGTruth (Cat 59)** | 0.00% | `TR-06`: high-overlap counterfactual fine-tuning (moved from Phase A — F-01). Hard: lexical-overlap bias is stubborn | **0–24%** | **+0.0–0.6** |
-| **MMLU-Pro (Cat 57)** | 19.70% | `TR-21`: listwise $K$-distractor training (moved from Phase A — F-03) | **24–32%** | **+0.1–0.4** |
+| **HoVer (Cat 61)** | 57.77% (verified) | `TR-08` & `TR-20`: multi-hop evidence bridging & sampling skew. Note: e4b ≈ e2b (57.97%) here — no scale advantage without multi-hop training | **65–75%** | **+0.2–0.5** |
+| **LogiQA / ReClor / MuSR** | 34.24% (MuSR skill; verified) | `TR-20`: formal deductive logic & constraint satisfaction | **42–50%** | **+0.3–0.8** |
+| **ContractNLI (Cat 11)** | 54.47% (verified; was misquoted 52.40) | `TR-03` & `TR-15`: dense legal grounding & attention de-sliding (de-sliding accuracy counted **here only** — F-02) | **60–68%** | **+0.3–0.6** |
+| **Home Appliance (Cat 9)** | 15.0% (verified) | `TR-02` & `SYN-01`: FSM state chart modeling (synthetic — gated, F-06) | **20–35%** | **+0.2–0.7** |
+| **RAGTruth (Cat 59)** | 0.00% skill (raw 36.7%, below the 41.1% random baseline — verified) | `TR-06`: high-overlap counterfactual fine-tuning (moved from Phase A — F-01). Hard: lexical-overlap bias is stubborn; e4b raw already ≈ 2.4× e2b | **0–24% skill** | **+0.0–0.6** |
+| **MMLU-Pro (Cat 57)** | ~28.5% skill (raw 36.41% verified; was misquoted 19.70) | `TR-21`: listwise $K$-distractor training (moved from Phase A — F-03) | **30–36% skill** | **+0.1–0.3** |
 | **ANLI R1–R3 (Cat 12)** | 0.00% (raw 31.0%) | `TR-01`: adversarial anchor replay — **added after the F-07 investigation** found e4b's mixture had zero ANLI/WANLI/CAD rows (neutral collapse: 2.9% recall). Recovery to ≥ e2b level (44.7% raw) is realistic | **40–46% raw** | **+0.3–0.5** |
 | **Phase B Subtotal** | **30.2–31.6%** | *Deep Reasoning Curriculum (TR-12, TR-20, TR-21, gated)* | **32.0–35.0%** | **+1.8–3.9** |
 
