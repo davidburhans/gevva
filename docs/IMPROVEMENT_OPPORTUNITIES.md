@@ -293,8 +293,13 @@ To systematically address these findings, 14 targeted training interventions are
 | **Auxiliary Loss Regularization**| Brier: 0.5, NLI Aux: 0.25 (preserves anchor stability) | Brier: 0.5, NLI Aux: 0.20 (balanced specialization) |
 | **Reporting Focus** | Composite score (rewards speed & cost) | Raw Hard-Tier Accuracy & Macro-F1 (intelligence) |
 
-> **VRAM Realism Note for Single-GPU Training (32 GB RTX 5090)**:
-> In full fine-tuning (FFT), E4B requires 15.88 GB (weights) + 7.96 GB (gradients) + ~2.5 GB (paged optimizer buffers) + ~1.5 GB (CUDA context/overhead) = **27.84 GB static baseline**, leaving ~4.0 GB free for activations. With gradient checkpointing and FlashAttention-2, $L = 4,096$ tokens operates safely within this 4 GB headroom. Training beyond $L = 4,096$ (e.g. 8K–16K) requires **LoRA** (which slashes gradient memory from 7.96 GB to <0.5 GB) or multi-GPU FSDP/ZeRO-3.
+> **Architecture & Layer Count Note**:
+> Earlier project notes referenced 26 layers, which was the layer count of the prior-generation `google/gemma-2-2b` (`num_hidden_layers = 26`). In `google/gemma-4-E2B-it`, Google redesigned the backbone to **35 text transformer layers** (`num_hidden_layers = 35`, 28 sliding-window + 7 full-attention layers, with 20 KV-shared layers). In addition, Gemma 4 includes auxiliary non-trainable components: 16 frozen vision transformer layers and static per-layer input embeddings (`embed_tokens_per_layer`), which remain frozen during fine-tuning.
+>
+> **Maximum GPU VRAM Saturation Strategy (RTX 5090 ~31.8 GiB Budget)**:
+> In accordance with production guidelines, training should aggressively utilize available GPU memory (~28.5–30.5 GiB, 90–95% saturation) without crossing the OOM boundary:
+> - **Gevva e2b (~2.3B)**: Static baseline is only ~10.3 GB (weights + grads + 8-bit Adam). We can scale batch token budgets to **8,192 tokens/batch** and train on contexts up to **$L = 8,192$**, pushing VRAM utilization to ~28.0 GiB and saturating the RTX 5090 tensor cores.
+> - **Gevva e4b (~4.5B / 7.94B total)**: Full fine-tuning static baseline is 27.84 GB. Allocating a **4,096 token batch budget** with **$L = 4,096$**, gradient checkpointing, FlashAttention-2, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` operates at **~29.5 GiB VRAM** (~93% card capacity) with zero OOM risk. Context expansion beyond 4K (8K–16K) can be executed at the same ~29.5 GiB saturation via LoRA.
 
 ### TR-14: Dynamic Loss Plateau Detection & Adaptive Non-Early-Stopping Engine
 * **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter. In e4b, optimization was clamped by the 1-epoch cosine decay schedule decaying LR to zero. Conversely, static epoch limits waste compute once a model converges.
