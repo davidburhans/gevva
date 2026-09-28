@@ -193,74 +193,99 @@ def build_and_publish_dataset(
     push_to_hub: bool = False,
     private: bool = False,
     dry_run: bool = False,
+    from_parquet: bool = False,
 ) -> None:
     data_dir = data_dir.resolve()
-    image_root = data_dir / "images"
-    if not image_root.exists():
-        image_root = data_dir
-
-    train_file = data_dir / "train.jsonl"
-    val_file = data_dir / "val.jsonl"
-
-    if not train_file.exists():
-        # Check for fallback single file
-        for fallback in ["data.jsonl", "dataset.jsonl", "mixture.jsonl"]:
-            if (data_dir / fallback).exists():
-                train_file = data_dir / fallback
-                break
-
-    if not train_file.exists():
-        raise FileNotFoundError(f"No train.jsonl found in {data_dir}")
-
-    print(f"Loading train split from {train_file}...")
-    train_records = load_split_records(train_file, image_root)
-    print(f"Loaded {len(train_records):,} train records.")
-
-    val_records = []
-    if val_file.exists():
-        print(f"Loading val split from {val_file}...")
-        val_records = load_split_records(val_file, image_root)
-        print(f"Loaded {len(val_records):,} val records.")
-
-    features = Features({
-        "id": Value("string"),
-        "premise": Value("string"),
-        "hypothesis": Value("string"),
-        "label": ClassLabel(names=["contradiction", "entailment", "neutral"]),
-        "task_family": Value("string"),
-        "images": Sequence(datasets.Image()),
-        "num_images": Value("int32"),
-        "metadata": Value("string"),
-    })
-
-    task_families = [r["task_family"] for r in train_records] + [r["task_family"] for r in val_records]
-
-    splits = {}
-    splits["train"] = datasets.Dataset.from_list(train_records, features=features)
-    if val_records:
-        splits["validation"] = datasets.Dataset.from_list(val_records, features=features)
-
-    dataset_dict = datasets.DatasetDict(splits)
-    print(f"Constructed DatasetDict:\n{dataset_dict}")
-
-    # Generate Dataset Card README
-    card_content = generate_dataset_card(
-        repo_id=repo_id,
-        train_count=len(train_records),
-        val_count=len(val_records),
-        task_families=task_families,
-    )
-    readme_path = data_dir / "README.md"
-    readme_path.write_text(card_content, encoding="utf-8")
-    print(f"Wrote Hugging Face Dataset Card to {readme_path}")
-
-    # Save local Parquet cache
     parquet_dir = data_dir / "parquet"
-    parquet_dir.mkdir(parents=True, exist_ok=True)
-    for split_name, ds in dataset_dict.items():
-        out_p = parquet_dir / f"{split_name}.parquet"
-        ds.to_parquet(str(out_p))
-        print(f"Saved local Parquet: {out_p} ({out_p.stat().st_size / (1024**2):.2f} MB)")
+    readme_path = data_dir / "README.md"
+
+    # Resolve Hugging Face write token (prioritize HF_WRITE_TOKEN, then login shell, then HF_TOKEN)
+    token = os.environ.get("HF_WRITE_TOKEN")
+    if not token:
+        import subprocess
+        try:
+            val = subprocess.check_output(
+                "bash -l -c 'echo $HF_WRITE_TOKEN'", shell=True, text=True
+            ).strip()
+            if val:
+                token = val
+        except Exception:
+            pass
+    if not token:
+        token = os.environ.get("HF_TOKEN")
+
+    if from_parquet and (parquet_dir / "train.parquet").exists():
+        print(f"Loading existing Parquet splits from {parquet_dir}...")
+        files = {"train": str(parquet_dir / "train.parquet")}
+        if (parquet_dir / "validation.parquet").exists():
+            files["validation"] = str(parquet_dir / "validation.parquet")
+        dataset_dict = datasets.load_dataset("parquet", data_files=files)
+        print(f"Loaded DatasetDict:\n{dataset_dict}")
+    else:
+        image_root = data_dir / "images"
+        if not image_root.exists():
+            image_root = data_dir
+
+        train_file = data_dir / "train.jsonl"
+        val_file = data_dir / "val.jsonl"
+
+        if not train_file.exists():
+            # Check for fallback single file
+            for fallback in ["data.jsonl", "dataset.jsonl", "mixture.jsonl"]:
+                if (data_dir / fallback).exists():
+                    train_file = data_dir / fallback
+                    break
+
+        if not train_file.exists():
+            raise FileNotFoundError(f"No train.jsonl found in {data_dir}")
+
+        print(f"Loading train split from {train_file}...")
+        train_records = load_split_records(train_file, image_root)
+        print(f"Loaded {len(train_records):,} train records.")
+
+        val_records = []
+        if val_file.exists():
+            print(f"Loading val split from {val_file}...")
+            val_records = load_split_records(val_file, image_root)
+            print(f"Loaded {len(val_records):,} val records.")
+
+        features = Features({
+            "id": Value("string"),
+            "premise": Value("string"),
+            "hypothesis": Value("string"),
+            "label": ClassLabel(names=["contradiction", "entailment", "neutral"]),
+            "task_family": Value("string"),
+            "images": Sequence(datasets.Image()),
+            "num_images": Value("int32"),
+            "metadata": Value("string"),
+        })
+
+        task_families = [r["task_family"] for r in train_records] + [r["task_family"] for r in val_records]
+
+        splits = {}
+        splits["train"] = datasets.Dataset.from_list(train_records, features=features)
+        if val_records:
+            splits["validation"] = datasets.Dataset.from_list(val_records, features=features)
+
+        dataset_dict = datasets.DatasetDict(splits)
+        print(f"Constructed DatasetDict:\n{dataset_dict}")
+
+        # Generate Dataset Card README
+        card_content = generate_dataset_card(
+            repo_id=repo_id,
+            train_count=len(train_records),
+            val_count=len(val_records),
+            task_families=task_families,
+        )
+        readme_path.write_text(card_content, encoding="utf-8")
+        print(f"Wrote Hugging Face Dataset Card to {readme_path}")
+
+        # Save local Parquet cache
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        for split_name, ds in dataset_dict.items():
+            out_p = parquet_dir / f"{split_name}.parquet"
+            ds.to_parquet(str(out_p))
+            print(f"Saved local Parquet: {out_p} ({out_p.stat().st_size / (1024**2):.2f} MB)")
 
     if dry_run:
         print("[dry-run] Dataset validated and Parquet files generated successfully. Skipping HF upload.")
@@ -268,16 +293,19 @@ def build_and_publish_dataset(
 
     if push_to_hub:
         print(f"Pushing dataset to Hugging Face Hub: {repo_id} (private={private})...")
-        dataset_dict.push_to_hub(repo_id, private=private)
-        # Upload the README.md card
         from huggingface_hub import HfApi
-        api = HfApi()
-        api.upload_file(
-            path_or_fileobj=str(readme_path),
-            path_in_repo="README.md",
-            repo_id=repo_id,
-            repo_type="dataset",
-        )
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+        dataset_dict.push_to_hub(repo_id, private=private, token=token)
+        # Upload the README.md card if present
+        if readme_path.exists():
+            api.upload_file(
+                path_or_fileobj=str(readme_path),
+                path_in_repo="README.md",
+                repo_id=repo_id,
+                repo_type="dataset",
+                token=token,
+            )
         print(f"SUCCESS: Published to https://huggingface.co/datasets/{repo_id}")
 
 
@@ -286,6 +314,7 @@ def main() -> int:
     parser.add_argument("--data-dir", required=True, type=Path, help="Directory containing train.jsonl and images/")
     parser.add_argument("--repo-id", default="davidburhans/gevva-multimodal-decisions", help="Hugging Face repo ID")
     parser.add_argument("--push-to-hub", action="store_true", help="Push directly to Hugging Face Hub")
+    parser.add_argument("--from-parquet", action="store_true", help="Load existing parquet files directly")
     parser.add_argument("--private", action="store_true", help="Make Hugging Face repo private")
     parser.add_argument("--dry-run", action="store_true", help="Build local Parquet and validate schema without uploading")
     args = parser.parse_args()
@@ -296,6 +325,7 @@ def main() -> int:
         push_to_hub=args.push_to_hub,
         private=args.private,
         dry_run=args.dry_run,
+        from_parquet=args.from_parquet,
     )
     return 0
 
