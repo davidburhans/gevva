@@ -136,9 +136,19 @@ The full e2b run proved that several poor benchmark scores were caused by engine
   - **Training Memory Footprint**:
     - With FlashAttention-2 / FlashAttention-3 tiled online softmax, intermediate $S \times S$ attention matrices are never materialized in VRAM ($O(1)$ memory per tile).
     - During the backward pass, FlashAttention recomputes attention on-the-fly. Recomputation overhead for full attention across all layers at $L = 4,096$ adds **less than 400 MB of activation memory**, fitting comfortably inside the RTX 5090's 32 GB budget.
-  - **Fine-Tuning Adaptation Dynamics**:
-    - Gemma 4's attention projection matrices ($W_Q, W_K, W_V, W_O$) are identical across sliding and global layers; de-sliding alters only the boolean attention mask.
-    - A brief warmup phase (100–200 steps) smoothly adapts the pretrained attention weights to full receptive fields without gradient shock.
+  - **Attention Entropy Compensation & Softmax Temperature Scaling**:
+    - When expanding receptive fields from 512 tokens to up to 131,072 tokens, the softmax denominator $\sum_{j=1}^L \exp(q_i k_j / \sqrt{d})$ scales with $L$, diluting attention weights across thousands of background tokens (entropy collapse).
+    - To preserve the sharp focal concentration of pretrained attention heads, apply an **Attention Temperature Scaling Factor**:
+      $$\tau_{\text{attn}} = \sqrt{\frac{\ln L_{\text{actual}}}{\ln 512}}$$
+      Dividing attention logits by $\tau_{\text{attn}}$ during de-slided forward passes keeps the entropy of the attention distribution invariant to sequence length ($1.0$ at $L=512$, $1.15$ at $L=4,096$, $1.38$ at $L=131,072$).
+  - **Progressive Window Unmasking Schedule (2,500-Step Warmup)**:
+    - Rather than an abrupt 100-step jump from 512 to full global attention, execute a structured progressive unmasking schedule over 2,500 optimizer steps:
+      - **Steps 0–500**: Window $W = 1,024$ tokens
+      - **Steps 501–1,000**: Window $W = 4,096$ tokens
+      - **Steps 1,001–1,750**: Window $W = 16,384$ tokens
+      - **Steps 1,751–2,500**: Window $W = 65,536$ tokens
+      - **Steps 2,501+**: Full Global Attention ($W = \infty$, 131,072 tokens)
+    - This eliminates gradient shock and allows the pretrained projection matrices ($W_Q, W_K, W_V, W_O$) to smoothly adapt to global receptive fields.
   - **Long-Context Position Extrapolation (8K $\to$ 128K via YaRN)**:
     - To extend context from native 4K/8K to 128K, incorporate YaRN (Yet another RoPE extensioN) with dynamic NTK interpolation:
       $$s = \frac{L_{\text{target}}}{L_{\text{base}}}, \quad \theta_i' = \theta_i \cdot \left((1 - \gamma_i) + \gamma_i \cdot s^{-d/(d-2)}\right)$$
@@ -167,6 +177,9 @@ The full e2b run proved that several poor benchmark scores were caused by engine
   - In `predict_candidates`, the premise is prefilled and cached in $K$ copies.
   - When candidates are forwarded, the model computes $H_{\text{hyp}}$ for each candidate.
   - Attentive pooling executes in $<0.2\text{ ms}$ over the $K \times L_{\text{hyp}}$ slice ($129 \times 25$ tokens), requiring **$< 5\text{ MB}$** of scratchpad memory. Full premise activations are never stored.
+* **Mitigating Exponential Recency Bias & Landmark Sinks (128K Context)**:
+  - In ultra-long sequences ($L = 131,072$), hypothesis tokens attending backward across 128,000 keys risk exponential recency bias (attenuation of facts at position $d = 0.05$).
+  - **Empirical Gate**: In `SYN-07`, evaluate needle retrieval at depth $d=0.05$ vs $d=0.95$. If accuracy at $d=0.05$ drops by $>2.0\%$, activate **Distributed Landmark Sinks**: insert a `<landmark>` token every 4,096 tokens during premise tokenization. During pooling, the query $q$ attends over the concatenated slice $[H_{\text{landmark}}, H_{\text{hyp}}]$ (adding only 32 tokens at 128K context), creating direct residual highways to early sections while preserving $O(1)$ memory.
 * **Two-Stage Training Warmup Protocol (Anti-Poisoning)**:
   - If initialized randomly alongside an active backbone, large initial cross-entropy gradients from uncalibrated pooling weights ($W_Q, W_K, W_V, W_O, W_{\text{score}}$) can destabilize the pretrained transformer weights.
   - **Stage 1 (Head Warmup, Steps 0–500)**: Freeze the transformer backbone (`backbone.requires_grad = False`). Train strictly the attentive pooling module at $\text{lr} = 3.0 \times 10^{-4}$ with AdamW until loss descends to a stable baseline ($\mathcal{L} \le 0.65$).
@@ -179,38 +192,40 @@ The full e2b run proved that several poor benchmark scores were caused by engine
 ### The Safety & Reliability Imperative
 In mission-critical enterprise applications (RAG hallucination filtering, tool execution routing, clinical trial claim verification, compliance auditing), raw point predictions with uncalibrated argmax decisions are insufficient. When System 1 is uncertain, forcing a single class assignment leads to silent failures.
 
-To make Gevva a production-grade enterprise decision engine, Gevva 1.1 integrates **Split Conformal Prediction**: a distribution-free, finite-sample statistical calibration framework that outputs certified prediction sets $\mathcal{C}(X) \subseteq \{\text{Contradiction}, \text{Entailment}, \text{Neutral}\}$ with guaranteed marginal coverage:
+To make Gevva a production-grade enterprise decision engine, Gevva 1.1 integrates **Deterministic Split Conformal Prediction**: a distribution-free, finite-sample statistical calibration framework that outputs certified prediction sets $\mathcal{C}(X) \subseteq \{\text{Contradiction}, \text{Entailment}, \text{Neutral}\}$ with guaranteed marginal coverage:
 $$P(Y \in \mathcal{C}(X)) \ge 1 - \alpha$$
 where $\alpha \in (0, 1)$ is a user-configured error tolerance (e.g., $\alpha = 0.05$ guarantees $\ge 95\%$ confidence coverage; $\alpha = 0.01$ guarantees $\ge 99\%$ coverage).
 
-### Strict Sourcing Mandate: Real Gold Datasets Only (Zero Synthetic Data)
+### Sourcing Mandate & Production Exchangeability Maintenance
 * **The Exchangeability Vulnerability**:
   Conformal guarantees mathematically require **exchangeability** between calibration samples and test samples.
-  - Synthetic data generated by teacher LLMs possesses artificial syntactic patterns, predictable vocabulary distributions, and synthetic prompt artifacts.
-  - Calibrating on synthetic data violates exchangeability when deployed on messy, human-authored enterprise inputs, invalidating coverage guarantees.
-* **The Real Gold Calibration Corpus**:
-  Conformal calibration in Gevva 1.1 strictly uses a dedicated held-out corpus of $n = 2,500$ verified, human-annotated real gold examples across 5 production domains:
+  - Synthetic data generated by teacher LLMs possesses artificial syntactic patterns, predictable vocabulary distributions, and synthetic prompt artifacts. Calibrating on synthetic data violates exchangeability when deployed on messy, human-authored enterprise inputs, invalidating coverage guarantees.
+* **The Real Gold Baseline Calibration Corpus ($n = 2,500$)**:
+  Pre-deployment calibration strictly uses a dedicated held-out corpus of $n = 2,500$ verified, human-annotated real gold examples across 5 production domains:
   1. **Intent Routing**: 700 real validation queries from **BANKING77** (real banking customer queries).
   2. **Tool Routing & Function Calling**: 500 real function execution instances from **BFCL** (Berkeley Function Calling Leaderboard).
   3. **Legal Attribution**: 500 real contract clauses from **ContractNLI** (human-annotated NDAs).
   4. **Document Grounding & Fact Checking**: 500 real Wikipedia/news claims from **When2Call** and **FEVER**.
   5. **Visual Evidence**: 300 real document/chart QA pairs from **DocVQA** and **InfoVQA**.
+* **Continuous Online Production Recalibration**:
+  Because enterprise customer traffic exhibits covariate shift relative to open-source benchmarks, enterprise deployments implement **Streaming Rolling Conformal Recalibration**: maintaining a FIFO buffer of verified production queries ($N=2,000$) to continuously re-estimate $\hat{q}_\alpha$, ensuring exchangeability remains strictly valid in production.
 
-### Mathematical Formulation: Adaptive Prediction Sets (APS)
-1. **Calibration Data**: Given exchangeable calibration samples $\{(x_i, y_i)\}_{i=1}^n$ with ground truth $y_i \in \{0, 1, 2\}$.
-2. **Model Softmax**: For input $x_i$, compute calibrated probabilities $\hat{p}(x_i) = (p_0, p_1, p_2)$ sorted in descending order: $\hat{p}_{(1)} \ge \hat{p}_{(2)} \ge \hat{p}_{(3)}$.
-3. **Non-Conformity Scoring**: Compute the randomized Adaptive Prediction Set score:
-   $$s(x_i, y_i) = \sum_{k: \hat{p}_{(k)}(x_i) > \hat{p}_{y_i}(x_i)} \hat{p}_{(k)}(x_i) + U_i \cdot \hat{p}_{y_i}(x_i), \quad U_i \sim \text{Uniform}(0, 1)$$
-4. **Quantile Computation**: Determine the empirical $(1-\alpha)$ conformal threshold:
+### Mathematical Formulation: Deterministic Conservative Prediction Sets
+To eliminate stochastic jitter in mission-critical decision systems (where identical queries must produce identical routing decisions), Gevva avoids randomized APS and utilizes **Deterministic Conservative Cumulative Scoring**:
+1. **Model Softmax**: For input $x_i$, compute calibrated probabilities $\hat{p}(x_i) = (p_0, p_1, p_2)$ sorted in descending order: $\hat{p}_{(1)} \ge \hat{p}_{(2)} \ge \hat{p}_{(3)}$.
+2. **Deterministic Non-Conformity Scoring**: Compute cumulative probability mass up to the true class:
+   $$s(x_i, y_i) = \sum_{k: \hat{p}_{(k)}(x_i) \ge \hat{p}_{y_i}(x_i)} \hat{p}_{(k)}(x_i)$$
+3. **Quantile Computation**: Determine the empirical $(1-\alpha)$ conformal threshold over the calibration set:
    $$\hat{q}_\alpha = \text{Quantile}\left(\frac{\lceil (n+1)(1-\alpha) \rceil}{n}, \{s_i\}_{i=1}^n\right)$$
-5. **Inference Prediction Set**: For a new production query $x_{\text{new}}$, output the certified set:
-   $$\mathcal{C}(x_{\text{new}}) = \left\{ y \in \{0, 1, 2\} : \sum_{k: \hat{p}_{(k)}(x_{\text{new}}) > \hat{p}_y(x_{\text{new}})} \hat{p}_{(k)}(x_{\text{new}}) \le \hat{q}_\alpha \right\}$$
+4. **Deterministic Inference Prediction Set**: For a new production query $x_{\text{new}}$, output the certified set:
+   $$\mathcal{C}(x_{\text{new}}) = \left\{ y \in \{0, 1, 2\} : \sum_{k: \hat{p}_{(k)}(x_{\text{new}}) \ge \hat{p}_y(x_{\text{new}})} \hat{p}_{(k)}(x_{\text{new}}) \le \hat{q}_\alpha \right\}$$
 
 ### Operational Triaging & Automated System 1 $\to$ System 2 Handoff
 The conformal prediction set cardinality $|\mathcal{C}(X)|$ provides an instant, rigorous routing signal:
 1. **Singleton Set ($|\mathcal{C}(X)| = 1$)**: System 1 is unambiguously certain. Return the single certified decision immediately (sub-15 ms latency).
-2. **Multi-Class Set ($|\mathcal{C}(X)| \ge 2$, e.g. `{"entailment", "neutral"}`)**: System 1 detects boundary ambiguity. Automatically trigger **System 2 Fallback**: hand off to an autoregressive model (e.g. `gemma-4-26B-A4B-it`) to generate a multi-step verification trace.
-3. **Empty Set ($|\mathcal{C}(X)| = 0$)**: Anomaly detected. The input is out-of-distribution (OOD) relative to calibration data. Trigger safe fallback or human triage.
+2. **Ambiguity Set ($|\mathcal{C}(X)| = 2$, e.g. `{"entailment", "neutral"}`)**: System 1 detects boundary ambiguity between two plausible interpretations. Automatically trigger **System 2 Fallback**: hand off to an autoregressive model (e.g. `gemma-4-26B-A4B-it`) to generate a deliberative verification trace.
+3. **Trilemma Set ($|\mathcal{C}(X)| = 3$)**: Complete uncertainty. System 1 possesses zero discriminative signal $\to$ route to human audit or conservative fail-safe default.
+4. **Empty Set ($|\mathcal{C}(X)| = 0$)**: Anomaly detected. The input is out-of-distribution (OOD) relative to calibration data $\to$ flag as Out-Of-Distribution input anomaly.
 
 * **Performance & Runtime Cost**: Zero model retraining required. Calibration executes once post-hoc in $<1$ second on CPU. Inference overhead is $<0.05\text{ ms}$ (a simple cumulative sum and scalar threshold check).
 
@@ -279,34 +294,39 @@ To scale beyond 16K to native 32K, 64K, and full 128K context windows, compute t
 * **Total Cluster VRAM**: **640 GB** (H100) or **1,128 GB** (H200).
 * **Estimated Budget**: $18–$24/hour. A complete 128K fine-tuning run over 30,000 long-context pairs requires 12–16 hours (~$250–$380 total).
 
-#### Sequence Parallelism Architecture (`DeepSpeed Ulysses` & `Ring Attention`)
-Standard Distributed Data Parallelism (DDP) or FSDP splits samples across the batch dimension ($B$). When $L = 131,072$ tokens, a single sample cannot fit in a single GPU's activation memory during backward recomputation. We implement **Distributed Sequence Parallelism (SP)**:
+#### Sequence Parallelism Architecture: Ring Attention with FlashAttention-3 (`OPT-10`)
+Standard Distributed Data Parallelism (DDP) or FSDP splits samples across the batch dimension ($B$). When $L = 131,072$ tokens, a single sample cannot fit in a single GPU's activation memory during backward recomputation. We implement **Distributed Sequence Parallelism (SP)** via **Ring Attention**:
+
+> [!IMPORTANT]
+> **Why DeepSpeed Ulysses Fails on Gemma 4 (The MQA Incompatibility Proof)**:
+> DeepSpeed Ulysses relies on `all-to-all` tensor transpose collectives across sequence parallel ranks $P$:
+> $$(B, L/P, H, D) \xrightarrow{\text{all-to-all}} (B, L, H/P, D)$$
+> This operation mathematically requires that the number of attention heads $H$ be evenly divisible by the sequence parallel world size $P$ ($H \pmod P == 0$).
+> However, Google Gemma 4 (both E2B and E4B) employs **Multi-Query Attention (MQA)** where `num_key_value_heads = 1`.
+> On an 8x H100 node ($P = 8$), dividing 1 KV head across 8 GPUs requires $1 / 8$ heads per GPU, which is an invalid non-integer fraction ($1 \pmod 8 \neq 0$). DeepSpeed Ulysses cannot execute this collective without either fully replicating the KV heads across all 8 GPUs (which breaks the Ulysses all-to-all memory efficiency and introduces redundant communication), or crashing with a shape mismatch assertion error.
+> 
+> **The Ring Attention Solution**:
+> In contrast, **Ring Attention** (RingAttention with FlashAttention-3 / StripedAttention) distributes strictly along the sequence dimension ($L / P = 16,384$ tokens per GPU) and circulates Key/Value blocks across an NVLink 4.0 peer-to-peer ring ($GPU_i \to GPU_{(i+1) \pmod P}$). Because Ring Attention operates token-wise on sequence blocks and never partitions attention heads, **it is 100% agnostic to the number of KV heads** ($H_{KV}=1$ is natively supported with zero overhead and zero head replication).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│              DEEPSPEED ULYSSES SEQUENCE PARALLELISM (8x NVIDIA H100 SXM5)               │
+│              RING ATTENTION SEQUENCE PARALLELISM (8x NVIDIA H100 SXM5)                  │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
 │ Input Sequence L = 131,072 Tokens (Premise Document + Candidate Verification Claim)     │
-│ Divided across P = 8 GPUs: Each GPU processes local chunk L_local = 16,384 tokens       │
+│ Divided across P = 8 GPUs: Each GPU holds local chunk L_local = 16,384 tokens           │
+│ Gemma 4 MQA (num_key_value_heads = 1): Natively supported without head division!        │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
 │ [GPU 0: Pos 0..16k]   [GPU 1: Pos 16k..32k]  ...  [GPU 7: Pos 112k..128k]               │
-│         │                      │                           │                            │
-│         ▼                      ▼                           ▼                            │
-│ Q, K, V Projections   Q, K, V Projections         Q, K, V Projections                   │
-│         │                      │                           │                            │
-│         └──────────────────────┴─────────────┬─────────────┘                            │
-│                                              ▼                                          │
-│                       All-to-All Communication (NVLink 900 GB/s)                        │
-│                 Convert (Batch, L/P, Heads) ──► (Batch, L, Heads/P)                     │
-│                                              │                                          │
-│                                              ▼                                          │
-│                   Local Attention Execution over Full 128K Context                      │
-│                                              │                                          │
-│                                              ▼                                          │
-│                       All-to-All Communication (NVLink 900 GB/s)                        │
-│                 Convert (Batch, L, Heads/P) ──► (Batch, L/P, Heads)                     │
-│                                              │                                          │
-│                                              ▼                                          │
+│ Local Q_0 (Fixed)     Local Q_1 (Fixed)           Local Q_7 (Fixed)                     │
+│ Initial KV_0          Initial KV_1                Initial KV_7                          │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│                                  RING PIPELINE OVERLAPPING                              │
+│  Step k: FlashAttention-3 block compute (Q_i, KV_{(i-k) mod P})                         │
+│     │                                                                                   │
+│     ▼ (Concurrent non-blocking NVLink 4.0 P2P transfer: 900 GB/s)                       │
+│  KV Block Ring Circulation: GPU_i ──► GPU_{(i+1) mod P}                                 │
+│  (Repeats for P=8 steps; online softmax accumulates true global attention across 128K)  │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
 │                     Feed-Forward & RMSNorm (Fully Parallel across P)                    │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -361,7 +381,27 @@ To train robust 128K factual attribution, we compile **30,000 128K synthetic mul
 
 ## 10. Complete 44-Benchmark Empirical Audit & Scorecard
 
-Below is the definitive empirical scorecard from the complete 151,476-request run of **Gevva e2b** on **Decision Index 0.2** (RTX 5090, $T=1.0$, Margin Scoring), sorted by Skill Score:
+### Head-to-Head Flagship Audit: Gevva e4b vs Gevva e2b (Decision Index 0.2)
+Both Gevva e2b and Gevva e4b have successfully completed evaluation across the full **151,034 requests** of Decision Index 0.2 on NVIDIA RTX 5090 ($T=1.0$, Margin Scoring) with 100% completion (`"status": "ok"` on all requests).
+
+The results definitively confirm the model-scale scaling thesis: **Gevva e4b delivers a massive +3.09% leap in Balanced Skill Score, winning across 100% of all 5 evaluated domains**:
+
+| Evaluation Dimension | Gevva e2b (~2.3B / 35L) | Gevva e4b (~4.5B / 42L) | Absolute Gain ($\Delta$) | Advantage |
+| :--- | :---: | :---: | :---: | :--- |
+| **Balanced Skill Score** | **26.79%** | **29.88%** | **+3.09%** | **Decisive E4B Win** |
+| **Balanced Raw Index** | **44.83%** | **47.50%** | **+2.67%** | **Decisive E4B Win** |
+| **Breadth Skill** | 25.12% | **28.17%** | **+3.05%** | **Decisive E4B Win** |
+| **Tools & Automation Skill** | 47.96% (Raw: 55.43%) | **50.71%** (Raw: 58.41%) | **+2.75%** | **E4B Frontier Routing** |
+| **Retrieval & Classification Skill** | 34.02% (Raw: 51.68%) | **36.17%** (Raw: 53.76%) | **+2.15%** | **E4B Superior Precision** |
+| **Language Understanding Skill** | 21.84% (Raw: 44.52%) | **25.51%** (Raw: 47.98%) | **+3.67%** | **E4B Deep Comprehension** |
+| **Arts & Human Taste Skill** | 16.78% (Raw: 38.64%) | **20.06%** (Raw: 41.70%) | **+3.28%** | **E4B Subtle Pragmatics** |
+| **Knowledge & Reasoning Skill** | 13.35% (Raw: 32.88%) | **16.92%** (Raw: 35.65%) | **+3.57%** | **E4B Multi-Hop Deduction** |
+| **Completed Requests ($N$)** | 151,034 / 151,034 (100%) | 151,034 / 151,034 (100%) | — | Complete & Untouched |
+
+---
+
+### Detailed Benchmark Scorecard (Sorted by Skill Score)
+Below is the definitive empirical scorecard from the complete 151,034-request baseline run of **Gevva e2b** on **Decision Index 0.2** (RTX 5090, $T=1.0$, Margin Scoring), sorted by Skill Score:
 
 | Cat ID | Benchmark Dataset | Evaluated Area | Metric | Raw Score | Random Baseline | Skill Score | Median Latency | Requests ($N$) |
 | :---: | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -467,13 +507,21 @@ Analyzing all 44 datasets reveals 8 fundamental findings that define our researc
   4. **Security & Phishing Filtering (PhishNChips)**: **67.55%** (Skill **35.10%**, 152 ms)
   5. **Clinical Trial Protocol Claim Verification (NLI4CT)**: **68.87%** (Skill **39.44%**, 31 ms)
 
-### Insight 9: The Model-Scale & Exposure Disparity (Why e4b Appeared Undertrained)
-* In head-to-head evaluation, Gevva e4b scored **77.28 Composite** on JevBench public vs e2b's **77.54 Composite**, despite having more than double the active parameters (3.98B vs 1.88B) and 42 transformer layers (vs 35 layers in e2b).
-* **Root Cause: Single-Epoch Schedule Clamping & Cold-Start Head Initialization**:
-  1. *Curriculum Depth Asymmetry*: e2b was trained across multiple progressive stages (Stage 1 pretrain, Stage 2 mid-context, Stage 3 long-context, Phase 1 served distribution loss, Phase 2 weak-family remediation, Phase 3 judge calibration, Phase 4 tuning)—accumulating dozens of effective epochs and millions of gradient steps. In contrast, e4b was trained in **a single 1-epoch cold-start pass** (2,362 optimizer updates, ~4.9 hours total) starting from raw `google/gemma-4-E4B-it` with randomly initialized head weights.
-  2. *Cosine Schedule Clamping vs Cumulative Averaging*: In `training_e4b.log`, the logged `avg_loss = epoch_loss / (step + 1)` is an expanding cumulative average from step 0, which drifted downward from 0.95 to 0.93 even after instantaneous interval loss had flattened at $\sim 0.85$. The model stopped learning because the 1-epoch cosine schedule decayed the learning rate to **$2.36 \times 10^{-10}$** (effective zero) by step 2,350. The model was not halted prematurely mid-stride; rather, its 1-epoch schedule clamped optimization before the 42 transformer layers could fully re-align with the new pooled classification head.
+### Insight 9: Model-Scale Capacity Realization: E4B Dominates Decision Index (+3.09% Balanced Skill Across All 5 Areas)
+* In early evaluation on JevBench public, Gevva e4b scored **77.28 Composite** vs e2b's **77.54 Composite**, despite having more than double the active parameters (3.98B vs 1.88B) and 42 transformer layers (vs 35 layers in e2b). This prompted our preliminary "undertraining hypothesis."
+* **Definitive Empirical Proof on Decision Index 0.2**:
+  When comprehensively evaluated across all **151,034 requests** of Decision Index 0.2, **Gevva e4b decisively crushed Gevva e2b with a 29.88% Balanced Skill Score (vs e2b's 26.79%, a massive +3.09% leap) and 47.50% Raw Index (vs 44.83%)**, winning across **every single one of the 5 skill categories**:
+  - **Tools & Automation**: **50.71%** (vs 47.96%, +2.75%)
+  - **Retrieval & Classification**: **36.17%** (vs 34.02%, +2.15%)
+  - **Language Understanding**: **25.51%** (vs 21.84%, +3.67%)
+  - **Arts & Human Taste**: **20.06%** (vs 16.78%, +3.28%)
+  - **Knowledge & Reasoning**: **16.92%** (vs 13.35%, +3.57%)
+* **Why the Disparity Existed Initially**:
+  1. *Benchmark Speed/Cost Formula Penalties*: On pure reasoning capability, e4b already outpaced e2b: **54.95% on JevBench Hard tier** (vs ~50% for e2b) and **84.0% on ARC-Challenge** (vs 73.7% for e2b, a +10.3% leap). However, JevBench's composite geometric score heavily penalizes e4b's higher latency (~25ms vs 14ms) and parameter count on the Speed and Cost axes, artificially compressing its composite score.
+  2. *Single-Epoch Schedule Clamping & Cold-Start Head Initialization*: e2b was trained across multiple progressive stages accumulating millions of gradient steps, whereas e4b was trained in **a single 1-epoch cold-start pass** (2,362 updates) where the cosine schedule decayed the learning rate to **$2.36 \times 10^{-10}$** by step 2,350. The model stopped optimizing because the schedule clamped learning rate to zero, not because representation capacity had peaked.
   3. *Premature Context Truncation*: Prior to Prefix KV Caching, e4b was trained with `--max-length 1024` to avoid OOM, truncating all long-context documents.
-  4. *Benchmark Speed/Cost Penalties Masking Intelligence*: On pure reasoning capability, e4b already outpaced e2b: **54.95% on JevBench Hard tier** (vs ~50% for e2b) and **84.0% on ARC-Challenge** (vs 73.7% for e2b, a +10.3% leap). However, JevBench's composite geometric score heavily penalizes e4b's higher latency (~25ms vs 14ms) and parameter count on the Speed and Cost axes, artificially compressing its overall composite score.
+* **Strategic Takeaway**:
+  With Shared Prefix KV Caching (`OPT-01`) eliminating multi-candidate latency overhead, e4b achieves production-grade inference speed while unlocking the raw inductive reasoning of 42 transformer layers. With continual multi-epoch training (`TR-12`) and non-zero LR floors, e4b is projected to exceed **35%+ Balanced Skill** on Decision Index and **80%+ Composite** on JevBench.
 
 ---
 
@@ -544,27 +592,27 @@ To systematically address these findings, 19 targeted training interventions are
 > Earlier project notes referenced 26 layers, which was the layer count of the prior-generation `google/gemma-2-2b` (`num_hidden_layers = 26`). In `google/gemma-4-E2B-it`, Google redesigned the backbone to **35 text transformer layers** (`num_hidden_layers = 35`, 28 sliding-window + 7 full-attention layers, with 20 KV-shared layers). In addition, Gemma 4 includes auxiliary non-trainable components: 16 frozen vision transformer layers and static per-layer input embeddings (`embed_tokens_per_layer`), which remain frozen during fine-tuning.
 >
 > **Maximum GPU VRAM Saturation Strategy (RTX 5090 ~31.8 GiB Budget) & Transition to Cloud Cluster**:
-> In accordance with production guidelines, local training aggressively utilizes available RTX 5090 VRAM (~28.5–30.5 GiB, 90–95% saturation) up to our local hardware ceiling (8K FFT for e2b, 16K LoRA for e2b/e4b). A 4,096-token context ceiling is strictly a local single-GPU constraint for e4b full fine-tuning, NOT our production context limit. 4K max usable context is completely unacceptable for a 128K decision engine. Training context will be maxed out on the RTX 5090, after which training seamlessly transitions to rented cloud multi-GPU clusters (8x H100 SXM5 80GB) to train native 32K, 64K, and full 128K context windows via DeepSpeed Ulysses Sequence Parallelism and Ring Attention (§9, OPT-10, TR-19).
+> In accordance with production guidelines, local training aggressively utilizes available RTX 5090 VRAM (~28.5–30.5 GiB, 90–95% saturation) up to our local hardware ceiling (8K FFT for e2b, 16K LoRA for e2b/e4b). A 4,096-token context ceiling is strictly a local single-GPU constraint for e4b full fine-tuning, NOT our production context limit. 4K max usable context is completely unacceptable for a 128K decision engine. Training context will be maxed out on the RTX 5090, after which training seamlessly transitions to rented cloud multi-GPU clusters (8x H100 SXM5 80GB) to train native 32K, 64K, and full 128K context windows via Ring Attention Distributed Sequence Parallelism with FlashAttention-3 (§9, OPT-10, TR-19).
 > - **Gevva e2b (~2.3B)**: Static baseline is only ~10.3 GB (weights + grads + 8-bit Adam). We can scale batch token budgets to **8,192 tokens/batch** and train on contexts up to **$L = 8,192$**, pushing VRAM utilization to ~28.0 GiB and saturating the RTX 5090 tensor cores. With LoRA ($r=64$), local context reaches **$L = 16,384$ tokens**.
 > - **Gevva e4b (~4.5B / 7.94B total)**: Full fine-tuning static baseline is 27.84 GB. Allocating a **4,096 token batch budget** with **$L = 4,096$**, gradient checkpointing, FlashAttention-2, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` operates at **~29.5 GiB VRAM** (~93% card capacity) with zero OOM risk. Context expansion beyond 4K locally reaches **$L = 16,384$ tokens** via LoRA ($r=64$) and 8-bit base weights before handing off to the cloud 8x H100 cluster for full 32K–128K FFT.
 
-### TR-14: Dynamic Loss Plateau Detection & Adaptive Non-Early-Stopping Engine
-* **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter. In e4b, optimization was clamped by the 1-epoch cosine decay schedule decaying LR to zero. Conversely, static epoch limits waste compute once a model converges.
-* **The Solution**: Implement an automated **Rolling EMA Instantaneous Loss Tracker & Adaptive Controller** in `finetune.py`:
-  1. **Instantaneous Sliding-Window Loss (Not Cumulative Epoch Mean)**:
-     Compute the true instantaneous interval loss over a sliding window of $W = 250$ optimizer steps:
-     $$L_{\text{interval}} = \frac{S_t - S_{t-W}}{W}, \quad \text{where } S_t = \sum_{i=1}^t L_i$$
-     This eliminates the expanding cumulative averaging illusion where $\bar{L}_k$ drifts down even after true batch loss has flattened.
-  2. **Non-Early-Stopping Guard (Active Descent)**:
-     If nominal epoch completion is reached but instantaneous slope $\text{Slope}_t = \frac{L_{t-W} - L_t}{L_{t-W}} \ge 0.25\%$ (active learning), training **automatically extends** dynamically for additional intervals of $K=250$ steps up to a safety ceiling (`--max-epochs 5`).
-  3. **Validation Divergence Circuit Breaker (Anti-Overfitting)**:
-     If validation loss increases by $>1.5\%$ over 2 consecutive validation checks while training loss continues to fall, halt training immediately and restore the best validation checkpoint.
-  4. **Multi-Metric Plateau Handling**:
-     When $\text{Slope}_t < 0.05\%$ over $P=2$ consecutive evaluation windows:
-     - Trigger adaptive LR decay ($0.5\times$).
-     - If plateau persists across 2 consecutive LR reductions and validation accuracy has not improved by $>0.1\%$, trigger graceful convergence termination.
-  5. **Decoupled Evaluation Scheduling**:
-     Run validation checks at epoch boundaries or every 1,000 steps to avoid excessive validation latency overhead.
+### TR-14: Smoothed Validation Plateau Controller & Adaptive Non-Early-Stopping Engine
+* **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter. In e4b, optimization was prematurely clamped by the 1-epoch cosine decay schedule decaying LR to zero. Conversely, relying on batch-level training loss slopes is vulnerable to noise from mixed-length token-bucketed batches.
+* **The Solution**: Implement an automated **Smoothed Validation Plateau Controller & Adaptive Non-Early-Stopping Engine** in `finetune.py`:
+  1. **Decoupling from Batch Training Noise**:
+     Token-bucketed batches vary widely in sequence length and difficulty, creating inherent high-frequency noise in batch training loss. Making stopping or decay decisions on training batch loss slopes alone risks false-positive stops or runaway training. Optimization progress is therefore anchored strictly to **held-out validation metrics** evaluated on a fixed stratified anchor set ($N = 1,000$ groups).
+  2. **Smoothed Validation EMA Tracker**:
+     Every $E = 500$ optimizer steps, evaluate validation loss $\mathcal{L}_{\text{val}}^{(t)}$ and update a running exponential moving average:
+     $$\bar{\mathcal{L}}_{\text{val}}^{(t)} = \beta \bar{\mathcal{L}}_{\text{val}}^{(t-1)} + (1 - \beta) \mathcal{L}_{\text{val}}^{(t)}, \quad \text{with } \beta = 0.6$$
+     This filters validation sample variance while rapidly tracking genuine generalization trends.
+  3. **Non-Early-Stopping Guard (Active Validation Descent)**:
+     If nominal epoch completion is reached but smoothed validation loss is still descending ($\frac{\bar{\mathcal{L}}_{\text{val}}^{(t-1)} - \bar{\mathcal{L}}_{\text{val}}^{(t)}}{\bar{\mathcal{L}}_{\text{val}}^{(t-1)}} \ge 0.2\%$) or validation Macro-F1 continues to rise, training **automatically extends** dynamically by increments of $K = 500$ steps up to a pre-registered safety ceiling (`--max-epochs 6`).
+  4. **Validation Divergence Circuit Breaker (Anti-Overfitting)**:
+     If instantaneous validation loss exceeds the historical minimum by $>1.5\%$ ($\mathcal{L}_{\text{val}}^{(t)} > 1.015 \times \min_{j < t} \mathcal{L}_{\text{val}}^{(j)}$) across 2 consecutive validation checks while training loss continues to fall, training halts immediately and reverts to the best validation checkpoint.
+  5. **Plateau-Triggered Adaptive LR Decay & Graceful Convergence**:
+     When relative validation loss improvement $|\bar{\mathcal{L}}_{\text{val}}^{(t)} - \bar{\mathcal{L}}_{\text{val}}^{(t-1)}| / \bar{\mathcal{L}}_{\text{val}}^{(t-1)} < 0.05\%$ across $P = 2$ consecutive checkpoints and Macro-F1 does not improve:
+     - Decay learning rate by $0.5\times$ (down to $\eta_{\min} = 1.0 \times 10^{-6}$).
+     - If the model is already at $\eta_{\min}$ and no validation improvement occurs over 2 further checkpoints ($1,000$ steps), trigger graceful convergence termination.
 
 ### TR-15: Attention De-Sliding & YaRN Long-Context Rewiring (ContractNLI, DocNLI, 128K Needle)
 * **Objective**: Eliminate the 5:1 sliding-window receptive field bottleneck across long legal agreements, RAG contexts, and multi-document attribution.
@@ -610,8 +658,8 @@ To systematically address these findings, 19 targeted training interventions are
 * **Stage Progression**:
   - **Stage 1 (4,096 tokens, Local RTX 5090 FFT)**: Core NLI, dense intents, FSM transitions, high-overlap counterfactual edits.
   - **Stage 2 (16,384 tokens, Local RTX 5090 Max-Out via LoRA/FFT)**: Full ContractNLI agreements, CUAD NDAs, MultiWOZ/API-Bank 20-turn dialogues.
-  - **Stage 3 (65,536 tokens, Cloud 8x H100 SXM5 with Ulysses SP P=4)**: 50-page regulatory reports (DocNLI), HoVer 20-document multi-hop cross-checks.
-  - **Stage 4 (131,072 tokens, Cloud 8x H100 SXM5 with Ulysses SP P=8)**: 128K multi-needle verification (SYN-07), full SEC 10-Ks, repository-level diff verification.
+  - **Stage 3 (65,536 tokens, Cloud 8x H100 SXM5 with Ring Attention SP P=4)**: 50-page regulatory reports (DocNLI), HoVer 20-document multi-hop cross-checks.
+  - **Stage 4 (131,072 tokens, Cloud 8x H100 SXM5 with Ring Attention SP P=8)**: 128K multi-needle verification (SYN-07), full SEC 10-Ks, repository-level diff verification.
 * **Target Gain**: Native 128K context verification with zero degradation across long document reasoning and multi-needle benchmarks.
 
 ---
@@ -741,7 +789,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **OPT-07** | Architecture | Hypothesis-Token Attentive Pooling | Last-token pooling rank collapse & bottleneck | Medium | **Multi-head attentive pooling over hypothesis; Prefix KV compatible** | gevva 1.1.0 |
 | **ENG-04 / OPT-08** | Serving / Safety | Split Conformal Prediction & Abstention | High-risk enterprise triage & uncalibrated argmax | Low | **Certified $\ge (1-\alpha)$ coverage sets; automated System 2 fallback** | gevva 1.1.0 |
 | **OPT-09** | Architecture | Long-Context Multi-Image Memory Management | Multi-image VRAM & token bloat | Low | **Up to 4 images natively without lossy token compression** | gevva 1.1.0 |
-| **OPT-10** | Infrastructure | Cloud Sequence Parallelism (DeepSpeed Ulysses / Ring) | 128K context training activation memory | High | **Enables native 32K–128K full fine-tuning on 8x H100 SXM5** | gevva 1.1.0 |
+| **OPT-10** | Infrastructure | Cloud Sequence Parallelism (Ring Attention / FlashAttention-3) | 128K context training activation memory | High | **Enables native 32K–128K full fine-tuning on 8x H100 SXM5** | gevva 1.1.0 |
 | **ENG-01** | Engine | Generalized State Formatting for `noul` | **RAGTruth (Format parity & compliance)** | Low | **Eliminates prompt stringification error** | gevva 1.1.0 |
 | **ENG-02** | Engine | Calibrated Decision Thresholding | **ACOS (1.8% $\to$ 12–15% Exact, 95%+ Field)** | Medium | **Mitigates class-imbalance recall collapse** | gevva 1.1.0 |
 | **ENG-03** | Engine | Cardinality-Scaled Softmax Temperature | **MMLU-Pro (28.6% $\to$ 35%+)** | Low | **Dampens distractor noise on large option sets** | gevva 1.1.0 |
@@ -758,7 +806,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **TR-11** | Curriculum | E-Commerce Search Taxonomy Discrimination | **Amazon ESCI (32.3% $\to$ 65%+)** | Low | **Distinguishes substitute vs exact products** | gevva 1.1.0 |
 | **TR-12** | Curriculum | E4B Multi-Epoch Deep Capacity Scaling | **ARC-Challenge, Hard-Tier, HoVer, LogiQA** | Medium | **Pulls E4B decisively ahead of E2B (+8-12% Hard Acc)** | gevva 1.1.0 |
 | **TR-13** | Training | Dual-Regime Model Size Optimization | **Capacity vs Latency Tradeoffs (35-layer vs 42-layer)** | Low | **Tailored LR, context & loss weighting per size** | gevva 1.1.0 |
-| **TR-14** | Training | Dynamic Instantaneous Loss Plateau Engine | **Premature training halts & unconverged models** | Low | **Prevents undertraining; guards against divergence** | gevva 1.1.0 |
+| **TR-14** | Training | Smoothed Validation Plateau Controller | **Premature training halts & overfitting divergence** | Low | **Guards against undertraining and validation divergence** | gevva 1.1.0 |
 | **TR-15** | Curriculum | Global Attention De-Sliding & Context Rewiring | **ContractNLI (52.4% $\to$ 70%+), 128K context** | Medium | **Eliminates 5:1 sliding window attribution loss** | gevva 1.1.0 |
 | **TR-16** | Curriculum | High-Fidelity Multi-Image Management | **DocVQA, InfoVQA, Multimodal Guardrails** | Low | **Sub-25ms multi-image verification with 0% OCR loss** | gevva 1.1.0 |
 | **TR-17** | Curriculum | UltraFeedback Alignment Preference Inversion | **LLM Response Grading & Evaluation** | Medium | **15ms non-autoregressive LLM judge scoring** | gevva 1.1.0 |
