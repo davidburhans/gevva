@@ -590,7 +590,7 @@ To systematically address these findings, 20 targeted training interventions are
 ### TR-01: Adversarial Hard-Anchor Replay & Anti-Shortcut Loss (ANLI R1–R3: +8–12pp Macro-F1, gated)
 * Permanent 15% anchor slice of ANLI (R1–R3), WANLI, and Counterfactually Augmented Data (CAD).
 * Minimal-pair contrastive loss penalizing models that assign identical scores when polarity is flipped by single-word negations.
-* **Baseline note (review F-07/F-23)**: e2b ANLI Macro-F1 is 44.74% (§10); the e4b figure of 0.00% skill should be investigated as a probable engine/framing bug before any remediation is budgeted. Reviewed target: +8–12pp, not the pre-review "60%+".
+* **Baseline note (resolved by F-07 investigation, 2026-09-28)**: e2b ANLI Macro-F1 is 44.74% (§10); e4b's is 31.01% raw (0.00% skill — below the 33.2% random baseline) due to **neutral-class collapse from a curriculum gap**: the e4b training mixture (`train_e4b_overnight.jsonl`) contained zero ANLI/WANLI/CAD rows, so e4b never learned adversarial "related-but-unwarranted ⇒ neutral" abstention. This TR-01 anchor replay is the direct remedy; reviewed target: e4b 40–46% raw, e2b +8–12pp, gated — not the pre-review "60%+".
 
 ### TR-02: Discrete State-Machine Transition Modeling (Home Appliance: 0.0% $\to$ 20–25% Case Exact)
 * **The Combinatorial Reality**: Home Appliance evaluates 18–25 simultaneous questions per request under Case Exact Accuracy. While e2b achieves 29.3% on `resolution`, 63.9% on `target_member`, and 53.1% on `outcome`, achieving Case Exact requires all 18+ fields to match simultaneously ($0.98^{18} \approx 0.69$). 
@@ -925,12 +925,12 @@ These fixes require no gradient updates and are applied at the engine serializat
 | Benchmark / Category | Baseline e4b Skill | Fix | Projected Skill | Index Delta |
 | :--- | :---: | :--- | :---: | :---: |
 | **RAGTruth (Cat 59)** | 0.00% | `ENG-01`: format parity removes the stringification bug so the model answers the intended question. **Accuracy recovery requires TR-06 (Phase B)** — the on-repo adversarial test measured 0.0% F1 for formatting-only (§5) | **0–8%** | **+0.0–0.25** |
-| **ANLI R1–R3 (Cat 12)** | 0.00% | **Investigate first as a probable e4b-specific engine/framing bug** (review F-07): e2b scores 17.28% skill on the same benchmark and e4b wins all five domains. No engine delta booked until root-caused | — | **+0.0** |
+| **ANLI R1–R3 (Cat 12)** | 0.00% | **Investigated 2026-09-28 (review F-07): not an engine bug** — the e4b training mixture contained zero adversarial-NLI rows, producing neutral-class collapse (2.9% recall on gold-neutral) and below-baseline macro-F1 (31.0%). Fix is TR-01 training, **booked in Phase B** | — | **+0.0** |
 | **ForecastBench (Cat 48)** | 4.80% | `ENG-05`: isotonic/Platt, **gated on measured discrimination (AUC vs resolved outcomes) before booking** — calibration cannot manufacture signal (review F-04) | **8–20%** | **+0.1–0.5** |
 | **ACOS (Cat 38)** | 0.25% | `ENG-02`: class-prior threshold policy. **Per-benchmark τ fitting on suite validation data pending a written rules check** (review F-18); global policy is the safe default | **2–10%** | **+0.05–0.25** |
 | **Phase A Subtotal** | **29.88%** | *Protocol & Engine Calibration (gated)* | **30.2–31.6%** | **+0.3–0.9** |
 
-### Phase B: Deep Reasoning Curriculum & Multi-Epoch Scaling (+1.5 to +3.5 Skill Points, Gated)
+### Phase B: Deep Reasoning Curriculum & Multi-Epoch Scaling (+1.8 to +3.9 Skill Points, Gated)
 Continual fine-tuning across 3–4 epochs (`TR-12`) with deep reasoning skew (`TR-20`), listwise ranking exposure (`TR-21`), and the remediation curriculum. Ranges are wider than pre-review because (a) synthetic-slice gains are unproven until gated (review F-06), and (b) several e4b baselines in the pre-review table were copy-pasted from e2b and must be re-verified from run artifacts (review F-11):
 
 | Benchmark / Category | Baseline e4b Skill | Curriculum / Training Intervention | Projected Skill | Index Delta |
@@ -941,7 +941,8 @@ Continual fine-tuning across 3–4 epochs (`TR-12`) with deep reasoning skew (`T
 | **Home Appliance (Cat 9)** | *15.0% (verify from artifacts)* | `TR-02` & `SYN-01`: FSM state chart modeling (synthetic — gated, F-06) | **20–35%** | **+0.2–0.7** |
 | **RAGTruth (Cat 59)** | 0.00% | `TR-06`: high-overlap counterfactual fine-tuning (moved from Phase A — F-01). Hard: lexical-overlap bias is stubborn | **0–24%** | **+0.0–0.6** |
 | **MMLU-Pro (Cat 57)** | 19.70% | `TR-21`: listwise $K$-distractor training (moved from Phase A — F-03) | **24–32%** | **+0.1–0.4** |
-| **Phase B Subtotal** | **30.2–31.6%** | *Deep Reasoning Curriculum (TR-12, TR-20, TR-21, gated)* | **32.0–34.5%** | **+1.5–3.5** |
+| **ANLI R1–R3 (Cat 12)** | 0.00% (raw 31.0%) | `TR-01`: adversarial anchor replay — **added after the F-07 investigation** found e4b's mixture had zero ANLI/WANLI/CAD rows (neutral collapse: 2.9% recall). Recovery to ≥ e2b level (44.7% raw) is realistic | **40–46% raw** | **+0.3–0.5** |
+| **Phase B Subtotal** | **30.2–31.6%** | *Deep Reasoning Curriculum (TR-12, TR-20, TR-21, gated)* | **32.0–35.0%** | **+1.8–3.9** |
 
 ### Phase C: Latency Tail Elimination & Long-Context Stability (+0.0 to +0.4 Skill Points)
 Eliminating tail latency and OOM bisection via micro-chunking. **Corrected accounting (review F-02)**: API-Bank and ContractNLI skill metrics are accuracy-based, so latency reductions book zero accuracy delta unless a latency-sensitive quality objective is verified (RouterBench is the candidate — check its Quality Objective formula). De-sliding's accuracy contribution is counted once, in Phase B:
@@ -951,7 +952,7 @@ Eliminating tail latency and OOM bisection via micro-chunking. **Corrected accou
 | **API-Bank Slicing** | Latency 16.9s $\to$ <1.2s (computed); 0% fallback | `OPT-11`: static micro-chunk candidate batching ($B_{\text{cand}}=8$) | **+0.0** (latency only) |
 | **ContractNLI Slicing** | Latency 6.1s $\to$ <750ms (computed); 0% fallback | `OPT-11`: pristine base KV-cache reuse | **+0.0** (latency only) |
 | **RouterBench (if latency-sensitive)** | Quality Objective may include latency/cost — verify formula before booking | `OPT-01`/`OPT-11` | **+0.0–0.4** |
-| **Phase C Subtotal** | **32.0–34.5%** | *Prefix KV Micro-Chunking (stability & latency)* | **32.0–34.9%** | **+0.0–0.4** |
+| **Phase C Subtotal** | **32.0–35.0%** | *Prefix KV Micro-Chunking (stability & latency)* | **32.0–35.4%** | **+0.0–0.4** |
 
 ---
 

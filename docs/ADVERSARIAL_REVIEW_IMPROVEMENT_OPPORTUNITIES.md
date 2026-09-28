@@ -46,8 +46,20 @@ The exec summary says these are "Resolved by …". **Required change**: reserve 
 ### F-06 (M) — Omitted negative evidence: the synthetic-inclusion gate FAILED
 `results/gate_decision.json`: pre-registered A/B (n = 3,113 paired evals), Arm B (synthetic blend) +0.58pp accuracy, **McNemar p = 0.182 → gate failed**. The roadmap's SYN-01…07 propose 135k+ synthetic pairs across seven generators without citing this. Also, the arms on disk (`data/armA_train.jsonl` 39,494 rows / `armB_train.jsonl` 39,975 rows, 1.2% synthetic) do **not** match the EXP-01 spec in §13 (100k pairs, 65% medium) — EXP-01 as described has not run. **Required change**: cite the failed gate in §13/§14; treat synthetic gains as unproven until each SYN pipeline passes its own McNemar gate; reconcile or regenerate arms.
 
-### F-07 (M) — e4b ANLI skill 0.00% is more plausibly a bug than a capability gap
-e2b scores 17.28% skill on the same benchmark (Cat 12) and e4b wins all five domains overall. A collapse to exactly 0.00% suggests framing/label inversion or class collapse specific to the e4b run. Investigate the run artifacts before budgeting remediation or booking any Phase A ANLI delta. Same caution applies to the "31.0%" ANLI baseline quoted in TR-01 (matches neither e2b's 44.74% nor any figure in §10).
+### F-07 (M) — e4b ANLI skill 0.00% — **INVESTIGATED & RESOLVED (2026-09-28): curriculum gap, not an engine bug**
+- Hypothesis "engine/framing bug" was wrong; the payloads and adapter path are identical between runs (same `payload_sha256` set). The evidence:
+- **Neutral-class collapse.** From `runs/gevva-e4b-0.2/results.jsonl` vs gold (n = 3,200; A=entailment, B=neutral, C=contradiction):
+
+| | pred A | pred B | pred C | recall |
+| :--- | ---: | ---: | ---: | ---: |
+| **e4b** gold A | 775 | 37 | 258 | 0.724 |
+| **e4b** gold B | 571 | **31** | 466 | **0.029** |
+| **e4b** gold C | 643 | 14 | 405 | 0.381 |
+| **e2b** gold B | 253 | 285 | 530 | 0.267 |
+
+  e4b predicted "neutral" 82 times out of 3,200 (2.6%). With near-zero recall on one of three balanced classes, macro-F1 (31.01%) lands *below* the 33.2% random baseline → skill clamps to 0. (This also identifies the previously unexplained "31.0%" baseline quoted in TR-01: it is e4b's raw ANLI macro-F1.)
+- **Why: the e4b training mixture contained zero adversarial-NLI rows.** `data/train_e4b_overnight.jsonl` (107,771 rows) has no ANLI/WANLI/CAD source of any name; its only NLI anchor is `anchor_foundational_nli` (33,703 SNLI/MNLI-style rows, balanced incl. 12,000 easy topic-unrelated neutrals). e2b's `train_phase3_enriched.jsonl` included 3,795 balanced ANLI anchor rows across its multi-stage training. ANLI's neutral class is *adversarially related but unwarranted* — a pattern easy-SNLI neutrals do not teach. e4b also shows mushier confidence (mean max-prob 0.41 vs e2b 0.45), consistent with the single-epoch LR-clamped head (Insight 9).
+- **Remedy**: already prescribed — TR-01 adversarial anchor replay (ANLI R1–R3, WANLI, CAD) in the e4b Phase 5 mixture, which was absent from its first training round. Expected recovery to ≥ e2b level (44.7% raw ≈ 17 skill ≈ **+0.3–0.5 index points**), booked in Phase B (§17). No engine change required.
 
 ### F-08 (M) — Train/serve parity gap for de-sliding
 If OPT-06 trains with full attention but the W4A16 compressed export (`ckpt/gemma-4-e2b-nli-w4a16*`, served via compressed-tensors/vLLM) runs with native sliding windows from the model config, served behavior will mismatch training — the exact class of bug the project's own "Train-Serving Parity" rule prohibits. **Required change**: the de-sliding gate must include verification on the *quantized export path*, not only the BF16 engine (`sliding_window=None` propagated to export config, plus a served-distribution parity test; `tests/test_served_distribution_loss.py` is the right harness to extend).
@@ -120,7 +132,7 @@ TR-03 targets ContractNLI "62–66%" while TR-15 targets "70%+" for the same ben
 
 1. Fix §17 arithmetic per F-01/F-02/F-04 (done in the revised roadmap, 2026-09-28).
 2. Relabel implementation status everywhere (done; see roadmap §18 status log).
-3. Investigate e4b ANLI = 0.00% as a probable engine bug (cheap, possibly free points).
+3. ~~Investigate e4b ANLI = 0.00% as a probable engine bug~~ **Done (2026-09-28)**: curriculum gap, not a bug — e4b's training mixture had zero ANLI/adversarial-NLI rows; neutral recall 2.9%. Fix = TR-01 in the Phase 5 mixture; booked in Phase B (§17). See F-07 above.
 4. Measure ForecastBench AUC before booking ENG-05 uplift.
 5. Written confirmation (or safe default) on per-benchmark threshold legality (F-18).
 6. Run EXP-01 exactly as pre-registered (the arms on disk are a different, earlier experiment) — it gates the entire Phase B mixture design.
