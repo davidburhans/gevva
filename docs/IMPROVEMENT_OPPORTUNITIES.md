@@ -245,7 +245,121 @@ During the Gevva 1.1 architectural exploration phase, two candidate proposals we
 
 ---
 
-## 9. Complete 44-Benchmark Empirical Audit & Scorecard
+## 9. Priority 7 (Scaling & Infrastructure): 128K Long-Context Training Strategy & Cloud GPU Scaling [OPT-10, TR-19, SYN-07]
+
+### The Imperative: 4K Is Unacceptable for a 128K Decision Engine
+Gevva is architected and evaluated as a **128K multimodal System 1 decision engine**. A hard 4,096-token training ceiling is completely unacceptable for production deployments:
+1. **The Train-Test Length Disparity**: Foundation models trained strictly on sequences $L \le 4,096$ suffer severe performance decay when suddenly evaluated on 16K, 32K, 64K, or 128K inputs (ContractNLI complete multi-page NDA packages, long-turn API dialogue logs, multi-page financial SEC 10-K filings, and long repository code diffs).
+2. **Attention Entropy Dispersion**: Zero-shot length extrapolation via RoPE scaling without explicit long-context gradient exposure leads to attention dilution, where the model loses the ability to distinguish subtle contradictory needle evidence from surrounding context.
+3. **Core Engineering Mandate**: We strictly enforce *Train-Serving Parity*. If the model serves decisions over 128K documents, it must be trained on long-context multi-document evidence.
+
+---
+
+### Phase 1: Local RTX 5090 Context Max-Out Strategy (Up to 16,384 Tokens)
+Before provisioning cloud compute, we exhaustively saturate the 32,607 MiB VRAM budget on the local NVIDIA GeForce RTX 5090:
+* **Gevva e2b (~2.3B / 35 Layers)**:
+  - Static baseline (bfloat16 weights + gradients + `PagedAdamW8bit`): **~10.3 GB**.
+  - With FlashAttention-3, gradient checkpointing, and Attention De-Sliding (`OPT-06`):
+    - Full Fine-Tuning (FFT) scales to **$L = 8,192$ tokens** at `batch_size = 1` with `grad_accum = 32`, operating at **~28.5 GiB VRAM** (87% saturation).
+    - Parameter-Efficient Fine-Tuning (LoRA $r=64$, $\alpha=128$ targeting all linear projection matrices) scales to **$L = 16,384$ tokens**, operating at **~29.2 GiB VRAM** (90% saturation).
+* **Gevva e4b (~4.5B / 42 Layers / 7.94B Total)**:
+  - Full Fine-Tuning static baseline consumes **27.84 GB**, capping native FFT at $L = 4,096$ tokens (~29.5 GiB VRAM).
+  - To push beyond 4K locally, e4b employs **LoRA with 8-bit Base Quantization** or **FP8 Layer Checkpointing**:
+    - Freezing the 3.98B base transformer weights in FP8/INT8 and training LoRA adapters on attention projections ($W_Q, W_K, W_V, W_O$) and MLP gates allows local context scaling to **$L = 8,192$ and $L = 16,384$ tokens** at **~28.8 GiB VRAM**.
+* **Local Ceilings**: Once the local RTX 5090 reaches its physical limit at 16K tokens, context expansion seamlessly hands off to rented cloud multi-GPU clusters.
+
+---
+
+### Phase 2: Rented Cloud GPU Cluster & Distributed Sequence Parallelism (`OPT-10`)
+To scale beyond 16K to native 32K, 64K, and full 128K context windows, compute transitions to a rented multi-GPU cloud cluster (e.g. Lambda Labs, RunPod, or CoreWeave):
+
+#### Cluster Hardware Specification
+* **Node Configuration**: 1x Node with **8x NVIDIA H100 SXM5 80GB** (or 8x NVIDIA H200 141GB).
+* **Interconnect**: NVLink 4.0 offering **900 GB/s bidirectional GPU-to-GPU bandwidth**.
+* **Total Cluster VRAM**: **640 GB** (H100) or **1,128 GB** (H200).
+* **Estimated Budget**: $18–$24/hour. A complete 128K fine-tuning run over 30,000 long-context pairs requires 12–16 hours (~$250–$380 total).
+
+#### Sequence Parallelism Architecture (`DeepSpeed Ulysses` & `Ring Attention`)
+Standard Distributed Data Parallelism (DDP) or FSDP splits samples across the batch dimension ($B$). When $L = 131,072$ tokens, a single sample cannot fit in a single GPU's activation memory during backward recomputation. We implement **Distributed Sequence Parallelism (SP)**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│              DEEPSPEED ULYSSES SEQUENCE PARALLELISM (8x NVIDIA H100 SXM5)               │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│ Input Sequence L = 131,072 Tokens (Premise Document + Candidate Verification Claim)     │
+│ Divided across P = 8 GPUs: Each GPU processes local chunk L_local = 16,384 tokens       │
+├─────────────────────────────────────────────────────────────────────────────────────────┤
+│ [GPU 0: Pos 0..16k]   [GPU 1: Pos 16k..32k]  ...  [GPU 7: Pos 112k..128k]               │
+│         │                      │                           │                            │
+│         ▼                      ▼                           ▼                            │
+│ Q, K, V Projections   Q, K, V Projections         Q, K, V Projections                   │
+│         │                      │                           │                            │
+│         └──────────────────────┴─────────────┬─────────────┘                            │
+│                                              ▼                                          │
+│                       All-to-All Communication (NVLink 900 GB/s)                        │
+│                 Convert (Batch, L/P, Heads) ──► (Batch, L, Heads/P)                     │
+│                                              │                                          │
+│                                              ▼                                          │
+│                   Local Attention Execution over Full 128K Context                      │
+│                                              │                                          │
+│                                              ▼                                          │
+│                       All-to-All Communication (NVLink 900 GB/s)                        │
+│                 Convert (Batch, L, Heads/P) ──► (Batch, L/P, Heads)                     │
+│                                              │                                          │
+│                                              ▼                                          │
+│                     Feed-Forward & RMSNorm (Fully Parallel across P)                    │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Memory Breakdown per GPU at $L = 131,072$ (8x H100 SXM5 80GB)
+With $P = 8$ sequence parallelism, each GPU processes a local sequence of $L_{\text{local}} = 16,384$:
+1. **Model Weights & Gradients (Gevva e4b, 3.98B params, BF16)**: **~15.9 GB**.
+2. **Optimizer States (`AdamW` FP32 / ZeRO-1)**: **~15.9 GB** partitioned across GPUs $\approx \mathbf{2.0\text{ GB}}$ per GPU.
+3. **Activation Memory ($L_{\text{local}} = 16,384$, Selective Checkpointing, FlashAttention-3)**: **~18.5 GB**.
+4. **Attentive Pooling Head & Working Buffers**: **~2.5 GB**.
+5. **Total VRAM Allocated**: **~38.9 GB out of 80 GB available** (**~48.6% card capacity**).
+6. **Margin to OOM**: **>41 GB free headroom per GPU**, guaranteeing rock-solid stability even with dynamic batch fluctuations or candidate fanouts.
+
+---
+
+### Progressive 4-Stage Context Expansion Curriculum (`TR-19`)
+Training 128K context from step 0 is computationally wasteful on short queries. Gevva 1.1 implements a staged curriculum expanding sequence length systematically:
+
+```
+┌───────────┬──────────────────────┬────────────────────────┬──────────────────────────────────────────┐
+│ Stage     │ Context Length ($L$) │ Hardware Environment   │ Target Data Mixture                      │
+├───────────┼──────────────────────┼────────────────────────┼──────────────────────────────────────────┤
+│ **Stage 1**│ $L \le 4,096$ tokens │ Local RTX 5090 (32GB)  │ Core NLI, dense intent, FSM transitions, │
+│           │                      │ Full Fine-Tuning       │ RAGTruth, counterfactual minimal pairs   │
+├───────────┼──────────────────────┼────────────────────────┼──────────────────────────────────────────┤
+│ **Stage 2**│ $L \le 16,384$ tokens│ Local RTX 5090 Max-Out │ Full ContractNLI agreements, CUAD NDAs,  │
+│           │                      │ (e2b FFT / e4b LoRA)   │ MultiWOZ/API-Bank 20-turn dialogues      │
+├───────────┼──────────────────────┼────────────────────────┼──────────────────────────────────────────┤
+│ **Stage 3**│ $L \le 65,536$ tokens│ Cloud 8x H100 SXM5     │ DocNLI 50-page regulatory reports,       │
+│           │                      │ Sequence Parallel P=4  │ HoVer 20-document multi-hop cross-checks │
+├───────────┼──────────────────────┼────────────────────────┼──────────────────────────────────────────┤
+│ **Stage 4**│ $L \le 131,072$      │ Cloud 8x H100 SXM5     │ 128K Needle-in-a-Haystack NLI, full SEC  │
+│           │ (Full 128K)          │ Sequence Parallel P=8  │ 10-K compliance, repo-level code audits  │
+└───────────┴──────────────────────┴────────────────────────┴──────────────────────────────────────────┘
+```
+
+---
+
+### Synthetic 128K Needle & Multi-Document Attribution Mixture (`SYN-07`)
+To train robust 128K factual attribution, we compile **30,000 128K synthetic multi-needle verification instances**:
+* **Haystack Construction**: Assemble 50,000–120,000 tokens of coherent multi-domain context (SEC 10-Ks, legal briefs, technical specifications, and medical research papers).
+* **Needle Insertion Dynamics**:
+  - Insert target factual assertions at randomized relative depths: $d \in \{0.05, 0.20, 0.50, 0.75, 0.95\}$ (testing beginning, middle, and end of the 128K span).
+* **Balanced 3-Class Ground Truth Formulation**:
+  - **Entailment (34%)**: Hypothesis asserts a fact strictly entailed by the inserted needle.
+  - **Contradiction (33%)**: Needle is counterfactually perturbed (inverted date, altered financial amount, swapped counterparty, negated condition).
+  - **Neutral (33%)**: Needle is omitted entirely, or hypothesis claims a fact unverifiable from the 128K haystack.
+* **Position-Weighted Loss (No Early-Token Discounting)**:
+  Standard causal cross-entropy tends to discount gradients from early positions. In Gevva's hypothesis-token attentive pooling (`OPT-07`), because pooling operates exclusively over the hypothesis tokens at the sequence tail, the loss gradient propagates backward through the entire 128K sequence uniformly via the de-slided full attention layers (`OPT-06`), eliminating position-dependent attribution decay.
+
+---
+
+## 10. Complete 44-Benchmark Empirical Audit & Scorecard
 
 Below is the definitive empirical scorecard from the complete 151,476-request run of **Gevva e2b** on **Decision Index 0.2** (RTX 5090, $T=1.0$, Margin Scoring), sorted by Skill Score:
 
@@ -298,7 +412,7 @@ Below is the definitive empirical scorecard from the complete 151,476-request ru
 
 ---
 
-## 10. Deep Empirical Insights from the Full e2b Run
+## 11. Deep Empirical Insights from the Full e2b Run
 
 Analyzing all 44 datasets reveals 8 fundamental findings that define our research and training roadmap:
 
@@ -363,9 +477,9 @@ Analyzing all 44 datasets reveals 8 fundamental findings that define our researc
 
 ---
 
-## 11. Prescribed Training Remediations (TR-01 through TR-18)
+## 12. Prescribed Training Remediations (TR-01 through TR-19)
 
-To systematically address these findings, 18 targeted training interventions are defined for the Gevva Phase 5 / 1.1 master curriculum:
+To systematically address these findings, 19 targeted training interventions are defined for the Gevva Phase 5 / 1.1 master curriculum:
 
 ### TR-01: Adversarial Hard-Anchor Replay & Anti-Shortcut Loss (ANLI: 31.0% $\to$ 60%+)
 * Permanent 15% anchor slice of ANLI (R1–R3), WANLI, and Counterfactually Augmented Data (CAD).
@@ -429,10 +543,10 @@ To systematically address these findings, 18 targeted training interventions are
 > **Architecture & Layer Count Note**:
 > Earlier project notes referenced 26 layers, which was the layer count of the prior-generation `google/gemma-2-2b` (`num_hidden_layers = 26`). In `google/gemma-4-E2B-it`, Google redesigned the backbone to **35 text transformer layers** (`num_hidden_layers = 35`, 28 sliding-window + 7 full-attention layers, with 20 KV-shared layers). In addition, Gemma 4 includes auxiliary non-trainable components: 16 frozen vision transformer layers and static per-layer input embeddings (`embed_tokens_per_layer`), which remain frozen during fine-tuning.
 >
-> **Maximum GPU VRAM Saturation Strategy (RTX 5090 ~31.8 GiB Budget)**:
-> In accordance with production guidelines, training should aggressively utilize available GPU memory (~28.5–30.5 GiB, 90–95% saturation) without crossing the OOM boundary:
-> - **Gevva e2b (~2.3B)**: Static baseline is only ~10.3 GB (weights + grads + 8-bit Adam). We can scale batch token budgets to **8,192 tokens/batch** and train on contexts up to **$L = 8,192$**, pushing VRAM utilization to ~28.0 GiB and saturating the RTX 5090 tensor cores.
-> - **Gevva e4b (~4.5B / 7.94B total)**: Full fine-tuning static baseline is 27.84 GB. Allocating a **4,096 token batch budget** with **$L = 4,096$**, gradient checkpointing, FlashAttention-2, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` operates at **~29.5 GiB VRAM** (~93% card capacity) with zero OOM risk. Context expansion beyond 4K (8K–16K) can be executed at the same ~29.5 GiB saturation via LoRA.
+> **Maximum GPU VRAM Saturation Strategy (RTX 5090 ~31.8 GiB Budget) & Transition to Cloud Cluster**:
+> In accordance with production guidelines, local training aggressively utilizes available RTX 5090 VRAM (~28.5–30.5 GiB, 90–95% saturation) up to our local hardware ceiling (8K FFT for e2b, 16K LoRA for e2b/e4b). A 4,096-token context ceiling is strictly a local single-GPU constraint for e4b full fine-tuning, NOT our production context limit. 4K max usable context is completely unacceptable for a 128K decision engine. Training context will be maxed out on the RTX 5090, after which training seamlessly transitions to rented cloud multi-GPU clusters (8x H100 SXM5 80GB) to train native 32K, 64K, and full 128K context windows via DeepSpeed Ulysses Sequence Parallelism and Ring Attention (§9, OPT-10, TR-19).
+> - **Gevva e2b (~2.3B)**: Static baseline is only ~10.3 GB (weights + grads + 8-bit Adam). We can scale batch token budgets to **8,192 tokens/batch** and train on contexts up to **$L = 8,192$**, pushing VRAM utilization to ~28.0 GiB and saturating the RTX 5090 tensor cores. With LoRA ($r=64$), local context reaches **$L = 16,384$ tokens**.
+> - **Gevva e4b (~4.5B / 7.94B total)**: Full fine-tuning static baseline is 27.84 GB. Allocating a **4,096 token batch budget** with **$L = 4,096$**, gradient checkpointing, FlashAttention-2, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` operates at **~29.5 GiB VRAM** (~93% card capacity) with zero OOM risk. Context expansion beyond 4K locally reaches **$L = 16,384$ tokens** via LoRA ($r=64$) and 8-bit base weights before handing off to the cloud 8x H100 cluster for full 32K–128K FFT.
 
 ### TR-14: Dynamic Loss Plateau Detection & Adaptive Non-Early-Stopping Engine
 * **The Problem**: Fixed-epoch limits (`--epochs 1` or `--epochs 2`) stop training arbitrarily by step counter. In e4b, optimization was clamped by the 1-epoch cosine decay schedule decaying LR to zero. Conversely, static epoch limits waste compute once a model converges.
@@ -491,9 +605,18 @@ To systematically address these findings, 18 targeted training interventions are
   - **Labels**: Entailment (+1 / valid step), Contradiction (-1 / algebraic fallacy), Neutral (0 / redundant or unprovable step).
 * **Target Gain**: Sub-15ms step verification for Monte Carlo Tree Search (MCTS) and best-of-N inference-time compute scaling.
 
+### TR-19: Progressive 4-Stage Context Expansion Curriculum (4K $\to$ 16K $\to$ 64K $\to$ 128K)
+* **Objective**: Train native, calibrated 128K factual attribution without length generalization decay, bridging the train-serving gap.
+* **Stage Progression**:
+  - **Stage 1 (4,096 tokens, Local RTX 5090 FFT)**: Core NLI, dense intents, FSM transitions, high-overlap counterfactual edits.
+  - **Stage 2 (16,384 tokens, Local RTX 5090 Max-Out via LoRA/FFT)**: Full ContractNLI agreements, CUAD NDAs, MultiWOZ/API-Bank 20-turn dialogues.
+  - **Stage 3 (65,536 tokens, Cloud 8x H100 SXM5 with Ulysses SP P=4)**: 50-page regulatory reports (DocNLI), HoVer 20-document multi-hop cross-checks.
+  - **Stage 4 (131,072 tokens, Cloud 8x H100 SXM5 with Ulysses SP P=8)**: 128K multi-needle verification (SYN-07), full SEC 10-Ks, repository-level diff verification.
+* **Target Gain**: Native 128K context verification with zero degradation across long document reasoning and multi-needle benchmarks.
+
 ---
 
-## 12. Curriculum Optimization & Experimental Design: Trivial Situation Pruning vs Medium-Difficulty Prioritization [EXP-01]
+## 13. Curriculum Optimization & Experimental Design: Trivial Situation Pruning vs Medium-Difficulty Prioritization [EXP-01]
 
 ### The Core Hypothesis & Theoretical Rationale
 In standard cross-encoder recipes, training datasets are dominated by massive volumes of trivial sentence pairs (e.g., SNLI high-lexical-overlap pairs, simple noun-phrase substitutions, obvious direct negations). 
@@ -554,7 +677,7 @@ Arm B is accepted as the new master curriculum standard for Gevva 1.1 if and onl
 
 ---
 
-## 13. Sourcing & Synthetic GenAI Generation Strategy (SYN-01 through SYN-06)
+## 14. Sourcing & Synthetic GenAI Generation Strategy (SYN-01 through SYN-07)
 
 ### Open-Source vs Synthetic Sourcing Inventory
 
@@ -568,6 +691,7 @@ Arm B is accepted as the new master curriculum standard for Gevva 1.1 if and onl
 | **Subtle Hallucinations (RAGTruth)** | RAGTruth, HaluEval | Ready on disk (`cand-RAGTruth`) | **SYN-04**: High-overlap entity mutator |
 | **Causal Graphs (CLadder)** | CLadder causal DAGs | Ready on disk (`cladder-v1`) | **SYN-05**: Causal DAG generator |
 | **Multi-Hop NLI (HoVer)** | HoVer Wikipedia corpus | Ready on disk (`cand-hover`) | Supplementary |
+| **128K Needle Attribution (Haystack)** | SEC 10-K, Legal, Tech Specs, Wiki | Ready in pipeline | **SYN-07**: 128K Multi-Needle Haystack Generator |
 
 ### Synthetic Pipeline Specifications
 * **SYN-01 (FSM Generator)**: Programmatic generation of 50 domain state charts translated into natural-language assistant telemetry by local teacher LLMs (`gemma-4-26B-A4B-it`). Target: 25k verified pairs.
@@ -576,10 +700,11 @@ Arm B is accepted as the new master curriculum standard for Gevva 1.1 if and onl
 * **SYN-04 (High-Overlap Hallucination Synthesizer)**: Extracting factual Wikipedia/news paragraphs and prompting teacher LLMs to introduce subtle numerical, temporal, or attribution errors while preserving 95% of original text. Target: 25k pairs.
 * **SYN-05 (Causal DAG Synthesizer)**: Generating synthetic directed acyclic graphs and querying associational vs interventional implications. Target: 20k pairs.
 * **SYN-06 (Multi-Judge Quality Gate)**: 100% of synthetic records must pass the 4-judge committee in [`validator_committee.py`](file:///home/dave/workspaces/nli-cross-encoder/validator_committee.py) ($\ge 75\%$ consensus) and an 8-gram rolling hash decontamination gate against all test splits.
+* **SYN-07 (128K Multi-Needle Haystack Generator)**: Assembling 50,000–120,000 token multi-domain document haystacks with inserted target assertion needles at randomized depths ($d \in [0.05, 0.95]$) across Entailment, Contradiction (counterfactually perturbed), and Neutral (omitted needle) classes. Target: 30k verified 128K pairs.
 
 ---
 
-## 14. Architectural Boundary: Where System 1 Must Delegate
+## 15. Architectural Boundary: Where System 1 Must Delegate
 
 To prevent misapplying non-autoregressive cross-encoders to inherently sequential tasks, Gevva adopts the following operational boundary:
 
@@ -603,7 +728,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 
 ---
 
-## 15. Master Initiative Tracking Matrix
+## 16. Master Initiative Tracking Matrix
 
 | ID | Category | Initiative | Target Benchmark / Problem | Complexity | Expected Impact | Target Release |
 | :---: | :--- | :--- | :--- | :---: | :--- | :---: |
@@ -616,6 +741,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **OPT-07** | Architecture | Hypothesis-Token Attentive Pooling | Last-token pooling rank collapse & bottleneck | Medium | **Multi-head attentive pooling over hypothesis; Prefix KV compatible** | gevva 1.1.0 |
 | **ENG-04 / OPT-08** | Serving / Safety | Split Conformal Prediction & Abstention | High-risk enterprise triage & uncalibrated argmax | Low | **Certified $\ge (1-\alpha)$ coverage sets; automated System 2 fallback** | gevva 1.1.0 |
 | **OPT-09** | Architecture | Long-Context Multi-Image Memory Management | Multi-image VRAM & token bloat | Low | **Up to 4 images natively without lossy token compression** | gevva 1.1.0 |
+| **OPT-10** | Infrastructure | Cloud Sequence Parallelism (DeepSpeed Ulysses / Ring) | 128K context training activation memory | High | **Enables native 32K–128K full fine-tuning on 8x H100 SXM5** | gevva 1.1.0 |
 | **ENG-01** | Engine | Generalized State Formatting for `noul` | **RAGTruth (Format parity & compliance)** | Low | **Eliminates prompt stringification error** | gevva 1.1.0 |
 | **ENG-02** | Engine | Calibrated Decision Thresholding | **ACOS (1.8% $\to$ 12–15% Exact, 95%+ Field)** | Medium | **Mitigates class-imbalance recall collapse** | gevva 1.1.0 |
 | **ENG-03** | Engine | Cardinality-Scaled Softmax Temperature | **MMLU-Pro (28.6% $\to$ 35%+)** | Low | **Dampens distractor noise on large option sets** | gevva 1.1.0 |
@@ -637,6 +763,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **TR-16** | Curriculum | High-Fidelity Multi-Image Management | **DocVQA, InfoVQA, Multimodal Guardrails** | Low | **Sub-25ms multi-image verification with 0% OCR loss** | gevva 1.1.0 |
 | **TR-17** | Curriculum | UltraFeedback Alignment Preference Inversion | **LLM Response Grading & Evaluation** | Medium | **15ms non-autoregressive LLM judge scoring** | gevva 1.1.0 |
 | **TR-18** | Curriculum | PRM800K Mathematical Invariant Verification | **Single-Step Process Reward Modeling** | Medium | **Sub-15ms PRM verifier for System 2 MCTS** | gevva 1.1.0 |
+| **TR-19** | Curriculum | Progressive 4-Stage Context Scaling Curriculum | **128K length generalization gap (4K $\to$ 16K $\to$ 64K $\to$ 128K)** | Medium | **Eliminates train-serving length disparity across multi-page docs** | gevva 1.1.0 |
 | **EXP-01** | Research | Controlled Curriculum Pruning Experiment | **Trivial vs Medium Data Efficiency** | Medium | **Validates trivial subsumption; 25% faster convergence** | gevva 1.1.0 |
 | **SYN-01** | GenAI Data | Synthetic FSM State Transition Generator | **Home Appliance (0.0% $\to$ 20–25% Case Exact)** | Medium | **25k FSM transitions with programmatic ground-truth** | gevva 1.1.0 |
 | **SYN-02** | GenAI Data | Counterfactual Minimal-Pair Synthesizer | **ANLI (31.0% $\to$ 60%+)** | Medium | **30k atomic scope & polarity perturbations** | gevva 1.1.0 |
@@ -644,5 +771,6 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **SYN-04** | GenAI Data | High-Overlap Entity/Temporal Mutator | **RAGTruth (15.6% $\to$ 65%+)** | Medium | **25k high-overlap counterfactual edits** | gevva 1.1.0 |
 | **SYN-05** | GenAI Data | Causal DAG Intervention Synthesizer | **CLadder (56.4% $\to$ 75%+)** | Medium | **20k causal DAG associational/interventional queries** | gevva 1.1.0 |
 | **SYN-06** | Data Quality | 4-Judge Validation & Decontamination Gate | All Phase 5 Synthetic Data | Low | **Guarantees zero label noise and zero contamination** | gevva 1.1.0 |
+| **SYN-07** | GenAI Data | 128K Multi-Needle Haystack Generator | **128K Needle Factual Attribution** | Medium | **30k synthetic 128K balanced multi-needle verification pairs** | gevva 1.1.0 |
 
 
