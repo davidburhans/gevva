@@ -97,7 +97,7 @@ def _evaluate_arm(arm: str, rows: List[Dict]) -> np.ndarray:
 
     best = CKPTS[arm] / "best"
     print(f"[exp01] evaluating {arm} on {len(rows)} gate rows", flush=True)
-    enc = Gemma4CrossEncoder(model_path=str(best), device="cuda")
+    enc = Gemma4CrossEncoder(str(best), device="cuda")
     pairs = [(r["premise"], r["hypothesis"]) for r in rows]
     probs = enc.predict(pairs)
     del enc

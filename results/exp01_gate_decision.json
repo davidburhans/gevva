@@ -1,0 +1,106 @@
+{
+  "experiment": "EXP-01 curriculum pruning A/B (pre-registered §13, adapted per manifest)",
+  "decision_rule_paired": "accept Arm B master curriculum iff gate1 AND gate3 pass; harness gates required before final acceptance",
+  "paired_pass": false,
+  "gates": {
+    "gate1_floor_invariance": {
+      "rule": "armB floor accuracy >= 99.5% of armA",
+      "acc_armA": 0.7434,
+      "acc_armB": 0.6262,
+      "ratio": 0.8423,
+      "passed": false
+    },
+    "gate3_hard_lift": {
+      "rule": "armB hard-slice accuracy > armA (McNemar p < 0.05)",
+      "delta_pp": -5.18,
+      "mcnemar_p": 0.0,
+      "passed": false
+    },
+    "harness_gates_pending": [
+      "gate2_medium_lift: BANKING77 / When2Call / BFCL via engine harnesses",
+      "gate3_jevbench_hard: scripts/eval_jevbench_public.py per arm"
+    ]
+  },
+  "slices": {
+    "floor": {
+      "n": 717,
+      "acc_armA": 0.7434,
+      "acc_armB": 0.6262,
+      "delta_pp": -11.72,
+      "discordant_aRight_bWrong": 117,
+      "discordant_aWrong_bRight": 33,
+      "mcnemar_p": 0.0,
+      "per_source": {
+        "mnli_validation_matched": {
+          "n": 366,
+          "acc_armA": 0.7295081967213115,
+          "acc_armB": 0.6202185792349727
+        },
+        "snli_validation": {
+          "n": 351,
+          "acc_armA": 0.7578347578347578,
+          "acc_armB": 0.6324786324786325
+        }
+      }
+    },
+    "hard": {
+      "n": 5291,
+      "acc_armA": 0.4969,
+      "acc_armB": 0.4451,
+      "delta_pp": -5.18,
+      "discordant_aRight_bWrong": 662,
+      "discordant_aWrong_bRight": 388,
+      "mcnemar_p": 0.0,
+      "per_source": {
+        "anli_suite_test_r1": {
+          "n": 1000,
+          "acc_armA": 0.541,
+          "acc_armB": 0.481
+        },
+        "anli_suite_test_r2": {
+          "n": 1000,
+          "acc_armA": 0.445,
+          "acc_armB": 0.404
+        },
+        "anli_suite_test_r3": {
+          "n": 1200,
+          "acc_armA": 0.45416666666666666,
+          "acc_armB": 0.42916666666666664
+        },
+        "contractnli_suite": {
+          "n": 2091,
+          "acc_armA": 0.5251076040172167,
+          "acc_armB": 0.4567192730750837
+        }
+      }
+    },
+    "medium": {
+      "n": 1007,
+      "acc_armA": 0.6802,
+      "acc_armB": 0.5412,
+      "delta_pp": -13.9,
+      "discordant_aRight_bWrong": 194,
+      "discordant_aWrong_bRight": 54,
+      "mcnemar_p": 0.0,
+      "per_source": {
+        "fever_dev": {
+          "n": 425,
+          "acc_armA": 0.6941176470588235,
+          "acc_armB": 0.6494117647058824
+        },
+        "qnli_validation": {
+          "n": 394,
+          "acc_armA": 0.6725888324873096,
+          "acc_armB": 0.434010152284264
+        },
+        "scitail_validation": {
+          "n": 188,
+          "acc_armA": 0.6648936170212766,
+          "acc_armB": 0.5212765957446809
+        }
+      }
+    }
+  },
+  "train_args": "--base-model google/gemma-4-E2B-it --full-fine-tune --use-8bit-adam --epochs 2 --lr 3.0e-6 --head-lr 1.0e-4 --grad-accum 16 --token-bucketing --max-tokens-per-batch 2048 --max-length 1024 --brier-weight 0.5 --served-dist-weight 1.0 --cross-option-weight 0.0 --nli-aux-weight 0.25 --decision-temp 1.0 --val-ratio 0.03 --label-convention ours --image-root . --seed 42",
+  "base_model": "google/gemma-4-E2B-it"
+}

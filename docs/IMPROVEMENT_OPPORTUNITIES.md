@@ -18,7 +18,7 @@ However, the complete evaluation revealed six distinct pillars for improvement i
 3. **Representation Bottlenecking & Attentive Pooling** (**Proposed**): Single last-token pooling creates an information bottleneck over 35–42 deep layers. Candidate fix: Hypothesis-Token Attentive Pooling (OPT-07), gated against the last-token baseline with rollback (§6, review F-09).
 4. **Certified Safety & Risk-Calibrated Abstention** (**Proposed**): Pointwise argmax predictions lack uncertainty guarantees in enterprise deployments. Candidate fix: Split Conformal Prediction (ENG-04 / OPT-08) calibrated strictly on real gold datasets, providing certified $\ge (1-\alpha)$ coverage sets and automated System 1 $\to$ System 2 fallbacks; must be disabled in leaderboard mode (review F-17).
 5. **Engine Payload & State Decomposition Pitfalls**: Several benchmarks (e.g. RAGTruth at 15.6% F1, ACOS at 1.8% case exact accuracy) suffered severe performance penalties due to prompt stringification and compound field multiplication rather than core reasoning deficits (ENG-01, ENG-02, ENG-03).
-6. **Curriculum Optimization & Frontier Synthesis** (**Proposed, gated**): Foundation backbones already master trivial semantics. To be tested by the EXP-01 curriculum pruning experiment (whether medium-difficulty training subsumes trivial pairs), paired with frontier datasets (FSM state charts, high-overlap counterfactuals, UltraFeedback response grading, PRM800K invariant verification). Note: a prior, differently-structured synthetic-inclusion A/B **failed its McNemar gate** (p = 0.18; `results/gate_decision.json`) — synthetic-slice gains are unproven until each SYN pipeline passes its own gate (review F-06).
+6. **Curriculum Optimization & Frontier Synthesis** (**TESTED — HYPOTHESIS REFUTED 2026-09-28**): EXP-01 ran as pre-registered (62k-row arms, 45/35/20 vs 10/65/25, identical recipe from `gemma-4-E2B-it`). Arm B (pruned) failed **both** gates: floor −11.7pp, medium −13.9pp, hard −5.2pp, all McNemar p ≈ 0 (`results/exp01_gate_decision.json`). The "medium subsumes trivial" thesis is rejected: foundational-NLI anchors are load-bearing for every tier. The 1.1 master curriculum keeps the balanced anchor-heavy composition. See §13.5.
 
 ---
 
@@ -807,6 +807,25 @@ Arm B is accepted as the new master curriculum standard for Gevva 1.1 if and onl
 4. **Gradient Efficiency & Convergence Dynamics**:
    - Track mean gradient norm $\|\nabla_\theta \mathcal{L}\|_2$ and validation loss descent. Arm B must reach Arm A's minimum validation loss in $\ge \mathbf{25\%}$ fewer optimizer steps due to higher per-batch information density.
 
+### 13.5 EXP-01 Outcome (2026-09-28): HYPOTHESIS REFUTED — Arm B REJECTED
+
+Executed via `scripts/build_exp01_arms.py` + `scripts/run_exp01.py` (manifest: `data/exp01_arms_manifest.json`; decision: `results/exp01_gate_decision.json`). Both arms: 62,000 rows, 2 epochs, identical recipe (FFT from `google/gemma-4-E2B-it`, PagedAdamW8bit, lr 3e-6 / head 1e-4, 2048-token buckets, grad-accum 16). Gate set: 7,015 paired gold items (SNLI/MNLI val floor · FEVER/QNLI/SciTail medium · full ANLI R1–R3 + ContractNLI hard).
+
+| Slice | n | Arm A (45/35/20) | Arm B (10/65/25) | Δ | McNemar p |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| **floor** (SNLI+MNLI val) | 717 | **74.34%** | 62.62% | **−11.72pp** | ≈ 0 |
+| **medium** (FEVER/QNLI/SciTail) | 1,007 | **68.02%** | 54.12% | **−13.90pp** | ≈ 0 |
+| **hard** (ANLI R1–R3 + ContractNLI) | 5,291 | **49.69%** | 44.51% | **−5.18pp** | ≈ 0 |
+
+**Both gates failed** (floor ratio 0.842 ≪ 0.995; hard delta negative). Harness gates (BANKING77/When2Call/BFCL/JevBench Hard) are moot for acceptance.
+
+**Findings**:
+1. **Foundational-NLI anchors are load-bearing at every tier.** Pruning them to 10% degraded not only the floor but the *medium* and *hard* slices — the medium synthetic decision data does not transfer to QNLI-style natural NLI (QNLI collapsed 67.3 → 43.4).
+2. Arm B's *larger* hard share (25% vs 20%) made hard benchmarks *worse* — consistent with the earlier failed synthetic gate (F-06): the synthetic medium/hard pool does not substitute for anchor volume; absent a strong anchor base it appears to interfere.
+3. Vanishing-gradient/efficiency rationale for pruning was also not supported: Arm B trained 74.8 min vs Arm A 48.9 min (longer premises) with worse outcomes everywhere.
+
+**Decision for Gevva 1.1**: retain the balanced, anchor-heavy curriculum (Arm A composition); medium/hard synthetic data is a *supplement* layered onto anchors, never a replacement. Phase 5 e4b mixture = champion-style anchors (incl. the missing ANLI/WANLI/CAD slice per F-07) + medium supplements + targeted hard remediations (TR-06 style), each gated individually.
+
 ---
 
 ## 14. Sourcing & Synthetic GenAI Generation Strategy (SYN-01 through SYN-07)
@@ -902,7 +921,7 @@ To prevent misapplying non-autoregressive cross-encoders to inherently sequentia
 | **TR-19** | Curriculum | Progressive 4-Stage Context Scaling Curriculum | **128K length generalization gap (4K $\to$ 16K $\to$ 64K $\to$ 128K)** | Medium | **Eliminates train-serving length disparity across multi-page docs** | gevva 1.1.0 |
 | **TR-20** | Curriculum | High-Depth Reasoning Curriculum Skew | **E4B Multi-Hop & Deductive Reasoning (26–30% Knowl, 32–36% Lang)** | Medium | **Widens E4B margin over E2B using 42-layer capacity** | gevva 1.1.0 |
 | **TR-21** | Training | Listwise Grouped-Candidate Ranking Loss | **MMLU-Pro / large-$K$ selection robustness** | Medium | **$K$-distractor exposure; gate: +3pp at $K{=}10$, no $K{=}4$ regression** | gevva 1.1.0 |
-| **EXP-01** | Research | Controlled Curriculum Pruning Experiment | **Trivial vs Medium Data Efficiency** | Medium | **Validates trivial subsumption; 25% faster convergence** | gevva 1.1.0 |
+| **EXP-01** | Research | Controlled Curriculum Pruning Experiment | **RUN 2026-09-28: hypothesis refuted** | Medium | **Arm B rejected: −11.7pp floor / −13.9pp medium / −5.2pp hard (p≈0); anchor-heavy curriculum retained** | done |
 | **SYN-01** | GenAI Data | Synthetic FSM State Transition Generator | **Home Appliance (0.0% $\to$ 20–25% Case Exact)** | Medium | **25k FSM transitions with programmatic ground-truth** | gevva 1.1.0 |
 | **SYN-02** | GenAI Data | Counterfactual Minimal-Pair Synthesizer | **ANLI R1–R3 (+8–12pp, gated)** | Medium | **30k atomic scope & polarity perturbations** | gevva 1.1.0 |
 | **SYN-03** | GenAI Data | Hard-Negative Intent Boundary Paraphraser | **BANKING77 (63.3% $\to$ 75–85%, gated)** | Low | **15k borderline confusion queries** | gevva 1.1.0 |
