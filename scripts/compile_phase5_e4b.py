@@ -190,21 +190,66 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--total", type=int, default=130000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--anli-r2-cap", type=int, default=12000)
+    parser.add_argument("--anli-r3-cap", type=int, default=12000)
+    parser.add_argument("--wanli-cap", type=int, default=12000)
+    parser.add_argument("--ragtruth", default=None, help="Optional RAGTruth NLI jsonl (label 0=hallucinated, 1=supported)")
+    parser.add_argument("--avoid-file", default=None, help="Prior training jsonl; its pair keys are excluded from anchor/medium/hard pools (freshness)")
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--manifest", default=None)
     args = parser.parse_args()
     rng = random.Random(args.seed)
 
+    anchor_plan = {
+        "anchor_anli_train_r1": None,
+        "anli_train_r1": None,
+        "anchor_anli_train_r2": args.anli_r2_cap,
+        "anchor_anli_train_r3": args.anli_r3_cap,
+        "anchor_wanli_train": args.wanli_cap,
+    }
+
     forbidden = _forbidden_keys()
     pools = _load_pools(forbidden)
+
+    # Round-3 freshness: drop pair keys already trained on (adversarial/medium/hard only;
+    # trivial anchors are intentionally re-seen as load-bearing replay).
+    avoid: Set[str] = set()
+    if args.avoid_file and Path(args.avoid_file).exists():
+        with open(args.avoid_file, encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                avoid.add(_pair_key(row.get("premise", ""), row.get("hypothesis", "")))
+        pools["anchors_new"] = [r for r in pools["anchors_new"] if _pair_key(r["premise"], r["hypothesis"]) not in avoid]
+        print(f"  freshness: avoided {len(avoid)} prior pair keys; anchors_new pool now {len(pools['anchors_new'])}")
     for name, rows in pools.items():
         print(f"  pool {name}: {len(rows)}")
+
+    # --- RAGTruth (TR-06): high-overlap hallucination grounding ---
+    ragtruth_rows: List[Dict] = []
+    if args.ragtruth and Path(args.ragtruth).exists():
+        import re
+        with open(args.ragtruth, encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                m = re.match(r"Premise: (.*?)Hypothesis: (.*)", row.get("text", ""), re.S)
+                if not m:
+                    continue
+                lab = {0: 0, 1: 1}.get(row.get("label"))  # 0=hallucinated->contradiction, 1=supported->entailment
+                if lab is None:
+                    continue
+                ragtruth_rows.append({
+                    "premise": m.group(1).strip(), "hypothesis": m.group(2).strip(),
+                    "label": lab, "source": "ragtruth_train",
+                })
+        print(f"  ragtruth: {len(ragtruth_rows)}")
 
     # --- F-07 assertions (fail loudly; this bug cost e4b its ANLI score) ---
     r1_all = pools["r1"]
     anchor_rows = list(r1_all)
-    for source, cap in ANCHOR_PLAN.items():
-        rows = [r for r in pools["anchors_new"] + r1_all if r["source"] == source]
+    for source, cap in anchor_plan.items():
+        rows = [r for r in pools["anchors_new"] if r["source"] == source]
         if cap is None or len(rows) <= cap:
-            anchor_rows.extend(rows if rows not in r1_all else [])
+            anchor_rows.extend(rows)
         else:
             anchor_rows.extend(rng.sample(rows, cap))
     anchor_rows = list({id(r): r for r in anchor_rows}.values())
@@ -229,12 +274,14 @@ def main() -> None:
     chosen_medium = _balanced_sample(medium_balanced, n_medium, rng)
     chosen_hard = _balanced_sample(pools["hard"] + pools["deep"], int(0.13 * args.total), rng)
 
-    mixture = pools["trivial"] + anchor_rows + chosen_medium + chosen_hard
+    mixture = pools["trivial"] + anchor_rows + ragtruth_rows + chosen_medium + chosen_hard
     rng.shuffle(mixture)
 
     label_dist = Counter(r["label"] for r in mixture)
     source_counts = Counter(r["source"] for r in mixture)
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
+    out_path = Path(args.out) if args.out else OUT_PATH
+    manifest_path = Path(args.manifest) if args.manifest else MANIFEST_PATH
+    with open(out_path, "w", encoding="utf-8") as f:
         for row in mixture:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -247,6 +294,7 @@ def main() -> None:
             "adversarial_anchors": len(anchor_rows),
             "anli_rows": anli_total,
             "wanli_rows": sum(1 for r in anchor_rows if "wanli" in r["source"]),
+            "ragtruth_rows": len(ragtruth_rows),
             "medium_supplements": len(chosen_medium),
             "hard_and_deep_reasoning": len(chosen_hard),
         },
@@ -258,10 +306,10 @@ def main() -> None:
         ],
         "source_counts": dict(source_counts.most_common()),
     }
-    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
-    print(f"Wrote {len(mixture)} rows -> {OUT_PATH}")
+    print(f"Wrote {len(mixture)} rows -> {out_path}")
     print(f"Labels: {dict(sorted(label_dist.items()))}")
     print(f"Composition: {json.dumps(manifest['composition'], indent=2)}")
 
