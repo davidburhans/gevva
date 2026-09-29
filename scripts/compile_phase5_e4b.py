@@ -41,6 +41,14 @@ NEW_ANCHOR_PATHS = [
     REPO_ROOT / "data" / "anli_r2r3_train.jsonl",
     REPO_ROOT / "data" / "wanli_train.jsonl",
 ]
+# Multimodal replay sources: protect vision capability during text-heavy continual
+# rounds (e2b ships a multimodal variant; a text-only round erodes it).
+MULTIMODAL_SOURCES = {
+    "visual_single_image", "multimodal_table_invoice_diff",
+    "multimodal_dashboard_metric_alert", "multimodal_ui_state_transition",
+    "multimodal_spatial_map_movement", "multimodal_cross_chart_trend",
+    "anchor_multimodal_synth",
+}
 FORBIDDEN_PATHS = [
     REPO_ROOT / "data" / "exp01_gate_eval.jsonl",
     REPO_ROOT / "data" / "test_v2.jsonl",
@@ -125,7 +133,7 @@ def _forbidden_keys() -> Set[str]:
 def _load_pools(forbidden: Set[str]) -> Dict[str, List[Dict]]:
     pools: Dict[str, List[Dict]] = {
         "trivial": [], "anchors_new": [], "r1": [],
-        "medium": [], "deep": [], "hard": [],
+        "medium": [], "deep": [], "hard": [], "multimodal": [],
     }
     seen: Set[str] = set()
 
@@ -159,6 +167,8 @@ def _load_pools(forbidden: Set[str]) -> Dict[str, List[Dict]]:
                     _keep(row, "deep")
                 elif source in HARD_SOURCES:
                     _keep(row, "hard")
+                elif source in MULTIMODAL_SOURCES:
+                    _keep(row, "multimodal")
 
     for path in NEW_ANCHOR_PATHS:
         if not path.exists():
@@ -194,6 +204,8 @@ def main() -> None:
     parser.add_argument("--anli-r3-cap", type=int, default=12000)
     parser.add_argument("--wanli-cap", type=int, default=12000)
     parser.add_argument("--ragtruth", default=None, help="Optional RAGTruth NLI jsonl (label 0=hallucinated, 1=supported)")
+    parser.add_argument("--multimodal-replay", type=int, default=0,
+                        help="Sample N multimodal replay rows (vision-capability protection for continual rounds; 0 disables)")
     parser.add_argument("--avoid-file", default=None, help="Prior training jsonl; its pair keys are excluded from anchor/medium/hard pools (freshness)")
     parser.add_argument("--out", default=None)
     parser.add_argument("--manifest", default=None)
@@ -274,7 +286,13 @@ def main() -> None:
     chosen_medium = _balanced_sample(medium_balanced, n_medium, rng)
     chosen_hard = _balanced_sample(pools["hard"] + pools["deep"], int(0.13 * args.total), rng)
 
-    mixture = pools["trivial"] + anchor_rows + ragtruth_rows + chosen_medium + chosen_hard
+    multimodal_rows: List[Dict] = []
+    if args.multimodal_replay > 0 and pools["multimodal"]:
+        multimodal_rows = rng.sample(pools["multimodal"],
+                                     min(args.multimodal_replay, len(pools["multimodal"])))
+        print(f"  multimodal replay: {len(multimodal_rows)}")
+
+    mixture = pools["trivial"] + anchor_rows + ragtruth_rows + multimodal_rows + chosen_medium + chosen_hard
     rng.shuffle(mixture)
 
     label_dist = Counter(r["label"] for r in mixture)
@@ -295,6 +313,7 @@ def main() -> None:
             "anli_rows": anli_total,
             "wanli_rows": sum(1 for r in anchor_rows if "wanli" in r["source"]),
             "ragtruth_rows": len(ragtruth_rows),
+            "multimodal_replay_rows": len(multimodal_rows),
             "medium_supplements": len(chosen_medium),
             "hard_and_deep_reasoning": len(chosen_hard),
         },
