@@ -671,3 +671,13 @@ Compiled and launched Phase 2 training targeting the measured Mode C weak reason
   - Estimated runtime: ~4.5h (1 epoch) / ~9-10h (2 epochs).
   - Status: Staged and verified with `--dry-run`; GPU remains 100% idle awaiting user authorization.
 
+
+## 19. Correction (2026-09-29): SDK parity pairs were never merged
+
+Section 16 above claims phase3-enriched incorporated "8,515 committee-validated SDK parity pairs".
+Verified against the artifact: `data/train_phase3_enriched.jsonl` contains **zero** `sdk_*` rows
+under any source name. The 5,661 validated pairs exist in `data/staged/sdk_synthetic_train.jsonl`,
+unmerged — and the 2026-09 synthetic-inclusion A/B on a 1.2% blend of them FAILED its McNemar gate
+(p = 0.182, `results/gate_decision.json`). SDK-parity training representation remains an open gap
+for **both** e2b and e4b (AGENTS.md principle 4); treat as a candidate for an individually-gated
+round 4 rather than a blind merge.
