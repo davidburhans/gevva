@@ -66,6 +66,9 @@ def main():
     model_paths = {
         "e4b": "ckpt/gevva-e4b-flagship/best",
         "e2b": "ckpt/gevva-e2b",
+        "e2b-phase5": "ckpt/gevva-e2b-phase5/best",
+        "e4b-phase5": "ckpt/gevva-e4b-phase5/best",
+        "e4b-phase5-r3": "ckpt/gevva-e4b-phase5-r3/best",
     }
 
     for m in args.models:
