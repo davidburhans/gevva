@@ -1,13 +1,13 @@
 # Agent Instructions & Project Context: Gevva Multimodal 128K System 1 Decision Engine
 
-> **Rule for All Antigravity Agent Sessions**: This repository implements **Gevva**, a state-of-the-art, large-context (128K), multilingual (100+ languages), vision-enabled System 1 decision engine and NLI cross-encoder based on Google's Gemma 4 models. **Gevva e2b achieves a 77.54 Composite Score on the JevBench Public Dataset (and Gevva e4b achieves 77.28 with 55% Hard tier accuracy)**. Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
+> **Rule for All Antigravity Agent Sessions**: This repository implements **Gevva**, a large-context (128K), multilingual (100+ languages), vision-enabled System 1 decision engine and NLI cross-encoder based on Google's Gemma 4 models. **Primary evaluation instrument: Decision Index 0.2** (44 benchmarks, 151,034 requests, ±0.25pp resolution) — Gevva e2b scores 26.79 Balanced Skill (highest sub-3B open entrant) and Gevva e4b scores 29.88. **Secondary/leaderboard check: JevBench Public** (Gevva e2b: 77.54 Composite, #1 at publication; note the hard tier is n=111 with a ±9.3pp CI — it cannot resolve development-scale deltas and must never be used as a training-round gate). Follow the guidelines and architectural decisions documented below when inspecting code, proposing modifications, generating data, or training models.
 
 ---
 
 ## 1. Project Mission & Overview
 
 This project builds **Gevva**, a family of **large-context (128K)**, **multilingual (100+ languages)**, **vision-enabled System 1 decision engines** based on Google's lightweight multimodal foundation models:
-- **`Gevva e2b`** (built on `google/gemma-4-E2B-it`, ~2.3B effective parameters, **77.54 on JevBench Public**)
+- **`Gevva e2b`** (built on `google/gemma-4-E2B-it`, ~2.3B effective parameters; Decision Index 26.79 Balanced Skill, JevBench 77.54)
 - **`Gevva e4b`** (built on `google/gemma-4-E4B-it`, ~4.5B effective parameters, deep reasoning model)
 
 ### What We Are Building
@@ -99,7 +99,7 @@ Hypothesis: {hypothesis}
 │   ├── JEVBENCH_REMEDIATION_PLAN.md # Remediation plan (completed: #1 JevBench 77.54)
 │   └── jevbench-error-audit.md    # Error audit documentation
 ├── ckpt/
-│   ├── gevva-e2b/                 # WORLD CHAMPION: Full fine-tuned Gemma 4 E2B-it (77.54 JevBench)
+│   ├── gevva-e2b/                 # Champion e2b checkpoint (JevBench 77.54 at publication)
 │   └── gemma-4-e2b-nli-w4a16/     # Production standalone W4A16 model (7.04 GB, 14.3ms latency)
 ├── results/                       # Benchmark outputs and comparative JSON logs
 └── research/                      # Reference implementations, adapters, and deep-dive reports
@@ -159,22 +159,24 @@ source .venv/bin/activate
 ```
 
 ### Running Benchmarks
-- Run the official JevBench evaluation on Gevva e2b:
+- **Primary — Decision Index** (development gate; per-benchmark resolution ±0.25–1.7pp):
   ```bash
-  uv run python scripts/eval_jevbench_public.py --model-path ckpt/gevva-e2b --temperature 1.6
-  ```
-- Run direct capability comparison against Jev / OpenJEV / Laya:
-  ```bash
-  uv run python eval_openjev_benchmarks.py --limit 100
+  # Quick paired gate (7,015 items: SNLI/MNLI floor, FEVER/QNLI medium, ANLI R1-R3 + ContractNLI hard)
+  uv run python scripts/run_exp01.py   # or evaluate a ckpt directly on data/exp01_gate_eval.jsonl
+  # Full 44-benchmark suite (~151k requests)
+  uv run python scripts/run_decision_index_eval.py --model-path <ckpt>
   ```
 - Run downstream System 1 decisions evaluation:
   ```bash
   uv run python eval_downstream_decisions.py --model-path ckpt/gevva-e2b
   ```
-- Run Gevva CLI:
+- Run direct capability comparison against Jev / OpenJEV / Laya:
   ```bash
-  gevva version
-  gevva eval --suite jevbench
+  uv run python eval_openjev_benchmarks.py --limit 100
+  ```
+- **Secondary — JevBench Public** (leaderboard/positioning check only; hard tier n=111, ±9.3pp CI — never a training-round gate):
+  ```bash
+  uv run python scripts/eval_jevbench_public.py --model-path ckpt/gevva-e2b --temperature 1.6
   ```
 
 ### Guiding Principles for Contributions
@@ -182,5 +184,7 @@ source .venv/bin/activate
 2. **Calibration is paramount**: Use strictly proper scoring rules or soft BCE with Brier score monitoring to ensure confidence matches empirical accuracy.
 3. **Preserve modularity**: Keep data curation adapters, model architecture definitions, and training runners decoupled.
 4. **Enforce Train-Serving Parity**: Every method exposed in the public SDK (`gemma4_cross_encoder.py` — `rerank`, `grade`, tool routing, RAG hallucination checks) must have an explicit, calibrated data generation slice in `generate_sdk_synthetic_data.py`. Never evaluate the model on interaction patterns that have zero representation in the training curriculum.
+5. **Anchor-asserted mixtures** (EXP-01 + F-07, 2026-09-28): foundational-NLI anchors are load-bearing at every difficulty tier, and a training round with zero adversarial-NLI rows silently collapsed e4b's ANLI neutral recall to 2.9%. Every mixture compile must assert anchor presence (see `scripts/compile_phase5_e4b.py`) and record its manifest.
+6. **Measure with the right instrument**: Decision Index is the primary development gate (151k requests, real diagnostic power). JevBench is a leaderboard check with a ±9.3pp hard-tier CI at n=111 — cite it for positioning, never for training decisions.
 
 
