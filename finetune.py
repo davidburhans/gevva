@@ -101,6 +101,70 @@ def _prune_step_checkpoints(output_dir: str, keep: int) -> list:
         shutil.rmtree(os.path.join(output_dir, name), ignore_errors=True)
     return doomed
 
+
+def _save_resume_state(
+    step_dir: str,
+    optimizer,
+    scheduler,
+    global_step: int,
+    epoch: int,
+    batches_done_in_epoch: int,
+) -> None:
+    """Write resume.pt (optimizer + scheduler + RNG + data position) for crash-resume.
+
+    Written LAST via atomic rename: a step dir containing resume.pt is a complete,
+    resumable checkpoint; a dir without it is a partial write from a crashed save
+    (the 2026-09-29 incident: model-only checkpoints could not resume anything).
+    """
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "global_step": global_step,
+        "epoch": epoch,
+        "batches_done_in_epoch": batches_done_in_epoch,
+        "rng_python": random.getstate(),
+        "rng_numpy": np.random.get_state(),
+        "rng_torch": torch.get_rng_state(),
+        "rng_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    tmp_path = os.path.join(step_dir, "resume.pt.tmp")
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, os.path.join(step_dir, "resume.pt"))
+
+
+def _find_latest_resumable(output_dir: str):
+    """Newest step_N dir under output_dir that contains a complete resume.pt (None if absent)."""
+    import re
+    candidates = []
+    try:
+        entries = os.listdir(output_dir)
+    except OSError:
+        return None
+    for name in entries:
+        m = re.fullmatch(r"step_(\d+)", name)
+        full = os.path.join(output_dir, name)
+        if m and os.path.isdir(full) and os.path.exists(os.path.join(full, "resume.pt")):
+            candidates.append((int(m.group(1)), full))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
+def _apply_resume_state(resume_path: str, optimizer, scheduler):
+    """Restore optimizer/scheduler/RNG from resume.pt; returns (global_step, epoch, batches_done)."""
+    state = torch.load(resume_path, map_location="cpu", weights_only=False)
+    optimizer.load_state_dict(state["optimizer"])
+    scheduler.load_state_dict(state["scheduler"])
+    random.setstate(state["rng_python"])
+    np.random.set_state(state["rng_numpy"])
+    torch.set_rng_state(state["rng_torch"].cpu() if hasattr(state["rng_torch"], "cpu") else state["rng_torch"])
+    if state.get("rng_cuda") and torch.cuda.is_available():
+        try:
+            torch.cuda.set_rng_state_all(state["rng_cuda"])
+        except RuntimeError:
+            pass  # device topology changed; dropout stream differs but training remains valid
+    return state["global_step"], state["epoch"], state["batches_done_in_epoch"]
+
 from gemma4_cross_encoder import (
     CONTRADICTION,
     ENTAILMENT,
@@ -943,6 +1007,7 @@ def finetune_custom_data(
     checkpoint_interval: int = 250,
     min_free_gb: float = 40.0,
     keep_step_checkpoints: int = 2,
+    resume_from: Optional[str] = None,
     label_smoothing: float = 0.05,
     brier_weight: float = 0.0,
     cross_option_weight: float = 1.0,
@@ -1357,6 +1422,27 @@ def finetune_custom_data(
     global_step = 0
     t_start = time.time()
 
+    # 6b. Crash-resume (lesson from 2026-09-29: model-only checkpoints lost 2.5h of compute)
+    _skip_batches = 0
+    _skip_epoch = -1
+    if resume_from:
+        resume_dir = _find_latest_resumable(output_dir) if resume_from == "auto" else resume_from
+        resume_file = os.path.join(resume_dir, "resume.pt") if resume_dir else None
+        if resume_file and os.path.exists(resume_file):
+            # The caller must pass --base-model <resume_dir> (and its head_weights) so the
+            # model matches; here we restore everything the optimizer needs.
+            global_step, saved_epoch, _skip_batches = _apply_resume_state(resume_file, optimizer, scheduler)
+            start_epoch = saved_epoch
+            _skip_epoch = saved_epoch
+            epochs = max(1, epochs - saved_epoch)  # run only the remaining epochs
+            print(f"[resume] Restored {resume_dir}: epoch {saved_epoch + 1}, "
+                  f"skipping {_skip_batches} seen batches, global_step {global_step}, "
+                  f"{epochs} epoch(s) remaining", flush=True)
+        elif resume_from == "auto":
+            print("[resume] No complete step checkpoint found; starting fresh", flush=True)
+        else:
+            raise FileNotFoundError(f"--resume-from {resume_from} has no complete resume.pt")
+
     for epoch_idx in range(epochs):
         epoch = start_epoch + epoch_idx
         if train_sampler is not None:
@@ -1369,6 +1455,10 @@ def finetune_custom_data(
         optimizer.zero_grad()
 
         for step, batch in enumerate(train_loader):
+            # Fast-forward past batches already trained before a crash-resume.
+            # Exact replay: samplers are seeded per-epoch (random.Random(seed + epoch)).
+            if epoch == _skip_epoch and step < _skip_batches:
+                continue
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
@@ -1469,7 +1559,8 @@ def finetune_custom_data(
                         if hasattr(raw_m, "norm"):
                             head_dict["norm"] = _clean_st(raw_m.norm)
                         torch.save(head_dict, os.path.join(step_dir, "head_weights.pt"))
-                        print(f"-> Saved periodic step checkpoint to {step_dir} (step {global_step}/{total_steps})", flush=True)
+                        _save_resume_state(step_dir, optimizer, scheduler, global_step, epoch, step + 1)
+                        print(f"-> Saved resumable step checkpoint to {step_dir} (step {global_step}/{total_steps})", flush=True)
                     # Prune even when the save was skipped: freeing old checkpoints helps.
                     pruned = _prune_step_checkpoints(output_dir, keep_step_checkpoints)
                     if pruned:
@@ -1726,6 +1817,11 @@ def main():
         default=2,
         help="Rolling window of step_N checkpoints to retain; oldest are pruned after each save (default 2; <=0 keeps all). best/ and epoch_* are never pruned.",
     )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="Crash-resume: 'auto' finds the newest complete step checkpoint in --out-dir, or pass an explicit step dir. Combine with --base-model <step_dir> --head-weights <step_dir>/head_weights.pt.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1761,6 +1857,7 @@ def main():
         checkpoint_interval=args.checkpoint_interval,
         min_free_gb=args.min_free_gb,
         keep_step_checkpoints=args.keep_step_checkpoints,
+        resume_from=args.resume_from,
         max_tokens_per_batch=args.max_tokens_per_batch,
         image_root=args.image_root,
         use_8bit_adam=args.use_8bit_adam,
