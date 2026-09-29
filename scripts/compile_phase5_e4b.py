@@ -206,6 +206,8 @@ def main() -> None:
     parser.add_argument("--ragtruth", default=None, help="Optional RAGTruth NLI jsonl (label 0=hallucinated, 1=supported)")
     parser.add_argument("--multimodal-replay", type=int, default=0,
                         help="Sample N multimodal replay rows (vision-capability protection for continual rounds; 0 disables)")
+    parser.add_argument("--sdk-parity", default=None,
+                        help="Optional committee-validated SDK parity jsonl (AGENTS.md principle 4; post-hoc McNemar gate required on the SDK val set)")
     parser.add_argument("--avoid-file", default=None, help="Prior training jsonl; its pair keys are excluded from anchor/medium/hard pools (freshness)")
     parser.add_argument("--out", default=None)
     parser.add_argument("--manifest", default=None)
@@ -255,6 +257,28 @@ def main() -> None:
                 })
         print(f"  ragtruth: {len(ragtruth_rows)}")
 
+    # --- SDK parity (AGENTS.md principle 4: SDK methods need training representation) ---
+    sdk_rows: List[Dict] = []
+    if args.sdk_parity and Path(args.sdk_parity).exists():
+        with open(args.sdk_parity, encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                if row.get("premise") is None or row.get("hypothesis") is None:
+                    continue
+                lab = row.get("label")
+                if lab not in (0, 1, 2):
+                    continue
+                if _pair_key(row["premise"], row["hypothesis"]) in forbidden:
+                    continue
+                clean = {"premise": row["premise"], "hypothesis": row["hypothesis"],
+                         "label": int(lab), "source": str(row.get("source", "sdk_parity"))}
+                if row.get("group_id") is not None:
+                    clean["group_id"] = row["group_id"]
+                if row.get("soft_labels") is not None:
+                    clean["soft_labels"] = row["soft_labels"]
+                sdk_rows.append(clean)
+        print(f"  sdk parity: {len(sdk_rows)}")
+
     # --- F-07 assertions (fail loudly; this bug cost e4b its ANLI score) ---
     r1_all = pools["r1"]
     anchor_rows = list(r1_all)
@@ -292,7 +316,7 @@ def main() -> None:
                                      min(args.multimodal_replay, len(pools["multimodal"])))
         print(f"  multimodal replay: {len(multimodal_rows)}")
 
-    mixture = pools["trivial"] + anchor_rows + ragtruth_rows + multimodal_rows + chosen_medium + chosen_hard
+    mixture = pools["trivial"] + anchor_rows + ragtruth_rows + sdk_rows + multimodal_rows + chosen_medium + chosen_hard
     rng.shuffle(mixture)
 
     label_dist = Counter(r["label"] for r in mixture)
@@ -313,6 +337,7 @@ def main() -> None:
             "anli_rows": anli_total,
             "wanli_rows": sum(1 for r in anchor_rows if "wanli" in r["source"]),
             "ragtruth_rows": len(ragtruth_rows),
+            "sdk_parity_rows": len(sdk_rows),
             "multimodal_replay_rows": len(multimodal_rows),
             "medium_supplements": len(chosen_medium),
             "hard_and_deep_reasoning": len(chosen_hard),
