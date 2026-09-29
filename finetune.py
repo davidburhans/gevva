@@ -62,6 +62,15 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from transformers import AutoConfig, AutoTokenizer, get_cosine_schedule_with_warmup
 from transformers.models.gemma4.image_processing_pil_gemma4 import Gemma4ImageProcessorPil
 
+
+def _free_gb(path: str = ".") -> float:
+    """Free disk space in GB at `path`; +inf if stat fails (never block checkpointing on a stat error)."""
+    import shutil
+    try:
+        return shutil.disk_usage(path).free / (1024 ** 3)
+    except OSError:
+        return float("inf")
+
 from gemma4_cross_encoder import (
     CONTRADICTION,
     ENTAILMENT,
@@ -901,6 +910,8 @@ def finetune_custom_data(
     max_length: int = 512,
     lora_r: int = 64,
     lora_alpha: int = 128,
+    checkpoint_interval: int = 250,
+    min_free_gb: float = 40.0,
     label_smoothing: float = 0.05,
     brier_weight: float = 0.0,
     cross_option_weight: float = 1.0,
@@ -1408,8 +1419,10 @@ def finetune_custom_data(
                 optimizer.zero_grad()
                 global_step += 1
 
-                # Periodic step checkpointing every 250 optimizer updates (~1 hour) for crash resilience
-                if global_step % 250 == 0:
+                # Periodic step checkpointing (crash resilience); interval configurable.
+                # Disk guard: skip step checkpoints when free space drops below --min-free-gb
+                # (lesson from 2026-09-29 r3 crash: 15GB e4b shards filled a 3.6T disk).
+                if global_step % checkpoint_interval == 0 and _free_gb(output_dir) > min_free_gb:
                     step_dir = os.path.join(output_dir, f"step_{global_step}")
                     os.makedirs(step_dir, exist_ok=True)
                     model.save_pretrained(step_dir)
@@ -1658,6 +1671,18 @@ def main():
         default=0,
         help="Starting epoch index (0-indexed, default: 0)",
     )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=250,
+        help="Save a step checkpoint every N optimizer updates (default 250). Set very high (e.g. 100000) to disable; best/epoch checkpoints are always kept.",
+    )
+    parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=40.0,
+        help="Skip step checkpoints when free disk space drops below this many GB (default 40).",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1690,6 +1715,8 @@ def main():
         qat_bits=args.qat_bits,
         qat_group_size=args.qat_group_size,
         use_token_bucketing=args.token_bucketing,
+        checkpoint_interval=args.checkpoint_interval,
+        min_free_gb=args.min_free_gb,
         max_tokens_per_batch=args.max_tokens_per_batch,
         image_root=args.image_root,
         use_8bit_adam=args.use_8bit_adam,
