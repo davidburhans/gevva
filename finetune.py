@@ -71,6 +71,36 @@ def _free_gb(path: str = ".") -> float:
     except OSError:
         return float("inf")
 
+
+def _prune_step_checkpoints(output_dir: str, keep: int) -> list:
+    r"""Rolling retention for step checkpoints: delete oldest `step_N` dirs beyond the newest `keep`.
+
+    Only directories matching ^step_\d+$ are ever touched — `best/`, `epoch_*` and
+    anything else are left alone. `keep <= 0` disables pruning. Returns the deleted dir names.
+
+    Example:
+        >>> _prune_step_checkpoints("/tmp/run_with_step_250_step_500_step_750", keep=2)
+        ['step_250']
+    """
+    import re
+    if keep <= 0:
+        return []
+    step_dirs = []
+    try:
+        entries = os.listdir(output_dir)
+    except OSError:
+        return []
+    for name in entries:
+        m = re.fullmatch(r"step_(\d+)", name)
+        if m and os.path.isdir(os.path.join(output_dir, name)):
+            step_dirs.append((int(m.group(1)), name))
+    step_dirs.sort()
+    doomed = [name for _, name in step_dirs[:-keep]] if len(step_dirs) > keep else []
+    for name in doomed:
+        import shutil
+        shutil.rmtree(os.path.join(output_dir, name), ignore_errors=True)
+    return doomed
+
 from gemma4_cross_encoder import (
     CONTRADICTION,
     ENTAILMENT,
@@ -912,6 +942,7 @@ def finetune_custom_data(
     lora_alpha: int = 128,
     checkpoint_interval: int = 250,
     min_free_gb: float = 40.0,
+    keep_step_checkpoints: int = 2,
     label_smoothing: float = 0.05,
     brier_weight: float = 0.0,
     cross_option_weight: float = 1.0,
@@ -1420,23 +1451,29 @@ def finetune_custom_data(
                 global_step += 1
 
                 # Periodic step checkpointing (crash resilience); interval configurable.
-                # Disk guard: skip step checkpoints when free space drops below --min-free-gb
-                # (lesson from 2026-09-29 r3 crash: 15GB e4b shards filled a 3.6T disk).
-                if global_step % checkpoint_interval == 0 and _free_gb(output_dir) > min_free_gb:
-                    step_dir = os.path.join(output_dir, f"step_{global_step}")
-                    os.makedirs(step_dir, exist_ok=True)
-                    model.save_pretrained(step_dir)
-                    tokenizer.save_pretrained(step_dir)
-                    raw_m = _get_raw_model(model)
-                    def _clean_st(mod):
-                        if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
-                            return mod.modules_to_save["default"].state_dict()
-                        return mod.state_dict()
-                    head_dict = {"score": _clean_st(raw_m.score)}
-                    if hasattr(raw_m, "norm"):
-                        head_dict["norm"] = _clean_st(raw_m.norm)
-                    torch.save(head_dict, os.path.join(step_dir, "head_weights.pt"))
-                    print(f"-> Saved periodic step checkpoint to {step_dir} (step {global_step}/{total_steps})", flush=True)
+                # Disk guard: skip step checkpoints when free space drops below --min-free-gb,
+                # then prune old step checkpoints to a rolling window (2026-09-29 r3 incident:
+                # 15GB e4b shards filled a 3.6T disk at 250-step cadence).
+                if global_step % checkpoint_interval == 0:
+                    if _free_gb(output_dir) > min_free_gb:
+                        step_dir = os.path.join(output_dir, f"step_{global_step}")
+                        os.makedirs(step_dir, exist_ok=True)
+                        model.save_pretrained(step_dir)
+                        tokenizer.save_pretrained(step_dir)
+                        raw_m = _get_raw_model(model)
+                        def _clean_st(mod):
+                            if hasattr(mod, "modules_to_save") and "default" in mod.modules_to_save:
+                                return mod.modules_to_save["default"].state_dict()
+                            return mod.state_dict()
+                        head_dict = {"score": _clean_st(raw_m.score)}
+                        if hasattr(raw_m, "norm"):
+                            head_dict["norm"] = _clean_st(raw_m.norm)
+                        torch.save(head_dict, os.path.join(step_dir, "head_weights.pt"))
+                        print(f"-> Saved periodic step checkpoint to {step_dir} (step {global_step}/{total_steps})", flush=True)
+                    # Prune even when the save was skipped: freeing old checkpoints helps.
+                    pruned = _prune_step_checkpoints(output_dir, keep_step_checkpoints)
+                    if pruned:
+                        print(f"-> Pruned {len(pruned)} old step checkpoint(s): {', '.join(pruned)}", flush=True)
 
                 if global_step % 25 == 0 or global_step == 1:
                     lrs = scheduler.get_last_lr()
@@ -1683,6 +1720,12 @@ def main():
         default=40.0,
         help="Skip step checkpoints when free disk space drops below this many GB (default 40).",
     )
+    parser.add_argument(
+        "--keep-step-checkpoints",
+        type=int,
+        default=2,
+        help="Rolling window of step_N checkpoints to retain; oldest are pruned after each save (default 2; <=0 keeps all). best/ and epoch_* are never pruned.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -1717,6 +1760,7 @@ def main():
         use_token_bucketing=args.token_bucketing,
         checkpoint_interval=args.checkpoint_interval,
         min_free_gb=args.min_free_gb,
+        keep_step_checkpoints=args.keep_step_checkpoints,
         max_tokens_per_batch=args.max_tokens_per_batch,
         image_root=args.image_root,
         use_8bit_adam=args.use_8bit_adam,
