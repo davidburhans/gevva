@@ -73,15 +73,17 @@ def main() -> None:
     Path(args.out).write_text("".join(json.dumps(r) + "\n" for r in rows))
     import subprocess
     sha = subprocess.run(["sha256sum", args.base, args.v2], capture_output=True, text=True).stdout
+    stem = Path(args.out).stem.replace("train_", "")
     manifest = {
         "file": Path(args.out).name, "rows": len(rows), "seed": args.seed,
         "carried_from_cal1": len(kept), "ragtruth_v2": len(v2), "dropped_v1_ragtruth": dropped_v1,
         "anli": anli, "trivial": trivial, "gate_overlap_removed": len(kept) + len(v2) - len(rows),
         "input_hashes": sha.strip(),
-        "recipe_deltas_vs_cal1": ["base: xopt -> phase5", "brier 0.8 -> 0.4",
-                                   "cross-option 0.5 -> 0.0", "seed 45 -> 47"],
+        "recipe_deltas_vs_cal1": ["ragtruth slice: v1 15090 constant-hyp -> v2 7545 templated 35%",
+                                   "brier 0.8 -> 0.4", "cross-option 0.5 -> 0.0 (e2b) / 0.5 (e4b)",
+                                   "seed 45/46 -> 47"],
     }
-    (REPO_ROOT / "data" / "cal2_e2b_manifest.json").write_text(json.dumps(manifest, indent=2))
+    (REPO_ROOT / "data" / f"{stem}_manifest.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps(manifest, indent=2))
 
 
