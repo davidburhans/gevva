@@ -43,7 +43,8 @@ def load_items() -> list:
                 if not criteria or gold not in criteria:
                     continue
                 items.append({
-                    "premise": str(r.get("state", "")),
+                    "state": r.get("state", ""),
+                    "instructions": q.get("instructions", "Which option is the correct answer?"),
                     "options": list(criteria.items()),  # [(key, text)]
                     "gold_key": gold,
                 })
@@ -62,19 +63,40 @@ def main() -> None:
     from gemma4_cross_encoder import Gemma4CrossEncoder
 
     items = load_items()
+    if len(items) < 100:
+        raise SystemExit(f"ABORT: loaded only {len(items)} MMLU-Pro items (expected thousands) - suite shard moved?")
     rng = random.Random(args.seed)
     sample = rng.sample(items, min(args.n, len(items)))
 
     enc = Gemma4CrossEncoder(args.model_path, device=args.device)
     correct = 0
     by_k = defaultdict(lambda: [0, 0])
+    pred_counter = Counter()
+    pos_counter = Counter()
     for item in sample:
         keys = [k for k, _ in item["options"]]
-        texts = [t for _, t in item["options"]]
-        best = enc.predict_candidates(item["premise"], texts)
-        # predict_candidates returns an int-like index OR a 1-element array depending on path
-        best_idx = int(np.asarray(best).reshape(-1)[0])
+        # EXACT engine-served framing (review C1/m7): premise = state + question,
+        # hypothesis = "The correct answer is {k}: {desc}.", argmax over the
+        # entailment-minus-contradiction logit margin - identical to the
+        # Decision Index adapter's choice() path. (The 2026-09-30 morning
+        # 'fix' never landed: only the import line was applied, and the
+        # finalizer ran the always-option-A script - caught by the validated
+        # report showing 0.1320 for every model.)
+        premise = f"{item['state']}\n\nQuestion: {item['instructions']}"
+        hyps = []
+        for k, desc in item["options"]:
+            if desc and desc.lower() != str(k).lower():
+                hyps.append(f"The correct answer is {k}: {desc}.")
+            else:
+                hyps.append(f"The correct answer is: {k}.")
+        logits = np.asarray(enc.predict_candidates_logits(premise, hyps))
+        if logits.ndim != 2 or logits.shape != (len(keys), 3):
+            raise SystemExit(f"ABORT: predict_candidates_logits shape {logits.shape} != ({len(keys)}, 3)")
+        margins = logits[:, 1] - logits[:, 0]
+        best_idx = int(np.argmax(margins))
         pred_key = keys[best_idx]
+        pred_counter[pred_key] += 1
+        pos_counter[best_idx] += 1
         ok = pred_key == item["gold_key"]
         correct += int(ok)
         k = len(keys)
@@ -86,8 +108,19 @@ def main() -> None:
         "n": len(sample),
         "accuracy": round(correct / len(sample), 4),
         "accuracy_by_k": {str(k): {"acc": v[0] / v[1], "n": v[1]} for k, v in sorted(by_k.items())},
+        "top_predicted_key": pred_counter.most_common(1)[0],
+        "top_predicted_position": pos_counter.most_common(1)[0],
+        "framing_note": "engine-served parity: premise=state+question, hypothesis='The correct answer is {k}: {desc}...', "
+                        "argmax over ent-minus-contra logit margin (matches adapter choice())",
         "baselines": {"e2b_v1_raw": 0.2862, "e4b_v1_raw": 0.3641},
     }
+    # Degenerate guards (review C1): key VALUES vary per item ("A".."E" vs "1".."9"),
+    # so a value-count check alone misses always-position-0 predictions. Check both.
+    top_key, top_n = pred_counter.most_common(1)[0]
+    top_pos, top_pos_n = pos_counter.most_common(1)[0]
+    if top_n > 0.9 * len(sample) or top_pos_n > 0.9 * len(sample):
+        raise SystemExit(
+            f"ABORT: degenerate predictions - key {top_key} x{top_n}, position {top_pos} x{top_pos_n} of {len(sample)}")
     Path(args.out).write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 
