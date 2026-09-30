@@ -145,6 +145,18 @@ def main() -> int:
         "overall": summarize(per_item),
     }
 
+    # Official v1.2 composite axes (local 3-tier footing; judge tier is sealed).
+    # Tariff basis defaults to the e2b-official $0.0149/1k scaled by this model's
+    # p50-vs-champion latency ratio - an assumption, recorded in the artifact.
+    try:
+        from scripts.jevbench_composite import composite_from_result
+        p50_champ = 0.0165  # e2b champion official p50 (s)
+        tariff = 0.0149 * max(0.1, (artifact["overall"]["p50_ms"] / 1000.0) / p50_champ)
+        artifact["composite_local"] = composite_from_result(artifact, usd_per_1000=tariff)
+        artifact["composite_local"]["tariff_assumption_usd_per_1000"] = round(tariff, 5)
+    except Exception as exc:  # composite is additive reporting; never fail the eval
+        artifact["composite_local"] = {"error": f"{type(exc).__name__}: {exc}"}
+
     name = Path(args.model_path).name
     out = args.out or f"results/jevbench_public_{name}.json"
     with open(out, "w", encoding="utf-8") as f:
@@ -154,6 +166,8 @@ def main() -> int:
             f.write(json.dumps(i) + "\n")
 
     print(json.dumps({k: artifact[k] for k in ("tiers", "renormalized_ece_hard", "overall")}, indent=1))
+    if "jevbench_score_local_3tier" in artifact.get("composite_local", {}):
+        print(json.dumps(artifact["composite_local"], indent=1))
     print(f"\nArtifact: {out} (+ per-item jsonl)")
     return 0
 
