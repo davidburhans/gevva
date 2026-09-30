@@ -17,7 +17,7 @@ import json
 import random
 
 import numpy as np
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

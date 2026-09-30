@@ -1429,8 +1429,33 @@ def finetune_custom_data(
         resume_dir = _find_latest_resumable(output_dir) if resume_from == "auto" else resume_from
         resume_file = os.path.join(resume_dir, "resume.pt") if resume_dir else None
         if resume_file and os.path.exists(resume_file):
-            # The caller must pass --base-model <resume_dir> (and its head_weights) so the
-            # model matches; here we restore everything the optimizer needs.
+            # M4 safety (adversarial review 2026-09-30): auto mode is self-contained -
+            # if the caller's --base-model is not the resume dir, the restored optimizer
+            # state would silently mismatch fresh weights. Load weights from the checkpoint.
+            if os.path.normpath(os.path.abspath(base_model_id)) != os.path.normpath(os.path.abspath(resume_dir)):
+                print(f"[resume] NOTE: loading WEIGHTS from {resume_dir} (base-model differs; "
+                      f"optimizer/schedule continuity requires the checkpoint weights)", flush=True)
+                base_model_id = resume_dir
+                # Re-load model + head from the checkpoint dir before optimizer restore
+                # (model was already constructed; reload its state in place)
+                from transformers import AutoModelForSequenceClassification  # noqa: F401
+                _resume_state_dict = torch.load(os.path.join(resume_dir, "model.safetensors"), map_location="cpu", weights_only=True) \
+                    if os.path.exists(os.path.join(resume_dir, "model.safetensors")) else None
+                if _resume_state_dict is None:
+                    raise FileNotFoundError(
+                        f"auto-resume found {resume_file} but no model.safetensors in {resume_dir}; "
+                        f"pass --base-model {resume_dir} --head-weights {resume_dir}/head_weights.pt manually"
+                    )
+                missing_k, unexpected_k = model.load_state_dict(_resume_state_dict, strict=False)
+                if missing_k:
+                    raise RuntimeError(f"auto-resume weight load missing keys: {missing_k[:5]}")
+                if head_weights_path is None and os.path.exists(os.path.join(resume_dir, "head_weights.pt")):
+                    _head = torch.load(os.path.join(resume_dir, "head_weights.pt"), map_location="cpu", weights_only=True)
+                    raw_m = _get_raw_model(model)
+                    raw_m.score.load_state_dict(_head["score"])
+                    if hasattr(raw_m, "norm") and "norm" in _head:
+                        raw_m.norm.load_state_dict(_head["norm"])
+                    model.to(device)
             global_step, saved_epoch, _skip_batches = _apply_resume_state(resume_file, optimizer, scheduler)
             start_epoch = saved_epoch
             _skip_epoch = saved_epoch
@@ -1695,6 +1720,17 @@ def finetune_custom_data(
     print(f"Fine-Tuning Finished in {total_time/60:.1f} minutes!")
     print(f"Best Validation Accuracy: {best_val_acc*100:.2f}%")
     print(f"Saved Checkpoint:        {os.path.join(output_dir, 'best')}")
+    # M4 (adversarial review 2026-09-30): retire resume markers on success so a
+    # later accidental re-run cannot resume into a finished run (weights remain
+    # inspectable; only the resume.pt completeness marker is removed).
+    _retired = 0
+    for _name in os.listdir(output_dir) if os.path.isdir(output_dir) else []:
+        _rp = os.path.join(output_dir, _name, "resume.pt")
+        if _name.startswith("step_") and os.path.exists(_rp):
+            os.remove(_rp)
+            _retired += 1
+    if _retired:
+        print(f"Retired {_retired} resume marker(s); auto-resume is inert for this completed run.")
     print("=" * 65)
 
     return {
