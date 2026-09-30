@@ -19,27 +19,35 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SUITE = REPO_ROOT / "suite-0.2" / "selected-rows.jsonl.gz"
+SUITE_FILES = [
+    REPO_ROOT / "suite-0.2" / "selected-rows.jsonl.gz",
+    REPO_ROOT / "suite-0.2" / "added-rows.jsonl.gz",  # RAGTruth & later additions live here
+]
 
 
 def load_items() -> list:
     items = []
-    with gzip.open(SUITE, "rt", encoding="utf-8") as f:
-        for line in f:
-            r = json.loads(line)
-            if r.get("_evaluation", {}).get("catalog_id") != 59:
-                continue
-            state = r.get("state", {})
-            q = list(r["questions"].values())[0]
-            prompt = state.get("prompt") if isinstance(state, dict) else None
-            response = state.get("response") if isinstance(state, dict) else None
-            if not prompt or not response:
-                continue
-            # 'noul' type: expected answer "yes" = hallucination present
-            exp = (r.get("expected") or {}).get("q") or (r.get("gold") or {}).get("q")
-            if exp not in ("yes", "no"):
-                continue
-            items.append({"premise": prompt, "hypothesis": response, "gold": 1 if exp == "yes" else 0})
+    for suite_path in SUITE_FILES:
+        with gzip.open(suite_path, "rt", encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                if r.get("_evaluation", {}).get("catalog_id") != 59:
+                    continue
+                state = r.get("state", {})
+                q = list(r["questions"].values())[0]
+                prompt = state.get("prompt") if isinstance(state, dict) else None
+                response = state.get("response") if isinstance(state, dict) else None
+                if not prompt or not response:
+                    continue
+                # 'noul' type: expected q is a bool (True = hallucination present) or yes/no string
+                exp = (r.get("expected") or {}).get("q")
+                if isinstance(exp, bool):
+                    hallucinated = exp
+                elif isinstance(exp, str):
+                    hallucinated = exp.lower() == "yes"
+                else:
+                    continue
+                items.append({"premise": prompt, "hypothesis": response, "gold": int(hallucinated)})
     return items
 
 
