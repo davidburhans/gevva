@@ -40,6 +40,25 @@ def _text(x: Any) -> str:
     return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
 
 
+def _format_state(state: Any) -> str:
+    """Render a question state as clean readable text (ENG-01, generalized — no benchmark sniffing).
+
+    Dict states (e.g. {"prompt": ..., "response": ...}) become labeled markdown blocks
+    ("Prompt: ...\n\nResponse: ...") instead of raw JSON strings, which the model reads as
+    serialization noise. Nested values fall back to compact JSON. Strings pass through.
+    """
+    if not isinstance(state, dict) or not state:
+        return _text(state)
+    blocks = []
+    for key, value in state.items():
+        if value is None or value == "" or value == {} or value == []:
+            continue
+        label = str(key).replace("_", " ").capitalize()
+        body = value.strip() if isinstance(value, str) else _text(value)
+        blocks.append(f"{label}: {body}")
+    return "\n\n".join(blocks)
+
+
 def _softmax(logits: Sequence[float], temperature: float = 1.0) -> List[float]:
     arr = np.array(logits, dtype=np.float64) / max(temperature, 1e-4)
     exp = np.exp(arr - np.max(arr))
@@ -121,7 +140,7 @@ class GevvaDecisionIndexEngine:
         Returns:
             {"answers": {q_id: answer_dict}}
         """
-        state_str = _text(state)
+        state_str = _format_state(state)
         answers: Dict[str, Dict[str, Any]] = {}
 
         for q_id, q_dict in questions.items():
@@ -194,12 +213,14 @@ class GevvaDecisionIndexEngine:
                 probs = self.cross_encoder.predict([(premise, hypothesis)])
                 p_con, p_ent, p_neu = probs[0]
 
-                # Calibrated probability that the statement is true
-                if p_ent + p_con > 1e-6:
-                    p_true = float(p_ent / (p_ent + p_con))
-                else:
-                    p_true = float(p_ent)
-
+                # Calibrated probability that the statement is true (2026-09-29 fix):
+                # split the neutral mass evenly instead of discarding it. The old
+                # p_ent/(p_ent+p_con) renormalization drowned the discriminative
+                # signal on high-overlap pairs (most mass sits on neutral), which is
+                # why RAGTruth-style noul questions scored near chance at the default
+                # operating point while raw p_con carried F1 ~0.48 (see
+                # docs/IMPROVEMENT_OPPORTUNITIES.md TR-06 notes).
+                p_true = float(p_ent + 0.5 * p_neu)
                 p_true = max(0.0, min(1.0, p_true))
 
                 answers[q_id] = {

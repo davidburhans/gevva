@@ -110,3 +110,45 @@ class TestDecisionIndexAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFormatState(unittest.TestCase):
+    """ENG-01 fix: dict states render as readable blocks, never raw JSON."""
+
+    def test_dict_state_renders_labeled_blocks(self):
+        from research.adapters.gevva_decision_index_engine import _format_state
+        out = _format_state({"prompt": "Summarize this.", "response": "A summary."})
+        self.assertEqual(out, "Prompt: Summarize this.\n\nResponse: A summary.")
+
+    def test_nested_value_falls_back_to_json(self):
+        from research.adapters.gevva_decision_index_engine import _format_state
+        out = _format_state({"events": [{"a": 1}]})
+        self.assertIn("Events:", out)
+        self.assertIn('{"a":1}', out)
+
+    def test_string_and_empty_pass_through(self):
+        from research.adapters.gevva_decision_index_engine import _format_state
+        self.assertEqual(_format_state("plain"), "plain")
+        self.assertEqual(_format_state({}), "")
+        self.assertEqual(_format_state(None), "")
+
+
+class TestNoulScoreMapping(unittest.TestCase):
+    """Binary score = p_ent + 0.5*p_neu (neutral split, not discarded)."""
+
+    def test_neutral_mass_is_split(self):
+        from research.adapters.gevva_decision_index_engine import GevvaDecisionIndexEngine
+        # p_con=0.17, p_ent=0.28, p_neu=0.55 -> p_true = 0.28 + 0.275 = 0.555
+        # (old renormalization would give 0.28/0.45 = 0.622 - inverted verdict)
+        class _Stub:
+            def predict(self, pairs):
+                return [(0.17, 0.28, 0.55)]
+        engine = GevvaDecisionIndexEngine.__new__(GevvaDecisionIndexEngine)
+        engine.cross_encoder = _Stub()
+        engine.temperature = 1.0
+        engine.scoring = "margin"
+        answers = engine(
+            {"prompt": "p", "response": "r"},
+            {"q": {"type": "noul", "instructions": "The response contains content that is not supported."}},
+        )
+        self.assertAlmostEqual(answers["answers"]["q"]["noul"], 0.555, places=6)

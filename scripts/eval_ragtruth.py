@@ -67,12 +67,46 @@ def main() -> None:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--served-framing", action="store_true",
+                        help="Evaluate the EXACT served path: premise=_format_state(state), hypothesis=noul instructions, "
+                             "score = p_ent + 0.5*p_neu, decision at 0.5. The industry-facing metric.")
     args = parser.parse_args()
 
     from gemma4_cross_encoder import Gemma4CrossEncoder
+    from research.adapters.gevva_decision_index_engine import _format_state
 
     items = load_items()
     enc = Gemma4CrossEncoder(args.model_path, device=args.device)
+
+    if args.served_framing:
+        import sys
+        sys.path.insert(0, str(REPO_ROOT))
+        from scripts.build_ragtruth_served import RAGTRUTH_INSTRUCTIONS
+        pairs = [(_format_state({"prompt": i["premise"], "response": i["hypothesis"]}),
+                  RAGTRUTH_INSTRUCTIONS) for i in items]
+        probs = np.asarray(enc.predict(pairs))
+        y = np.array([i["gold"] for i in items])
+        # hallucinated == the noul hypothesis is TRUE -> answer yes at p_true >= 0.5
+        p_true = probs[:, 1] + 0.5 * probs[:, 2]
+        pred = (p_true >= 0.5).astype(int)
+        tp = int(np.sum((pred == 1) & (y == 1))); fp = int(np.sum((pred == 1) & (y == 0)))
+        fn = int(np.sum((pred == 0) & (y == 1)))
+        prec = tp / (tp + fp) if (tp + fp) else 0.0
+        rec = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        report = {
+            "model_path": args.model_path,
+            "framing": "served (adapter mapping, threshold 0.5, no fitted parameters)",
+            "n": len(items),
+            "f1": round(f1, 4), "precision": round(prec, 4), "recall": round(rec, 4),
+            "yes_rate": round(float(pred.mean()), 4),
+            "base_rate_hallucinated": round(float(y.mean()), 4),
+            "baselines": {"random_f1": 0.4113, "e2b_v1_suite": 0.1556, "e4b_v1_suite": 0.3668},
+        }
+        Path(args.out).write_text(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2))
+        return
+
     probs = np.asarray(enc.predict([(i["premise"], i["hypothesis"]) for i in items]))
     y = np.array([i["gold"] for i in items])
     p_con = probs[:, 0]  # contradiction = hallucination signal

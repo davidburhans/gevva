@@ -239,22 +239,32 @@ def main() -> None:
         print(f"  pool {name}: {len(rows)}")
 
     # --- RAGTruth (TR-06): high-overlap hallucination grounding ---
+    # Accepts both formats: raw (text="Premise: ... Hypothesis: ...", label 0=hallucinated)
+    # and served (premise/hypothesis/label directly, already our convention).
     ragtruth_rows: List[Dict] = []
     if args.ragtruth and Path(args.ragtruth).exists():
         import re
         with open(args.ragtruth, encoding="utf-8") as f:
             for line in f:
                 row = json.loads(line)
-                m = re.match(r"Premise: (.*?)Hypothesis: (.*)", row.get("text", ""), re.S)
-                if not m:
+                if row.get("premise") is not None and row.get("hypothesis") is not None:
+                    lab = row.get("label")
+                    if lab not in (0, 1, 2):
+                        continue
+                    clean = {"premise": row["premise"], "hypothesis": row["hypothesis"],
+                             "label": int(lab), "source": "ragtruth_served_train"}
+                else:
+                    m = re.match(r"Premise: (.*?)Hypothesis: (.*)", row.get("text", ""), re.S)
+                    if not m:
+                        continue
+                    lab = {0: 0, 1: 1}.get(row.get("label"))
+                    if lab is None:
+                        continue
+                    clean = {"premise": m.group(1).strip(), "hypothesis": m.group(2).strip(),
+                             "label": lab, "source": "ragtruth_train"}
+                if _pair_key(clean["premise"], clean["hypothesis"]) in forbidden:
                     continue
-                lab = {0: 0, 1: 1}.get(row.get("label"))  # 0=hallucinated->contradiction, 1=supported->entailment
-                if lab is None:
-                    continue
-                ragtruth_rows.append({
-                    "premise": m.group(1).strip(), "hypothesis": m.group(2).strip(),
-                    "label": lab, "source": "ragtruth_train",
-                })
+                ragtruth_rows.append(clean)
         print(f"  ragtruth: {len(ragtruth_rows)}")
 
     # --- SDK parity (AGENTS.md principle 4: SDK methods need training representation) ---
