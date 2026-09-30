@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# after_chain_finalize.sh - Validated finalization (review C1/C2): fixed MMLU-Pro
-# A/B, then a morning report that HARD-FAILS on missing/empty inputs.
+# after_chain_finalize.sh - Validated finalization (review C1/C2): re-runs the two
+# stale e2b-cal artifacts (pre-fix mmlupro; import-broken ragtruth), the fixed
+# MMLU-Pro A/B, then a morning report that HARD-FAILS on missing/empty inputs.
 set -u
 cd /home/dave/workspaces/nli-cross-encoder
 LOG=results/night_calibration.log
@@ -8,6 +9,15 @@ while ! grep -q "\[night-v2\] chain complete" "$LOG" 2>/dev/null; do sleep 300; 
 echo "[finalize] running $(date)" >> "$LOG"
 
 uv run python scripts/audit_ragtruth_leakage.py >> "$LOG" 2>&1 || echo "[finalize] ABORT: RAGTruth leakage!" >> "$LOG"
+
+# Re-runs for artifacts invalidated by review fixes (e2b-cal mmlupro ran at 09:13
+# with the always-option-A script; e2b-cal ragtruth hit the sys.path bug).
+uv run python scripts/eval_ragtruth.py --model-path ckpt/gevva-e2b-cal/best \
+  --served-framing --out results/cal_e2b_ragtruth_served.json > results/cal_e2b_ragtruth_served.log 2>&1 \
+  || echo "[finalize] ABORT: e2b-cal ragtruth re-run failed" >> "$LOG"
+uv run python scripts/eval_mmlupro_sample.py --model-path ckpt/gevva-e2b-cal/best \
+  --out results/cal_e2b_mmlupro.json > results/cal_e2b_mmlupro.log 2>&1 \
+  || echo "[finalize] WARN e2b-cal mmlupro re-run" >> "$LOG"
 
 uv run python scripts/eval_mmlupro_sample.py --model-path ckpt/gevva-e2b-phase5/best \
   --out results/phase5_mmlupro.json > results/phase5_mmlupro.log 2>&1 || echo "[finalize] WARN phase5 mmlupro" >> "$LOG"
@@ -60,6 +70,7 @@ a = json.loads(Path("results/phase5_mmlupro.json").read_text())
 b = json.loads(Path("results/xopt_mmlupro.json").read_text())
 print(f"- phase5 (cross-option 0.0): {a['accuracy']:.4f}")
 print(f"- xopt    (cross-option 0.5): {b['accuracy']:.4f}")
+print(f"- e2b-cal (xopt + cal recipe): see table above")
 PYEOF
 RC=$?
 if [ $RC -ne 0 ]; then

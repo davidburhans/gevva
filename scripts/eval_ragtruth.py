@@ -14,7 +14,13 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
 from pathlib import Path
+
+# Bootstrap repo root: the chain invokes this as `python scripts/eval_ragtruth.py`,
+# which puts scripts/ (not the repo root) on sys.path - `research.adapters` then
+# fails (2026-09-30 e2b-cal battery WARN).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 
@@ -76,6 +82,8 @@ def main() -> None:
     from research.adapters.gevva_decision_index_engine import _format_state
 
     items = load_items()
+    if len(items) < 100:
+        raise SystemExit(f"ABORT: loaded only {len(items)} RAGTruth items - suite shard moved?")
     enc = Gemma4CrossEncoder(args.model_path, device=args.device)
 
     if args.served_framing:
