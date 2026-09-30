@@ -1285,7 +1285,7 @@ def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Di
 # -----------------------------------------------------------------------------
 # Validation Committee Stage Orchestration
 # -----------------------------------------------------------------------------
-DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,qwen-3.8-125b-q3,qwen-3.8-125b-q4,deepseek-v4-flash-q3"
+DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,gpt-oss-120b,qwen-3.8-125b-q4,deepseek-v4-flash-q3"
 CHECKPOINT_FILENAME = "sdk_synthetic_raw.jsonl"
 VALIDATION_CHECKPOINT_FILENAME = "sdk_synthetic_validation_checkpoint.jsonl"
 
@@ -1564,7 +1564,7 @@ if __name__ == "__main__":
     parser.add_argument("--teacher-url", default=None, help="Optional OpenAI-compatible URL for teacher model (e.g. http://localhost:8080/v1)")
     parser.add_argument("--teacher-model", default="gemma-4-31b-q4", help="Teacher model alias (e.g. gemma-4-31b-q4, gemma-4-12b-q4)")
     parser.add_argument("--validator-url", default=None, help="Optional OpenAI-compatible URL for validator model (e.g. http://localhost:8080/v1)")
-    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,qwen-3.8-125b-q3,qwen-3.8-125b-q4,deepseek-v4-flash-q3)")
+    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,gpt-oss-120b,qwen-3.8-125b-q4,deepseek-v4-flash-q3)")
     parser.add_argument("--metrics-db", default=None, help="SQLite path for judge metrics (default: <out-dir>/validation_metrics.db)")
     parser.add_argument("--batch-size", type=int, default=5, help="Samples per validator batch call")
     parser.add_argument("--validator-timeout", type=int, default=600, help="Per-call timeout (s) for validator batches (reasoning models may exceed 180)")

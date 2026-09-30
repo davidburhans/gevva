@@ -104,12 +104,24 @@ class AggregateResult:
 #   Thinking-off: 10.6s/batch, 100% parse.
 # - deepseek-v4-flash-q3: thinking-OFF breaks batch completeness (returns 1 of 5
 #   items); its default mode delivers full batches at ~82s. Leave at vendor default.
+# - gpt-oss-120b (2026-09-29, replaces the duplicated qwen-3.8-125b-q3 judge to break
+#   the correlated Qwen bloc): reasoning channel is harmony-format; cap it at low
+#   effort so it does not crowd the GBNF-constrained JSON budget.
 # - unknown models default to vendor behaviour; the watchdog alerts on failure rates.
 THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4"}
+MODEL_TEMPLATE_KWARGS = {
+    "qwen-3.6-27b-q4": {"enable_thinking": False},
+    "qwen-3.8-125b-q3": {"enable_thinking": False},
+    "qwen-3.8-125b-q4": {"enable_thinking": False},
+    "gpt-oss-120b": {"reasoning_effort": "low"},
+}
 
 
 def _chat_template_kwargs(client: Any) -> Optional[Dict[str, Any]]:
     model = str(getattr(client, "model", ""))
+    for tag, kwargs in MODEL_TEMPLATE_KWARGS.items():
+        if tag in model:
+            return dict(kwargs)
     if any(tag in model for tag in THINKING_DISABLED_MODELS):
         return {"enable_thinking": False}
     return None
@@ -257,6 +269,7 @@ PARALLEL_JUDGES = {
     "qwen-3.8-125b-q3": 2,
     "qwen-3.8-125b-q4": 2,
     "qwen-3.6-27b-q4": 2,
+    "gpt-oss-120b": 2,
 }
 
 

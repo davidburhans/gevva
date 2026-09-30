@@ -41,7 +41,7 @@ def export_consensus(
     seed: int = 42,
 ) -> dict:
     if judges is None:
-        judges = ["qwen-3.6-27b-q4", "qwen-3.8-125b-q3"]
+        judges = ["qwen-3.6-27b-q4", "gpt-oss-120b"]
 
     print("=" * 65)
     print("Exporting Consensus Synthetic Split (Strict Multi-Judge)")

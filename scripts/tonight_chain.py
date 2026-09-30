@@ -146,7 +146,7 @@ def unload_gpu_models() -> None:
 
 
 def resume_cmd() -> list:
-    validators = ["qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4", "deepseek-v4-flash-q3"]
+    validators = ["qwen-3.6-27b-q4", "gpt-oss-120b", "qwen-3.8-125b-q4", "deepseek-v4-flash-q3"]
     return [sys.executable, "-u", "generate_sdk_synthetic_data.py",
             "--teacher-url", "http://localhost:8080/v1", "--teacher-model", "gemma-4-31b-q4",
             "--validator-url", "http://localhost:8080/v1", "--validators", ",".join(validators),
