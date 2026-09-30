@@ -15,6 +15,8 @@ import argparse
 import gzip
 import json
 import random
+
+import numpy as np
 from collections import defaultdict
 from pathlib import Path
 
@@ -69,8 +71,10 @@ def main() -> None:
     for item in sample:
         keys = [k for k, _ in item["options"]]
         texts = [t for _, t in item["options"]]
-        best_idx = enc.predict_candidates(item["premise"], texts)
-        pred_key = keys[int(best_idx)]
+        best = enc.predict_candidates(item["premise"], texts)
+        # predict_candidates returns an int-like index OR a 1-element array depending on path
+        best_idx = int(np.asarray(best).reshape(-1)[0])
+        pred_key = keys[best_idx]
         ok = pred_key == item["gold_key"]
         correct += int(ok)
         k = len(keys)
