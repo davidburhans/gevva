@@ -2,7 +2,8 @@
 # after_di_e4b_jevbench_cells.sh - Post-Decision-Index GPU queue (user order, 2026-09-29):
 #   1. e4b flagship @ T=1.0   (raw-vs-raw comparison with r3; user priority)
 #   2. e4b r3 @ T=1.6         (calibrated cell)
-#   3. RAGTruth verdicts (fixed parser: added-rows.jsonl.gz + bool labels)
+#   3. e2b champion @ T=1.0 (raw-vs-raw e2b comparison cell)
+#   4. RAGTruth verdicts (fixed parser: added-rows.jsonl.gz + bool labels)
 #      for e2b-1.1 and e4b-r3
 set -u
 cd /home/dave/workspaces/nli-cross-encoder
@@ -25,6 +26,12 @@ uv run python scripts/eval_jevbench_public.py \
   --out results/jevbench_e4b_r3_t16.json \
   > results/jevbench_e4b_r3_t16.log 2>&1 || echo "[pipeline] WARN r3 t1.6 failed" >> "$LOG"
 echo "[pipeline] r3@1.6 done $(date)" >> "$LOG"
+
+uv run python scripts/eval_jevbench_public.py \
+  --model-path ckpt/gevva-e2b --temperature 1.0 \
+  --out results/jevbench_e2b_champion_t10.json \
+  > results/jevbench_e2b_champion_t10.log 2>&1 || echo "[pipeline] WARN e2b champion t1.0 failed" >> "$LOG"
+echo "[pipeline] e2b champion@1.0 done $(date)" >> "$LOG"
 
 uv run python scripts/eval_ragtruth.py --model-path ckpt/gevva-e2b-phase5/best \
   --out results/phase5_e2b_ragtruth.json > results/phase5_e2b_ragtruth.log 2>&1 || echo "[pipeline] WARN e2b ragtruth failed" >> "$LOG"
