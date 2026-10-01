@@ -93,8 +93,12 @@ def test_failed_verdict_still_counts_as_ran() -> None:
         batch_size=5, client_factory=factory, early_exit=True)
     assert "judge-b" in committee[0]  # present with non-OK status
     result = aggregate_committee_votes(samples, committee, JUDGES)
-    # a failed judge is a failure, not a skip: unanimous-with-failure review expected
-    assert result.stats.get("unanimous_with_judge_failure", 0) == 2, result.stats
+    # a failed judge is a failure, not a skip: unanimous-with-failure review expected.
+    # (Without absent==skipped, settled samples would have been miscounted too.)
+    assert result.stats.get("partial_committee_failure", 0) == 2, result.stats
+    reasons = {r.get("validation_reason") for r in result.validated}
+    assert reasons == {"unanimous_with_judge_failures"}, reasons
+    assert len(result.review_rows) == 2, result.review_rows
     print("PASS  test_failed_verdict_still_counts_as_ran")
 
 
