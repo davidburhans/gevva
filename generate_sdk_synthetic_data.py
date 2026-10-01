@@ -1336,9 +1336,16 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
                           teacher_model: str, raw_path: str,
                           resume_run: Optional[str],
                           force: bool = False,
-                          include_sota: bool = False) -> List[Dict[str, Any]]:
+                          include_sota: bool = False,
+                          template_only: bool = False) -> List[Dict[str, Any]]:
     """Generates SDK-mode sample sets, checkpointing each stage to disk.
 
+    2026-10-01 rework: when a teacher URL is provided (and not template_only),
+    samples are TEACHER-AUTHORED per mode via teacher_authoring.author_mode_samples
+    - the template generators draw from closed pools (10k rows -> ~330 unique
+    pairs; worst mode 15 unique / 2,000) and cannot produce novel distillation
+    data. Teacher authoring enforces per-batch novelty and a >=80% uniqueness
+    gate per mode.
     On resume the raw checkpoint IS the sample set - nothing is regenerated, so
     sample ids stay stable against the persisted verdicts.
     """
@@ -1352,20 +1359,47 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
             f"or pass --resume-run to resume validation without regenerating."
         )
     open(raw_path, "w", encoding="utf-8").close()  # truncate stale checkpoint
-    generators = [
-        ("Tool Routing", generate_tool_routing_samples),
-        ("Rubric Grading", generate_rubric_grading_samples),
-        ("Search Reranking", generate_search_rerank_samples),
-        ("Cloze Decision", generate_cloze_decision_samples),
-        ("RAG Hallucination", generate_rag_hallucination_samples),
+
+    mode_sources = [
+        ("Tool Routing", "sdk_tool_routing", generate_tool_routing_samples),
+        ("Rubric Grading", "sdk_rubric_grading", generate_rubric_grading_samples),
+        ("Search Reranking", "sdk_search_reranking", generate_search_rerank_samples),
+        ("Cloze Decision", "sdk_cloze_reasoning", generate_cloze_decision_samples),
+        ("RAG Hallucination", "sdk_rag_hallucination", generate_rag_hallucination_samples),
     ]
     if include_sota:
-        generators.extend([
-            ("Counterfactual Inversion", generate_adversarial_inversion_samples),
-            ("Abstention Augmentation", generate_abstention_samples),
+        mode_sources.extend([
+            ("Counterfactual Inversion", "sdk_counterfactual_inversion", generate_adversarial_inversion_samples),
+            ("Abstention Augmentation", "sdk_abstention_augmentation", generate_abstention_samples),
         ])
+
     all_generated: List[Dict[str, Any]] = []
-    for salt, (name, gen_fn) in enumerate(generators):
+    if teacher_url and not template_only:
+        from teacher_authoring import MODE_AUTHOR_SPECS, author_mode_samples
+        print(f"\nTeacher-AUTHORED generation ({teacher_model} via {teacher_url}); "
+              f"uniqueness gates active (>=80% unique per mode)")
+        teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=300)
+        seen_keys: set = set()
+        try:
+            for salt, (name, mode, fallback_fn) in enumerate(mode_sources):
+                if mode in MODE_AUTHOR_SPECS:
+                    print(f"Authoring {name} samples (target={samples_per_mode})...")
+                    made = author_mode_samples(
+                        teacher_client, mode, samples_per_mode,
+                        seen_keys=seen_keys, rng=random.Random(seed + salt))
+                else:
+                    print(f"  {name}: no authoring spec; using templates")
+                    made = fallback_fn(samples_per_mode, seed=seed + salt)
+                all_generated.extend(made)
+                _append_jsonl(raw_path, made)
+                print(f"  {name}: {len(made)} novel samples (checkpoint total: {len(all_generated)}).")
+        finally:
+            print("  Unloading teacher model to free GPU VRAM for validators...")
+            teacher_client.unload_model()
+        return _generate_teacher_samples(teacher_url, teacher_model, all_generated, raw_path,
+                                        teacher_client=teacher_client)
+
+    for salt, (name, _mode, gen_fn) in enumerate(mode_sources):
         print(f"Generating {name} samples (target={samples_per_mode})...")
         made = gen_fn(samples_per_mode, seed=seed + salt)
         all_generated.extend(made)
@@ -1376,7 +1410,8 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
 
 def _generate_teacher_samples(teacher_url: Optional[str], teacher_model: str,
                               all_generated: List[Dict[str, Any]],
-                              raw_path: str) -> List[Dict[str, Any]]:
+                              raw_path: str,
+                              teacher_client: Optional["LLMEndpointClient"] = None) -> List[Dict[str, Any]]:
     """Teacher-synthesized domain triples (Gemma 4 31B via optimized alias).
 
     WHY: teacher output is fsynced to the raw checkpoint BEFORE the GPU model is
@@ -1386,7 +1421,8 @@ def _generate_teacher_samples(teacher_url: Optional[str], teacher_model: str,
     if not teacher_url:
         return all_generated
     print(f"\nQuerying Teacher Model (Alias: {teacher_model}) via {teacher_url} with GBNF token restriction...")
-    teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=180)
+    if teacher_client is None:
+        teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=180)
     teacher_samples = generate_teacher_domain_samples(teacher_client)
     all_generated.extend(teacher_samples)
     _append_jsonl(raw_path, teacher_samples)
@@ -1407,6 +1443,7 @@ def run_validation_committee_stage(
     resume_run: Optional[str] = None,
     validator_timeout: int = 600,
     early_exit: bool = True,
+    include_overrides: bool = False,
 ) -> List[Dict[str, Any]]:
     """Runs the cross-family judge committee over ALL samples, judge by judge.
 
@@ -1437,7 +1474,8 @@ def run_validation_committee_stage(
             validator_url, judges, samples, db, run_id,
             batch_size=batch_size, checkpoint_path=checkpoint_path,
             timeout=validator_timeout, early_exit=early_exit)
-        result = aggregate_committee_votes(samples, committee, judges)
+        result = aggregate_committee_votes(samples, committee, judges,
+                                           include_unanimous_overrides=include_overrides)
         db.record_final_labels([(run_id, *row) for row in result.final_rows])
         queue_path = os.path.join(out_dir, "sdk_synthetic_disagreements.jsonl")
         queued = write_disagreement_queue(queue_path, result.review_rows)
@@ -1486,6 +1524,8 @@ def compile_sdk_synthetic_dataset(
     include_sota: bool = False,
     early_exit: bool = True,
     allow_unvalidated: bool = False,
+    template_only: bool = False,
+    include_overrides: bool = False,
 ) -> Dict[str, int]:
     """Compiles and validates synthetic data for all SDK interaction patterns.
 
@@ -1503,7 +1543,8 @@ def compile_sdk_synthetic_dataset(
     raw_path = os.path.join(out_dir, CHECKPOINT_FILENAME)
     all_generated = _generate_all_samples(samples_per_mode, seed, teacher_url,
                                           teacher_model, raw_path, resume_id,
-                                          force=force, include_sota=include_sota)
+                                          force=force, include_sota=include_sota,
+                                          template_only=template_only)
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + gpt-oss-120b + DeepSeek V4 Flash)
@@ -1523,7 +1564,7 @@ def compile_sdk_synthetic_dataset(
         validated_samples = run_validation_committee_stage(
             all_generated, out_dir, validator_url, judges, run_spec, db_path,
             batch_size, resume_run=resume_id, validator_timeout=validator_timeout,
-            early_exit=early_exit)
+            early_exit=early_exit, include_overrides=include_overrides)
     else:
         print("\n" + "!" * 65)
         print("! WARNING: --no-validation EXPLICITLY SET - COMMITTEE VALIDATION SKIPPED.")
@@ -1602,6 +1643,12 @@ if __name__ == "__main__":
     parser.add_argument("--no-validation", dest="allow_unvalidated", action="store_true",
                         help="EXPLICIT template-only output (no committee): files are renamed "
                              "*_UNVALIDATED_* and rows stamped; never use for training data")
+    parser.add_argument("--template-only", action="store_true",
+                        help="Use closed-pool template generators instead of teacher authoring "
+                             "(offline tests only - templates cannot produce novel data)")
+    parser.add_argument("--include-overrides", action="store_true",
+                        help="Train on unanimous committee overrides (label_source=committee_override); "
+                             "default routes overrides to the review queue")
     args = parser.parse_args()
 
     compile_sdk_synthetic_dataset(
@@ -1620,4 +1667,6 @@ if __name__ == "__main__":
         include_sota=args.include_sota,
         early_exit=args.early_exit,
         allow_unvalidated=args.allow_unvalidated,
+        template_only=args.template_only,
+        include_overrides=args.include_overrides,
     )

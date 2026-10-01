@@ -468,9 +468,17 @@ def aggregate_committee_votes(
     samples: List[Dict[str, Any]],
     committee: List[Dict[str, JudgeVerdict]],
     validator_models: List[str],
+    include_unanimous_overrides: bool = False,
 ) -> AggregateResult:
     """Aggregates raw judge verdicts into final labels, soft distributions and a
     disagreement review queue.
+
+    include_unanimous_overrides=True (2026-10-01, operator-approved): unanimous
+    committee overrides of the generator label become TRAINING rows (label_source=
+    committee_override) instead of review-only controls. Rationale: two
+    cross-family judges agreeing against the generator is a strong label; the
+    committee is the authority this pipeline exists to distill. Default False
+    preserves legacy behavior for existing callers/tests.
 
     Policy (in priority order):
     - no successful verdicts            -> keep generator label, review (high)
@@ -496,6 +504,15 @@ def aggregate_committee_votes(
         # "unanimous" truthful per sample.
         expected = [j for j in validator_models if j in votes] or list(validator_models)
         decision = _resolve_sample(sample["label"], votes, expected)
+        if include_unanimous_overrides and decision.disagreement_type == "unanimous_label_override":
+            # 2026-10-01 policy amendment: unanimous cross-family override of the
+            # generator label is authoritative - train on it (label_source stamped)
+            # instead of routing to the review queue. Degraded quorum (any judge
+            # failed) still reviews: severity medium stays out of training.
+            if decision.severity == "low":
+                decision = CommitteeDecision(
+                    decision.final_label, decision.confidence, decision.soft_labels,
+                    decision.reason, decision.disagreement_type, False, "none")
         enriched = _apply_decision(sample, votes, decision)
         validated.append(enriched)
         stats[decision.disagreement_type or "unanimous_consensus"] += 1
@@ -590,6 +607,8 @@ def _apply_decision(sample: Dict[str, Any], votes: Dict[str, JudgeVerdict],
     sample["validation_reason"] = decision.reason
     sample["needs_review"] = decision.needs_review
     sample["disagreement_type"] = decision.disagreement_type
+    if decision.disagreement_type == "unanimous_label_override" and not decision.needs_review:
+        sample["label_source"] = "committee_override"
     sample["committee_rationales"] = {j: v.rationale for j, v in votes.items()}
     return sample
 

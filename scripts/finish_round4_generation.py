@@ -38,6 +38,8 @@ ROUND4 = REPO_ROOT / "data" / "round4"
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--include-overrides", action="store_true",
+                        help="Unanimous overrides become training rows (policy amendment 2026-10-01)")
     args = parser.parse_args()
 
     samples = [json.loads(line) for line in open(ROUND4 / "sdk_synthetic_raw.jsonl")]
@@ -54,7 +56,8 @@ def main() -> None:
                                         status=v.get("status", "ok"), latency_ms=0.0)
         committee.append(votes)
 
-    result = aggregate_committee_votes(samples, committee, JUDGES)
+    result = aggregate_committee_votes(samples, committee, JUDGES,
+                                       include_unanimous_overrides=args.include_overrides)
     stats = Counter(r.get("disagreement_type") or "unanimous_consensus" for r in result.validated)
     if stats.get("unanimous_consensus", 0) < 4000:
         raise SystemExit(f"ABORT: only {stats.get('unanimous_consensus', 0)} clean rows (<4000): {dict(stats)}")
@@ -77,7 +80,8 @@ def main() -> None:
 
     print(json.dumps({
         "raw": len(samples), "clean": len(clean), "train": len(train), "val": len(val),
-        "review_queued": queued, "stats": dict(stats),
+        "review_queued": queued, "stats": dict(stats), "include_overrides": args.include_overrides,
+        "label_source_counts": dict(Counter(r.get("label_source", "generator") for r in clean)),
         "note": "deepseek arbiter stopped at 380/3578 (adds no training rows; "
                 "contested rows are review-flagged by policy either way)",
     }, indent=2))
