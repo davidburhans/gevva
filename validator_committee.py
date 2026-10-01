@@ -239,6 +239,7 @@ def run_validator_committee(
     timeout: int = 600,
     checkpoint_path: Optional[str] = None,
     client_factory: Optional[Callable[[str], Any]] = None,
+    early_exit: bool = False,
 ) -> List[Dict[str, JudgeVerdict]]:
     """Runs every judge over ALL samples before switching models (resume-aware).
 
@@ -248,6 +249,13 @@ def run_validator_committee(
     persisted samples are skipped WITHOUT loading the model, partially-persisted judges
     only re-run incomplete batches, and the checkpoint JSONL is rewritten after each
     judge completes.
+
+    early_exit=True (2026-09-30, operator directive: "don't run all validators if
+    early ones agree"): once >= 2 judges have delivered agreeing OK verdicts for a
+    sample, later judges skip it. Judge ORDER therefore matters - put cheap,
+    cross-family judges first; the expensive judge only arbitrates disagreements.
+    A sample settled by k<all judges keeps expected_judges=k in aggregation, so
+    "unanimous" means unanimous-among-the-judges-that-ran.
 
     Returns a list aligned with `samples`: committee[i][judge] = JudgeVerdict.
     `client_factory` is an injection point for tests (fake LLM clients).
@@ -259,9 +267,38 @@ def run_validator_committee(
     ctx = CommitteeContext(samples=samples, committee=[dict() for _ in samples],
                            db=db, run_id=run_id, batch_size=batch_size,
                            checkpoint_path=checkpoint_path)
+    settled: set = set()  # sample indices with >= 2 agreeing OK verdicts
     for judge_idx, judge_model in enumerate(validator_models, 1):
-        _run_single_judge(factory, judge_model, judge_idx, len(validator_models), ctx)
+        if early_exit:
+            subset = [i for i in range(len(samples)) if i not in settled]
+            if not subset:
+                print(f"\n[early-exit] all {len(samples)} samples settled by earlier judges; "
+                      f"skipping {judge_model} entirely", flush=True)
+                break
+            skipped = len(samples) - len(subset)
+            if skipped:
+                print(f"\n[early-exit] {judge_model} arbitrates {len(subset)} unsettled samples "
+                      f"({skipped} already settled by agreement)", flush=True)
+        else:
+            subset = None
+        _run_single_judge(factory, judge_model, judge_idx, len(validator_models), ctx, subset_idx=subset)
+        if early_exit:
+            _mark_settled(ctx, judge_idx, validator_models, settled)
     return ctx.committee
+
+
+def _mark_settled(ctx: "CommitteeContext", judge_idx: int,
+                  validator_models: List[str], settled: set) -> None:
+    """Marks samples where all judges run so far (>= 2) returned the same OK label."""
+    ran = validator_models[:judge_idx]
+    if len(ran) < 2:
+        return
+    for i, votes in enumerate(ctx.committee):
+        if i in settled:
+            continue
+        ok_labels = [votes[j].label for j in ran if j in votes and votes[j].ok]
+        if len(ok_labels) >= 2 and len(set(ok_labels)) == 1:
+            settled.add(i)
 
 
 # Models in llama-server configured with --parallel >= 2
@@ -274,7 +311,17 @@ PARALLEL_JUDGES = {
 
 
 def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
-                      judge_idx: int, num_judges: int, ctx: CommitteeContext) -> None:
+                      judge_idx: int, num_judges: int, ctx: CommitteeContext,
+                      subset_idx: Optional[List[int]] = None) -> None:
+    """Runs one judge over ALL samples (subset_idx=None) or only the given positions.
+
+    The early-exit cascade passes subset_idx for later judges; batches, DB keys and
+    checkpoint lines stay sample-id scoped, so resume semantics are unchanged for the
+    samples that run. Skipped samples simply carry no verdict from this judge and
+    aggregation counts only the judges that ran for them.
+    """
+    positions = list(subset_idx) if subset_idx is not None else list(range(len(ctx.samples)))
+    view = [ctx.samples[i] for i in positions]
     if ctx.db is not None:
         # WHY: hygiene at judge start - failed rows (offline/parse) from a previous
         # run must be regenerated, never baked into the done-set (audit MEDIUM).
@@ -282,50 +329,54 @@ def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
         if purged:
             log_line = f"  [{judge_model}] purged {purged} stale failed verdicts at resume (run={ctx.run_id})"
             print(log_line, flush=True)
-    done = (ctx.db.persisted_verdicts(ctx.run_id, judge_model, [s["id"] for s in ctx.samples])
+    done = (ctx.db.persisted_verdicts(ctx.run_id, judge_model, [s["id"] for s in view])
             if ctx.db else {})
-    pending = [i for i, s in enumerate(ctx.samples) if s["id"] not in done]
+    pending = [i for i, s in enumerate(view) if s["id"] not in done]
     if done:
         n_failed = sum(1 for r in done.values() if r["status"] != STATUS_OK)
         if n_failed:
             print(f"  WARNING: {n_failed}/{len(done)} persisted verdicts for {judge_model} are "
                   f"FAILURES (offline/parse_error) - purge rows or they count as done on resume")
     print(f"\n[Judge {judge_idx}/{num_judges}] {judge_model}: "
-          f"{len(ctx.samples) - len(pending)}/{len(ctx.samples)} verdicts persisted, "
+          f"{len(view) - len(pending)}/{len(view)} verdicts persisted, "
           f"{len(pending)} remaining - all batches run before switching models (no thrashing)")
     if not pending:
-        _restore_persisted_verdicts(done, judge_model, ctx)
+        for i, sample in enumerate(view):
+            if sample["id"] in done:
+                ctx.committee[positions[i]][judge_model] = _verdict_from_row(done[sample["id"]])
         _write_checkpoint(ctx)
         return
     # WHY: the client is constructed lazily so a fully-persisted judge never even loads.
     client = factory(judge_model)
-    total_batches = (len(ctx.samples) + ctx.batch_size - 1) // ctx.batch_size
+    total_batches = (len(view) + ctx.batch_size - 1) // ctx.batch_size
     concurrency = PARALLEL_JUDGES.get(judge_model, 1)
 
-    batch_indices = list(range(0, len(ctx.samples), ctx.batch_size))
+    batch_indices = list(range(0, len(view), ctx.batch_size))
     # Restore any fully persisted batches first (fast in-memory)
     for b_idx in batch_indices:
-        chunk = ctx.samples[b_idx:b_idx + ctx.batch_size]
+        chunk = view[b_idx:b_idx + ctx.batch_size]
         if all(s["id"] in done for s in chunk):
             for offset, sample in enumerate(chunk):
-                ctx.committee[b_idx + offset][judge_model] = _verdict_from_row(done[sample["id"]])
+                ctx.committee[positions[b_idx + offset]][judge_model] = _verdict_from_row(done[sample["id"]])
 
     pending_batches = [
         b_idx for b_idx in batch_indices
-        if not all(s["id"] in done for s in ctx.samples[b_idx:b_idx + ctx.batch_size])
+        if not all(s["id"] in done for s in view[b_idx:b_idx + ctx.batch_size])
     ]
 
     if concurrency > 1 and len(pending_batches) > 1:
         import concurrent.futures
 
         def _worker(b_idx: int) -> None:
-            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
+            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx,
+                                       view=view, positions=positions)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
             list(executor.map(_worker, pending_batches))
     else:
         for b_idx in pending_batches:
-            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx)
+            _validate_batch_or_restore(client, judge_model, b_idx, total_batches, done, ctx,
+                                       view=view, positions=positions)
 
     print(f"  Unloading {judge_model} after its final batch to free 100% VRAM for the next judge...")
     client.unload_model()
@@ -333,12 +384,22 @@ def _run_single_judge(factory: Callable[[str], Any], judge_model: str,
 
 
 def _validate_batch_or_restore(client: Any, judge_model: str, b_idx: int, total_batches: int,
-                               done: Dict[str, Any], ctx: CommitteeContext) -> None:
-    """Validates one batch via LLM, or restores it from the DB when already persisted."""
-    chunk = ctx.samples[b_idx:b_idx + ctx.batch_size]
+                               done: Dict[str, Any], ctx: CommitteeContext,
+                               view: Optional[List[Dict[str, Any]]] = None,
+                               positions: Optional[List[int]] = None) -> None:
+    """Validates one batch via LLM, or restores it from the DB when already persisted.
+
+    view/positions support the early-exit cascade: the batch slices the judge's view
+    and writes verdicts back at the mapped committee positions (identity when None).
+    """
+    if view is None:
+        view = ctx.samples
+        positions = list(range(len(ctx.samples)))
+    chunk = view[b_idx:b_idx + ctx.batch_size]
+    chunk_pos = positions[b_idx:b_idx + ctx.batch_size]
     if all(s["id"] in done for s in chunk):
-        for offset, sample in enumerate(chunk):
-            ctx.committee[b_idx + offset][judge_model] = _verdict_from_row(done[sample["id"]])
+        for pos, sample in zip(chunk_pos, chunk):
+            ctx.committee[pos][judge_model] = _verdict_from_row(done[sample["id"]])
         return
     verdicts = validate_batch_consensus(client, chunk)
     # WHY: one bounded retry for transport-level timeouts - a llama-swap blip would
@@ -354,8 +415,8 @@ def _validate_batch_or_restore(client: Any, judge_model: str, b_idx: int, total_
         ctx.db.record_batch(ctx.run_id, judge_model, b_idx // ctx.batch_size, len(chunk),
                             all(v.ok for v in verdicts), latency)
         ctx.db.record_verdicts(_verdict_rows(ctx.run_id, judge_model, chunk, verdicts, latency))
-    for offset, (sample, verdict) in enumerate(zip(chunk, verdicts)):
-        ctx.committee[b_idx + offset][judge_model] = verdict
+    for pos, verdict in zip(chunk_pos, verdicts):
+        ctx.committee[pos][judge_model] = verdict
 
 
 def _restore_persisted_verdicts(done: Dict[str, Any], judge_model: str,
@@ -428,7 +489,13 @@ def aggregate_committee_votes(
     stats: Counter = Counter()
 
     for sample, votes in zip(samples, committee):
-        decision = _resolve_sample(sample["label"], votes, validator_models)
+        # Early-exit cascade (2026-09-30): a judge absent from `votes` was
+        # intentionally skipped after earlier judges agreed - it is NOT a failure.
+        # Judges that ran and errored are present with non-OK status, so absence
+        # unambiguously means skipped. Expected judges shrink accordingly, keeping
+        # "unanimous" truthful per sample.
+        expected = [j for j in validator_models if j in votes] or list(validator_models)
+        decision = _resolve_sample(sample["label"], votes, expected)
         enriched = _apply_decision(sample, votes, decision)
         validated.append(enriched)
         stats[decision.disagreement_type or "unanimous_consensus"] += 1

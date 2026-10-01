@@ -1285,7 +1285,7 @@ def generate_abstention_samples(n_target: int = 1500, seed: int = 42) -> List[Di
 # -----------------------------------------------------------------------------
 # Validation Committee Stage Orchestration
 # -----------------------------------------------------------------------------
-DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,gpt-oss-120b,qwen-3.8-125b-q4,deepseek-v4-flash-q3"
+DEFAULT_VALIDATORS = "qwen-3.6-27b-q4,gpt-oss-120b,deepseek-v4-flash-q3"
 CHECKPOINT_FILENAME = "sdk_synthetic_raw.jsonl"
 VALIDATION_CHECKPOINT_FILENAME = "sdk_synthetic_validation_checkpoint.jsonl"
 
@@ -1435,7 +1435,7 @@ def run_validation_committee_stage(
         committee = run_validator_committee(
             validator_url, judges, samples, db, run_id,
             batch_size=batch_size, checkpoint_path=checkpoint_path,
-            timeout=validator_timeout)
+            timeout=validator_timeout, early_exit=early_exit)
         result = aggregate_committee_votes(samples, committee, judges)
         db.record_final_labels([(run_id, *row) for row in result.final_rows])
         queue_path = os.path.join(out_dir, "sdk_synthetic_disagreements.jsonl")
@@ -1483,6 +1483,7 @@ def compile_sdk_synthetic_dataset(
     validator_timeout: int = 600,
     force: bool = False,
     include_sota: bool = False,
+    early_exit: bool = True,
 ) -> Dict[str, int]:
     """Compiles and validates synthetic data for all SDK interaction patterns.
 
@@ -1575,6 +1576,8 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true", help="Force overwrite of existing raw checkpoint")
     parser.add_argument("--include-sota", action="store_true", help="Include SOTA counterfactual inversion and abstention augmentation modes")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--no-early-exit", dest="early_exit", action="store_false",
+                        help="Run every judge on every sample (legacy full-panel mode)")
     args = parser.parse_args()
 
     compile_sdk_synthetic_dataset(
@@ -1591,4 +1594,5 @@ if __name__ == "__main__":
         validator_timeout=args.validator_timeout,
         force=args.force,
         include_sota=args.include_sota,
+        early_exit=args.early_exit,
     )
