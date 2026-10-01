@@ -1406,6 +1406,7 @@ def run_validation_committee_stage(
     batch_size: int = 5,
     resume_run: Optional[str] = None,
     validator_timeout: int = 600,
+    early_exit: bool = True,
 ) -> List[Dict[str, Any]]:
     """Runs the cross-family judge committee over ALL samples, judge by judge.
 
