@@ -69,6 +69,9 @@ def main():
         "e2b-phase5": "ckpt/gevva-e2b-phase5/best",
         "e4b-phase5": "ckpt/gevva-e4b-phase5/best",
         "e4b-phase5-r3": "ckpt/gevva-e4b-phase5-r3/best",
+        "e2b-xopt": "ckpt/gevva-e2b-phase5-xopt/best",
+        "e2b-cal2": "ckpt/gevva-e2b-cal2/best",
+        "e4b-cal2": "ckpt/gevva-e4b-cal2/best",
     }
 
     for m in args.models:

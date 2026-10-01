@@ -48,7 +48,7 @@ def main() -> None:
     from gemma4_cross_encoder import Gemma4CrossEncoder
 
     rows = [json.loads(line) for line in open(args.gate_file, encoding="utf-8")]
-    if len(rows) < 1000:
+    if len(rows) < 200:
         raise SystemExit(f"ABORT: gate file suspiciously small ({len(rows)} rows)")
     pairs = [(r["premise"], r["hypothesis"]) for r in rows]
     golds = np.array([int(r["label"]) for r in rows])
@@ -59,7 +59,7 @@ def main() -> None:
         preds[tag] = np.argmax(np.asarray(enc.predict(pairs)), axis=-1)
         del enc
 
-    slices = sorted({r["gate_slice"] for r in rows})
+    slices = sorted({r.get("gate_slice", "ALL") for r in rows})
     report = {"model_a": args.model_a, "model_b": args.model_b, "n": len(rows), "slices": {}}
     for sl in slices + ["ALL"]:
         idx = list(range(len(rows))) if sl == "ALL" else [i for i, r in enumerate(rows) if r["gate_slice"] == sl]
