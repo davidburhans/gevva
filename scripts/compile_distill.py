@@ -50,6 +50,14 @@ def main() -> None:
     clean = [r for r in raw if not r.get("needs_review")]
     if len(clean) < 4000:
         raise SystemExit(f"ABORT: distill slice too small after review filter: {len(clean)} clean of {len(raw)}")
+    # Provenance assertion (2026-09-30 incident: committee silently skipped when
+    # --validator-url was unset; template-only rows passed every count assertion).
+    # Committee-validated rows carry per-judge rationales - require them on >=95%.
+    with_rationales = sum(1 for r in clean if r.get("committee_rationales"))
+    if with_rationales < 0.95 * len(clean):
+        raise SystemExit(
+            f"ABORT: distill slice lacks committee provenance: only {with_rationales}/{len(clean)} "
+            f"rows carry committee_rationales (unvalidated teacher-less output?)")
 
     forbidden = load_keys(REPO_ROOT / "data" / "exp01_gate_eval.jsonl") | load_keys(Path(args.old_sdk))
     base_rows = [json.loads(line) for line in open(args.base)]

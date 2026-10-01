@@ -21,13 +21,20 @@ wait_gpu_free() {
 
 # 1. Committee generation (teacher gemma-4-31b-q4 + cascade panel via llama-swap 8080).
 #    Resumable: --resume-run auto reuses the DB + checkpoint on restart.
+#    2026-09-30 fix: --teacher-url/--validator-url are REQUIRED - without them the
+#    generator silently emits template-only, committee-less rows (caught post-mortem;
+#    the generator now warns loudly and compile_distill asserts provenance).
 log "generation start (cascade panel: qwen-3.6-27b-q4, gpt-oss-120b, deepseek-v4-flash-q3)"
 uv run python generate_sdk_synthetic_data.py \
   --out-dir data/round4 --samples-per-mode 2000 --resume-run auto \
+  --teacher-url http://localhost:8080/v1 --teacher-model gemma-4-31b-q4 \
+  --validator-url http://localhost:8080/v1 \
   > "results/round4_generation_${TS}.log" 2>&1
 RC=$?
-if [ $RC -ne 0 ] || [ ! -f data/round4/sdk_synthetic_train.jsonl ]; then
-  log "ABORTED: generation failed rc=$RC (see results/round4_generation_${TS}.log; resumable)"
+GEN_LOG="results/round4_generation_${TS}.log"
+if [ $RC -ne 0 ] || [ ! -f data/round4/sdk_synthetic_train.jsonl ] \
+   || ! grep -q "Judge 1/3" "$GEN_LOG" || grep -q "COMMITTEE VALIDATION SKIPPED" "$GEN_LOG"; then
+  log "ABORTED: generation failed or committee never ran rc=$RC (see $GEN_LOG; resumable)"
   exit 1
 fi
 log "generation done: $(wc -l < data/round4/sdk_synthetic_train.jsonl) train rows"

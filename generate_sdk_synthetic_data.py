@@ -1504,7 +1504,7 @@ def compile_sdk_synthetic_dataset(
                                           force=force, include_sota=include_sota)
 
     # Optional: Cross-Family Multi-Validator Committee
-    # (Qwen 3.6 27B + DeepSeek V4 Flash + Qwen 3.8 125B q4 + Qwen 3.8 125B q3)
+    # (Qwen 3.6 27B + gpt-oss-120b + DeepSeek V4 Flash)
     if validator_url:
         run_spec = RunSpec(teacher_model=teacher_model, validator_models=judges,
                            samples_per_mode=samples_per_mode, seed=seed)
@@ -1512,6 +1512,14 @@ def compile_sdk_synthetic_dataset(
             all_generated, out_dir, validator_url, judges, run_spec, db_path,
             batch_size, resume_run=resume_id, validator_timeout=validator_timeout)
     else:
+        # 2026-09-30: this path silently produced unvalidated teacher-less data that
+        # fed a training run (caught by kill + purge). Silent downgrades are banned:
+        # announce the skip loudly so logs/night chains can grep for it and fail.
+        print("\n" + "!" * 65)
+        print("! WARNING: --validator-url NOT SET - COMMITTEE VALIDATION SKIPPED.")
+        print("! Output rows carry generator labels only: NOT committee-consensus data.")
+        print("! Pass --validator-url http://localhost:8080/v1 for validated output.")
+        print("!" * 65 + "\n", flush=True)
         validated_samples = all_generated
 
     # Filter out samples flagged for review (disagreements/ties/overrides).
