@@ -1485,6 +1485,7 @@ def compile_sdk_synthetic_dataset(
     force: bool = False,
     include_sota: bool = False,
     early_exit: bool = True,
+    allow_unvalidated: bool = False,
 ) -> Dict[str, int]:
     """Compiles and validates synthetic data for all SDK interaction patterns.
 
@@ -1506,21 +1507,31 @@ def compile_sdk_synthetic_dataset(
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + gpt-oss-120b + DeepSeek V4 Flash)
-    if validator_url:
+    # 2026-09-30 (post-incident): validation is the DEFAULT and the definition of
+    # this dataset - not an optional enhancement. Skipping requires an explicit
+    # --no-validation, which renames outputs to *_UNVALIDATED_*.jsonl and stamps
+    # every row, so unvalidated data can never masquerade as committee-consensus
+    # output downstream (compile_distill rejects rows without committee_rationales).
+    if validator_url or not allow_unvalidated:
+        if not validator_url:
+            raise SystemExit(
+                "ABORT: no --validator-url given. Committee validation is the default for this "
+                "dataset; pass --validator-url http://localhost:8080/v1 (or pass --no-validation "
+                "EXPLICITLY for template-only output, written to *_UNVALIDATED_* files)")
         run_spec = RunSpec(teacher_model=teacher_model, validator_models=judges,
                            samples_per_mode=samples_per_mode, seed=seed)
         validated_samples = run_validation_committee_stage(
             all_generated, out_dir, validator_url, judges, run_spec, db_path,
-            batch_size, resume_run=resume_id, validator_timeout=validator_timeout)
+            batch_size, resume_run=resume_id, validator_timeout=validator_timeout,
+            early_exit=early_exit)
     else:
-        # 2026-09-30: this path silently produced unvalidated teacher-less data that
-        # fed a training run (caught by kill + purge). Silent downgrades are banned:
-        # announce the skip loudly so logs/night chains can grep for it and fail.
         print("\n" + "!" * 65)
-        print("! WARNING: --validator-url NOT SET - COMMITTEE VALIDATION SKIPPED.")
+        print("! WARNING: --no-validation EXPLICITLY SET - COMMITTEE VALIDATION SKIPPED.")
         print("! Output rows carry generator labels only: NOT committee-consensus data.")
-        print("! Pass --validator-url http://localhost:8080/v1 for validated output.")
+        print("! Files are renamed *_UNVALIDATED_* and rows stamped accordingly.")
         print("!" * 65 + "\n", flush=True)
+        for s in all_generated:
+            s["provenance"] = "unvalidated_template_synthesis"
         validated_samples = all_generated
 
     # Filter out samples flagged for review (disagreements/ties/overrides).
@@ -1544,8 +1555,9 @@ def compile_sdk_synthetic_dataset(
     train_data = clean_samples[val_count:]
     val_data = clean_samples[:val_count]
 
-    out_train_path = os.path.join(out_dir, "sdk_synthetic_train.jsonl")
-    out_val_path = os.path.join(out_dir, "sdk_synthetic_val.jsonl")
+    suffix = "UNVALIDATED_" if (allow_unvalidated and not validator_url) else ""
+    out_train_path = os.path.join(out_dir, f"sdk_synthetic_{suffix}train.jsonl")
+    out_val_path = os.path.join(out_dir, f"sdk_synthetic_{suffix}val.jsonl")
 
     _write_jsonl(out_train_path, train_data)
     _write_jsonl(out_val_path, val_data)
@@ -1587,6 +1599,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--no-early-exit", dest="early_exit", action="store_false",
                         help="Run every judge on every sample (legacy full-panel mode)")
+    parser.add_argument("--no-validation", dest="allow_unvalidated", action="store_true",
+                        help="EXPLICIT template-only output (no committee): files are renamed "
+                             "*_UNVALIDATED_* and rows stamped; never use for training data")
     args = parser.parse_args()
 
     compile_sdk_synthetic_dataset(
@@ -1604,4 +1619,5 @@ if __name__ == "__main__":
         force=args.force,
         include_sota=args.include_sota,
         early_exit=args.early_exit,
+        allow_unvalidated=args.allow_unvalidated,
     )

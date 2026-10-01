@@ -246,16 +246,29 @@ def test_disagreement_queue_writer():
 
 
 def test_offline_compile_split_guard():
-    """Regression: small runs previously produced val > train via max(100, 10%)."""
+    """Regression: small runs previously produced val > train via max(100, 10%).
+
+    Also regression for the 2026-09-30 incident: no validator_url and no explicit
+    opt-out must hard-abort (fail-closed), and the explicit opt-out must rename
+    outputs to *_UNVALIDATED_* and stamp provenance.
+    """
     from generate_sdk_synthetic_data import compile_sdk_synthetic_dataset
     with tempfile.TemporaryDirectory() as tmp:
-        counts = compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=25)
-        train = [json.loads(l) for l in open(Path(tmp) / "sdk_synthetic_train.jsonl", encoding="utf-8")]
-        val = [json.loads(l) for l in open(Path(tmp) / "sdk_synthetic_val.jsonl", encoding="utf-8")]
+        try:
+            compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=25)
+            assert False, "no validator_url must abort (fail-closed default)"
+        except SystemExit as e:
+            assert "--validator-url" in str(e), e
+    with tempfile.TemporaryDirectory() as tmp:
+        counts = compile_sdk_synthetic_dataset(out_dir=tmp, samples_per_mode=25,
+                                               allow_unvalidated=True)
+        train = [json.loads(l) for l in open(Path(tmp) / "sdk_synthetic_UNVALIDATED_train.jsonl", encoding="utf-8")]
+        val = [json.loads(l) for l in open(Path(tmp) / "sdk_synthetic_UNVALIDATED_val.jsonl", encoding="utf-8")]
         total = sum(counts.values())
         assert len(train) + len(val) == total
         assert len(val) < len(train), "val split must stay smaller than train on small runs"
         assert len(val) == max(1, min(int(total * 0.1), total // 2))
+        assert all(r.get("provenance") == "unvalidated_template_synthesis" for r in train + val)
         for row in train[:5]:
             assert {"id", "premise", "hypothesis", "label", "source"} <= set(row)
 
