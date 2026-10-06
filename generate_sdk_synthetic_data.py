@@ -24,12 +24,14 @@ Features:
 - Rejection Sampling & Label Disambiguation: Eliminates the fatal "Neutral vs Contradiction" synthetic failure mode.
 """
 
-import os
-import re
-import json
-import time
-import random
 import argparse
+from collections import defaultdict
+import hashlib
+import json
+import os
+import random
+import re
+import time
 from typing import Dict, List, Any, Optional, Tuple
 
 # Shared domain constants & transport live in dedicated modules now:
@@ -56,20 +58,26 @@ TEACHER_DOMAIN_TOPICS = [
     ("enterprise_security", "Zero-trust IAM policy evaluation, role-based access control, and vulnerability patching."),
 ]
 
-NLI_TRIPLE_ARRAY_SCHEMA = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "premise": {"type": "string"},
-            "hypothesis": {"type": "string"},
-            "label": {"type": "integer", "enum": [0, 1, 2]},
-            "metadata": {"type": "object"}
-        },
-        "required": ["premise", "hypothesis", "label"]
+NLI_TRIPLE_OBJECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "samples": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "premise": {"type": "string"},
+                    "hypothesis": {"type": "string"},
+                    "label": {"type": "integer", "enum": [0, 1, 2]},
+                    "metadata": {"type": "object"}
+                },
+                "required": ["premise", "hypothesis", "label"]
+            },
+            "minItems": 3,
+            "maxItems": 3
+        }
     },
-    "minItems": 3,
-    "maxItems": 3
+    "required": ["samples"]
 }
 
 
@@ -87,7 +95,7 @@ def generate_teacher_domain_samples(
         "json_schema": {
             "name": "nli_triples",
             "strict": True,
-            "schema": NLI_TRIPLE_ARRAY_SCHEMA
+            "schema": NLI_TRIPLE_OBJECT_SCHEMA
         }
     }
 
@@ -99,51 +107,44 @@ def generate_teacher_domain_samples(
         )
         user_prompt = (
             f"Generate exactly 3 samples for the domain: {topic_desc}. "
-            f"Provide 1 Entailment (label 1), 1 Contradiction (label 0), and 1 Neutral (label 2)."
+            f"Respond with a JSON object: {{\"samples\": [...]}} containing 1 Entailment (label 1), 1 Contradiction (label 0), and 1 Neutral (label 2)."
         )
 
         resp = teacher_client.query_chat(
             system_prompt,
             user_prompt,
             temperature=0.4,
-            max_tokens=1500,
+            max_tokens=2048,
             response_format=response_format,
         )
         if not resp:
             continue
 
         try:
-            items = json.loads(resp)
-            for it in items:
-                results.append({
-                    "id": f"teacher_{teacher_client.model}_{len(results):06d}",
-                    "premise": it["premise"],
-                    "hypothesis": it["hypothesis"],
-                    "label": int(it["label"]),
-                    "source": f"teacher_{topic_id}",
-                    "language": "en",
-                    "image": "",
-                    "metadata": it.get("metadata", {"domain": topic_id}),
-                })
+            from teacher_authoring import robust_parse_authored_samples
+            items = robust_parse_authored_samples(resp)
+            if isinstance(items, list):
+                for it in items:
+                    if not isinstance(it, dict) or "premise" not in it or "hypothesis" not in it:
+                        continue
+                    try:
+                        lab = int(it.get("label", -1))
+                    except (ValueError, TypeError):
+                        continue
+                    if lab not in (0, 1, 2):
+                        continue
+                    results.append({
+                        "id": f"teacher_{teacher_client.model}_{len(results):06d}",
+                        "premise": str(it["premise"]).strip(),
+                        "hypothesis": str(it["hypothesis"]).strip(),
+                        "label": lab,
+                        "source": f"teacher_{topic_id}",
+                        "language": "en",
+                        "image": "",
+                        "metadata": it.get("metadata", {"domain": topic_id}),
+                    })
         except Exception as e:
-            print(f"  [Parse fallback for {topic_id}] {e}")
-            m = re.search(r"\[.*\]", resp, re.DOTALL)
-            if m:
-                try:
-                    items = json.loads(m.group(0))
-                    for it in items:
-                        results.append({
-                            "id": f"teacher_{teacher_client.model}_{len(results):06d}",
-                            "premise": it["premise"],
-                            "hypothesis": it["hypothesis"],
-                            "label": int(it["label"]),
-                            "source": f"teacher_{topic_id}",
-                            "language": "en",
-                            "image": "",
-                            "metadata": it.get("metadata", {"domain": topic_id}),
-                        })
-                except Exception:
-                    pass
+            print(f"  [Parse error for {topic_id}] {e}", flush=True)
 
     return results
 
@@ -1337,7 +1338,8 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
                           resume_run: Optional[str],
                           force: bool = False,
                           include_sota: bool = False,
-                          template_only: bool = False) -> List[Dict[str, Any]]:
+                          template_only: bool = False,
+                          allow_resume_raw: bool = False) -> List[Dict[str, Any]]:
     """Generates SDK-mode sample sets, checkpointing each stage to disk.
 
     2026-10-01 rework: when a teacher URL is provided (and not template_only),
@@ -1351,14 +1353,14 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
     """
     if resume_run:
         samples = _load_jsonl(raw_path)
-        print(f"Resuming from raw checkpoint {raw_path} ({len(samples)} samples, no regeneration).")
+        print(f"Resuming from raw checkpoint {raw_path} ({len(samples)} samples, no regeneration).", flush=True)
         return samples
-    if os.path.exists(raw_path) and not force:
+
+    if os.path.exists(raw_path) and not force and not allow_resume_raw:
         raise FileExistsError(
             f"Raw checkpoint already exists at {raw_path!r}. Pass force=True (or --force) to overwrite, "
             f"or pass --resume-run to resume validation without regenerating."
         )
-    open(raw_path, "w", encoding="utf-8").close()  # truncate stale checkpoint
 
     mode_sources = [
         ("Tool Routing", "sdk_tool_routing", generate_tool_routing_samples),
@@ -1373,38 +1375,88 @@ def _generate_all_samples(samples_per_mode: int, seed: int, teacher_url: Optiona
             ("Abstention Augmentation", "sdk_abstention_augmentation", generate_abstention_samples),
         ])
 
-    all_generated: List[Dict[str, Any]] = []
+    if force and os.path.exists(raw_path):
+        open(raw_path, "w", encoding="utf-8").close()  # truncate stale checkpoint
+        existing_samples: List[Dict[str, Any]] = []
+    elif os.path.exists(raw_path):
+        existing_samples = _load_jsonl(raw_path)
+    else:
+        open(raw_path, "w", encoding="utf-8").close()  # create new empty checkpoint
+        existing_samples = []
+
+    existing_by_mode: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in existing_samples:
+        existing_by_mode[s.get("source", "")].append(s)
+
+    if existing_samples:
+        print(
+            f"Raw checkpoint {raw_path} contains {len(existing_samples)} existing samples: "
+            + ", ".join(f"{m}: {len(rows)}" for m, rows in existing_by_mode.items()),
+            flush=True,
+        )
+
+    all_modes_complete = all(len(existing_by_mode.get(mode, [])) >= samples_per_mode for _, mode, _ in mode_sources)
+    teacher_complete = not teacher_url or template_only or any(s.get("source", "").startswith("teacher_") for s in existing_samples)
+
+    if all_modes_complete and teacher_complete:
+        print(f"All modes complete in raw checkpoint ({len(existing_samples)} samples); ready for validation.", flush=True)
+        return existing_samples
+
+    all_generated: List[Dict[str, Any]] = list(existing_samples)
+    seen_keys: set = set()
+    for s in existing_samples:
+        p, h = s.get("premise", ""), s.get("hypothesis", "")
+        if p and h:
+            seen_keys.add(hashlib.sha256((p + "\x00" + h).encode("utf-8")).hexdigest())
+
     if teacher_url and not template_only:
         from teacher_authoring import MODE_AUTHOR_SPECS, author_mode_samples
         print(f"\nTeacher-AUTHORED generation ({teacher_model} via {teacher_url}); "
-              f"uniqueness gates active (>=80% unique per mode)")
+              f"uniqueness gates active (>=80% unique per mode)", flush=True)
         teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=300)
-        seen_keys: set = set()
         try:
             for salt, (name, mode, fallback_fn) in enumerate(mode_sources):
+                mode_existing = existing_by_mode.get(mode, [])
+                if len(mode_existing) >= samples_per_mode:
+                    print(f"  {name} ({mode}): already has {len(mode_existing)} >= {samples_per_mode} samples in checkpoint; skipping.", flush=True)
+                    continue
+
                 if mode in MODE_AUTHOR_SPECS:
-                    print(f"Authoring {name} samples (target={samples_per_mode})...")
+                    print(f"Authoring {name} samples (existing={len(mode_existing)}, target={samples_per_mode})...", flush=True)
                     made = author_mode_samples(
                         teacher_client, mode, samples_per_mode,
-                        seen_keys=seen_keys, rng=random.Random(seed + salt))
+                        seen_keys=seen_keys, existing_samples=mode_existing,
+                        rng=random.Random(seed + salt),
+                        on_batch_accepted=lambda batch: _append_jsonl(raw_path, batch))
+                    if made:
+                        all_generated.extend(made)
+                        print(f"  {name}: appended {len(made)} novel samples (checkpoint total: {len(all_generated)}).", flush=True)
                 else:
-                    print(f"  {name}: no authoring spec; using templates")
-                    made = fallback_fn(samples_per_mode, seed=seed + salt)
-                all_generated.extend(made)
-                _append_jsonl(raw_path, made)
-                print(f"  {name}: {len(made)} novel samples (checkpoint total: {len(all_generated)}).")
+                    print(f"  {name}: no authoring spec; using templates", flush=True)
+                    needed = samples_per_mode - len(mode_existing)
+                    made = fallback_fn(needed, seed=seed + salt)
+                    if made:
+                        all_generated.extend(made)
+                        _append_jsonl(raw_path, made)
+                        print(f"  {name}: appended {len(made)} novel samples (checkpoint total: {len(all_generated)}).", flush=True)
+            return _generate_teacher_samples(teacher_url, teacher_model, all_generated, raw_path,
+                                            teacher_client=teacher_client)
         finally:
-            print("  Unloading teacher model to free GPU VRAM for validators...")
+            print("  Unloading teacher model to free GPU VRAM for validators...", flush=True)
             teacher_client.unload_model()
-        return _generate_teacher_samples(teacher_url, teacher_model, all_generated, raw_path,
-                                        teacher_client=teacher_client)
 
-    for salt, (name, _mode, gen_fn) in enumerate(mode_sources):
-        print(f"Generating {name} samples (target={samples_per_mode})...")
-        made = gen_fn(samples_per_mode, seed=seed + salt)
-        all_generated.extend(made)
-        _append_jsonl(raw_path, made)
-        print(f"  Generated {len(made)} samples (checkpoint total: {len(all_generated)}).")
+    for salt, (name, mode, gen_fn) in enumerate(mode_sources):
+        mode_existing = existing_by_mode.get(mode, [])
+        if len(mode_existing) >= samples_per_mode:
+            print(f"  {name} ({mode}): already has {len(mode_existing)} >= {samples_per_mode} samples; skipping.", flush=True)
+            continue
+        needed = samples_per_mode - len(mode_existing)
+        print(f"Generating {name} samples (existing={len(mode_existing)}, target={samples_per_mode})...", flush=True)
+        made = gen_fn(needed, seed=seed + salt)
+        if made:
+            all_generated.extend(made)
+            _append_jsonl(raw_path, made)
+            print(f"  Generated {len(made)} samples (checkpoint total: {len(all_generated)}).", flush=True)
     return _generate_teacher_samples(teacher_url, teacher_model, all_generated, raw_path)
 
 
@@ -1420,15 +1472,24 @@ def _generate_teacher_samples(teacher_url: Optional[str], teacher_model: str,
     """
     if not teacher_url:
         return all_generated
-    print(f"\nQuerying Teacher Model (Alias: {teacher_model}) via {teacher_url} with GBNF token restriction...")
+    existing_teacher = [s for s in all_generated if s.get("source", "").startswith("teacher_")]
+    if len(existing_teacher) >= len(TEACHER_DOMAIN_TOPICS) * 3:
+        print(f"  Found {len(existing_teacher)} existing teacher domain samples; skipping.", flush=True)
+        return all_generated
+
+    print(f"\nQuerying Teacher Model (Alias: {teacher_model}) via {teacher_url} with GBNF token restriction...", flush=True)
+    need_unload = False
     if teacher_client is None:
         teacher_client = LLMEndpointClient(base_url=teacher_url, model=teacher_model, timeout=180)
+        need_unload = True
     teacher_samples = generate_teacher_domain_samples(teacher_client)
-    all_generated.extend(teacher_samples)
-    _append_jsonl(raw_path, teacher_samples)
-    print(f"  Generated {len(teacher_samples)} novel teacher domain samples (checkpointed).")
-    print("  Unloading teacher model to free GPU VRAM for validator...")
-    teacher_client.unload_model()
+    if teacher_samples:
+        all_generated.extend(teacher_samples)
+        _append_jsonl(raw_path, teacher_samples)
+        print(f"  Generated {len(teacher_samples)} novel teacher domain samples (checkpointed).", flush=True)
+    if need_unload:
+        print("  Unloading teacher model to free GPU VRAM for validator...", flush=True)
+        teacher_client.unload_model()
     return all_generated
 
 
@@ -1544,7 +1605,8 @@ def compile_sdk_synthetic_dataset(
     all_generated = _generate_all_samples(samples_per_mode, seed, teacher_url,
                                           teacher_model, raw_path, resume_id,
                                           force=force, include_sota=include_sota,
-                                          template_only=template_only)
+                                          template_only=template_only,
+                                          allow_resume_raw=(resume_run is not None))
 
     # Optional: Cross-Family Multi-Validator Committee
     # (Qwen 3.6 27B + gpt-oss-120b + DeepSeek V4 Flash)
@@ -1627,7 +1689,7 @@ if __name__ == "__main__":
     parser.add_argument("--teacher-url", default=None, help="Optional OpenAI-compatible URL for teacher model (e.g. http://localhost:8080/v1)")
     parser.add_argument("--teacher-model", default="gemma-4-31b-q4", help="Teacher model alias (e.g. gemma-4-31b-q4, gemma-4-12b-q4)")
     parser.add_argument("--validator-url", default=None, help="Optional OpenAI-compatible URL for validator model (e.g. http://localhost:8080/v1)")
-    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (default: qwen-3.6-27b-q4,gpt-oss-120b,qwen-3.8-125b-q4,deepseek-v4-flash-q3)")
+    parser.add_argument("--validators", "--validator-model", dest="validator_model", default=DEFAULT_VALIDATORS, help="Comma-separated validator model aliases (e.g. qwen-3.6-27b-q4,gpt-oss-120b,qwen3.8-flash-next-iq3_s,deepseek-v4-flash-q3)")
     parser.add_argument("--metrics-db", default=None, help="SQLite path for judge metrics (default: <out-dir>/validation_metrics.db)")
     parser.add_argument("--batch-size", type=int, default=5, help="Samples per validator batch call")
     parser.add_argument("--validator-timeout", type=int, default=600, help="Per-call timeout (s) for validator batches (reasoning models may exceed 180)")

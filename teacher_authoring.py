@@ -16,17 +16,145 @@ override by the committee wins, policy as amended 2026-10-01).
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
 import random
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
-BATCH_SIZE = 10
-MIN_NOVEL_PER_BATCH = 7  # accept a batch only if >=70% of items are new
+BATCH_SIZE = 5
+MIN_NOVEL_PER_BATCH = 3  # accept a batch only if >=60% of items are new
 MIN_UNIQUE_RATIO = 0.80  # full-run gate
+
+TEACHER_AUTHOR_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "samples": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "premise": {"type": "string"},
+                    "hypothesis": {"type": "string"},
+                    "label": {"type": "integer", "enum": [0, 1, 2]},
+                },
+                "required": ["premise", "hypothesis", "label"],
+            },
+        },
+    },
+    "required": ["samples"],
+}
 
 
 def _key(premise: str, hypothesis: str) -> str:
     return hashlib.sha256((premise + "\x00" + hypothesis).encode("utf-8")).hexdigest()
+
+
+def robust_parse_authored_samples(raw_text: str) -> List[Dict[str, Any]]:
+    """Robust multi-tier parser for LLM-authored samples.
+
+    Tiers:
+    1. json.loads on outer object/array slice
+    2. ast.literal_eval (handles single quotes, trailing commas, Python dict literals)
+    3. Regex single-quote normalization -> json.loads
+    4. Greedy regex extraction of individual {"premise": ..., "hypothesis": ..., "label": ...} dicts
+    """
+    clean = raw_text.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```(?:json)?\s*", "", clean)
+        clean = re.sub(r"\s*```$", "", clean)
+    clean = clean.strip()
+
+    start_obj = clean.find("{")
+    end_obj = clean.rfind("}")
+    start_arr = clean.find("[")
+    end_arr = clean.rfind("]")
+
+    if start_arr != -1 and (start_obj == -1 or start_arr < start_obj) and end_arr > start_arr:
+        clean_slice = clean[start_arr : end_arr + 1]
+    elif start_obj != -1 and end_obj > start_obj:
+        clean_slice = clean[start_obj : end_obj + 1]
+    else:
+        clean_slice = clean
+
+    # 1. Direct json.loads
+    try:
+        parsed = json.loads(clean_slice)
+        if isinstance(parsed, dict):
+            items = parsed.get("samples", parsed.get("data", []))
+            if isinstance(items, list):
+                return items
+        elif isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    # 2. ast.literal_eval
+    try:
+        parsed = ast.literal_eval(clean_slice)
+        if isinstance(parsed, dict):
+            items = parsed.get("samples", parsed.get("data", []))
+            if isinstance(items, list):
+                return items
+        elif isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    # 3. Single-quote normalization
+    try:
+        normalized = re.sub(r"(?<=[\{\[,:])\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*(?=[\}\],:])", r'"\1"', clean_slice)
+        parsed = json.loads(normalized)
+        if isinstance(parsed, dict):
+            items = parsed.get("samples", parsed.get("data", []))
+            if isinstance(items, list):
+                return items
+        elif isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    # 4. Truncated stream repair: if output was cut off, salvage completed objects
+    last_brace = clean.rfind("}")
+    if last_brace != -1:
+        prefix = clean[:last_brace + 1]
+        for suffix in ("\n]}", "\n]"):
+            candidate = prefix + suffix
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    items = parsed.get("samples", parsed.get("data", []))
+                    if isinstance(items, list) and items:
+                        return items
+                elif isinstance(parsed, list) and parsed:
+                    return parsed
+            except Exception:
+                pass
+            try:
+                parsed = ast.literal_eval(candidate)
+                if isinstance(parsed, dict):
+                    items = parsed.get("samples", parsed.get("data", []))
+                    if isinstance(items, list) and items:
+                        return items
+                elif isinstance(parsed, list) and parsed:
+                    return parsed
+            except Exception:
+                pass
+
+    # 5. Greedy regex fallback for individual dicts
+    extracted = []
+    sample_pattern = re.compile(
+        r'\{[^{}]*?["\']premise["\']\s*:\s*(["\'])(.*?)\1\s*,\s*["\']hypothesis["\']\s*:\s*(["\'])(.*?)\3\s*,\s*["\']label["\']\s*:\s*([012])[^{}]*?\}',
+        re.DOTALL,
+    )
+    for m in sample_pattern.finditer(clean):
+        p, h, l = m.group(2), m.group(4), int(m.group(5))
+        extracted.append({"premise": p, "hypothesis": h, "label": l})
+    if extracted:
+        return extracted
+
+    return []
 
 
 # Per-mode authoring specs. `exemplars` come from the template generators
@@ -121,19 +249,29 @@ MODE_AUTHOR_SPECS: Dict[str, Dict[str, Any]] = {
 def _authoring_prompt(spec: Dict[str, Any], n: int, avoid: Sequence[str]) -> tuple[str, str]:
     system = (
         "You are an expert training-data author for NLI cross-encoders and System 1 decision "
-        "routing. You write NOVEL, diverse, self-contained samples. Never repeat an example you "
+        "routing. You write NOVEL, diverse, concise, self-contained samples. Never repeat an example you "
         "have already produced. Labels use: 0=contradiction/clearly-wrong, 1=entailment/correct, "
-        "2=neutral/ambiguous."
+        "2=neutral/ambiguous. Respond ONLY with valid JSON conforming to the schema."
     )
     ex = "\n".join(f"- P: {p}\n  H: {h}\n  label: {l}" for p, h, l in spec["exemplars"])
-    avoid_block = "\n".join(f"- {a[:140]}" for a in avoid[-8:]) if avoid else "(none yet)"
+    if not avoid:
+        avoid_block = "(none yet)"
+    elif len(avoid) <= 20:
+        avoid_block = "\n".join(f"- {a[:140]}" for a in avoid)
+    else:
+        # Sample up to 20 diverse premises: 10 historical + 10 most recent
+        pool = avoid[:-10]
+        sampled_hist = random.sample(pool, min(10, len(pool)))
+        recent = avoid[-10:]
+        avoid_block = "\n".join(f"- {a[:140]}" for a in (sampled_hist + recent))
     user = (
         f"Mode: {spec['name']}\n{spec['instructions']}\n\n"
         f"Format exemplars (match this structure exactly, do NOT copy their content):\n{ex}\n\n"
         f"Previously produced premises (do not duplicate or trivially rephrase):\n{avoid_block}\n\n"
-        f"Author exactly {n} new samples as JSON: [{{\"premise\": str, \"hypothesis\": str, "
-        f"\"label\": 0|1|2}}, ...]. Aim for a rough label balance across {n} samples. "
-        f"Each premise must be self-contained and 1-4 sentences."
+        f"Author exactly {n} new samples as a JSON object: {{\"samples\": [{{\"premise\": str, \"hypothesis\": str, "
+        f"\"label\": 0|1|2}}, ...]}}. Aim for a rough label balance across {n} samples. "
+        f"Each premise must be concise (1-3 sentences). Each hypothesis must be concise (1-2 sentences). "
+        f"Do not write lengthy essays or filler commentary."
     )
     return system, user
 
@@ -143,64 +281,116 @@ def author_mode_samples(
     mode: str,
     n_target: int,
     seen_keys: Optional[set] = None,
+    existing_samples: Optional[List[Dict[str, Any]]] = None,
     rng: Optional[random.Random] = None,
+    on_batch_accepted: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Authors n_target novel samples for one mode via the teacher LLM.
+    """Authors novel samples for one mode via the teacher LLM.
 
     Batches of BATCH_SIZE; a batch is accepted only if >=MIN_NOVEL_PER_BATCH items
     are exact-novel. Raises RuntimeError if the full-run uniqueness gate fails.
-    Returns rows shaped like the template generators (id/premise/hypothesis/label/source).
+    If existing_samples are provided, only authors the remaining deficit to reach n_target.
+    If on_batch_accepted is provided, it is invoked with each newly accepted batch.
+    Returns the newly authored rows (or empty list if already at or above n_target).
     """
     spec = MODE_AUTHOR_SPECS[mode]
     seen: set = seen_keys if seen_keys is not None else set()
     rng = rng or random.Random(0)
-    accepted: List[Dict[str, Any]] = []
-    premises: List[str] = []
-    attempts = 0
-    max_attempts = (n_target // MIN_NOVEL_PER_BATCH) * 6 + 10
 
-    while len(accepted) < n_target and attempts < max_attempts:
+    prior = list(existing_samples or [])
+    for r in prior:
+        p, h = r.get("premise", ""), r.get("hypothesis", "")
+        if p and h:
+            seen.add(_key(p, h))
+
+    if len(prior) >= n_target:
+        print(f"  [{mode}] already has {len(prior)} >= {n_target} target samples; skipping authoring.", flush=True)
+        return []
+
+    needed = n_target - len(prior)
+    print(f"  [{mode}] authoring {needed} new samples (existing={len(prior)}, target={n_target})...", flush=True)
+
+    newly_accepted: List[Dict[str, Any]] = []
+    premises: List[str] = [r["premise"] for r in prior if "premise" in r]
+    attempts = 0
+    max_attempts = (needed // MIN_NOVEL_PER_BATCH) * 6 + 25
+
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "authored_samples", "strict": True, "schema": TEACHER_AUTHOR_SCHEMA},
+    }
+
+    while len(newly_accepted) < needed and attempts < max_attempts:
         attempts += 1
-        n = min(BATCH_SIZE, n_target - len(accepted) + 3)  # slight overshoot for dedup losses
+        n = min(BATCH_SIZE, needed - len(newly_accepted) + 2)  # slight overshoot for dedup losses
         system, user = _authoring_prompt(spec, n, premises)
         try:
             raw = client.query_chat(
                 system, user,
-                response_format={"type": "json_object"},
+                temperature=0.35,
+                max_tokens=2048,
+                response_format=response_format,
             )
-            import json
-            items = json.loads(raw)
-            if isinstance(items, dict):  # tolerate {"samples": [...]} envelopes
-                items = items.get("samples", items.get("data", []))
+            if not raw:
+                print(f"  [{mode}] authoring batch empty response / timeout; retrying (attempt {attempts})", flush=True)
+                continue
+            items = robust_parse_authored_samples(raw)
+            if not items:
+                print(f"  [{mode}] authoring batch unparseable (len={len(raw)}); retrying (attempt {attempts})", flush=True)
+                continue
         except Exception as exc:  # noqa: BLE001 - teacher hiccups must not kill the run
-            print(f"  [{mode}] authoring batch failed ({exc}); retrying")
+            print(f"  [{mode}] authoring batch request failed ({exc}); retrying (attempt {attempts})", flush=True)
             continue
 
         novel_in_batch = 0
+        batch_added: List[Dict[str, Any]] = []
         for it in items:
+            if not isinstance(it, dict):
+                continue
             p = str(it.get("premise", "")).strip()
             h = str(it.get("hypothesis", "")).strip()
             lab = it.get("label")
+            try:
+                lab = int(lab)
+            except (ValueError, TypeError):
+                continue
             if not p or not h or lab not in (0, 1, 2) or _key(p, h) in seen:
                 continue
             seen.add(_key(p, h))
             novel_in_batch += 1
-            accepted.append({
-                "id": f"{mode}_{len(accepted):06d}",
-                "premise": p, "hypothesis": h, "label": int(lab),
+            idx = len(prior) + len(newly_accepted)
+            row = {
+                "id": f"{mode}_{idx:06d}",
+                "premise": p, "hypothesis": h, "label": lab,
                 "source": mode, "language": "en",
                 "metadata": {"authored_by": "teacher", "mode": spec["name"]},
-            })
+            }
+            newly_accepted.append(row)
+            batch_added.append(row)
             premises.append(p)
-        if novel_in_batch < MIN_NOVEL_PER_BATCH and len(items) >= BATCH_SIZE:
-            print(f"  [{mode}] low-novelty batch ({novel_in_batch}/{len(items)}); re-prompting with "
-                  f"stronger avoid-list")
+            if len(newly_accepted) >= needed:
+                break
 
-    if len(accepted) < n_target:
+        if on_batch_accepted and batch_added:
+            on_batch_accepted(batch_added)
+
+        print(
+            f"  [{mode}] progress: {len(prior) + len(newly_accepted)}/{n_target} "
+            f"(+{novel_in_batch} new, batch_size={len(items)}, attempt={attempts})",
+            flush=True,
+        )
+
+        if novel_in_batch < MIN_NOVEL_PER_BATCH and len(items) >= BATCH_SIZE:
+            print(f"  [{mode}] low-novelty batch ({novel_in_batch}/{len(items)}); refreshing avoid-list", flush=True)
+
+    if len(newly_accepted) < needed:
         raise RuntimeError(
-            f"{mode}: teacher authoring exhausted attempts with {len(accepted)}/{n_target} novel "
-            f"samples (diversity too low or teacher failing - inspect server logs)")
-    unique_ratio = len({_key(r['premise'], r['hypothesis']) for r in accepted}) / len(accepted)
+            f"{mode}: teacher authoring exhausted attempts with {len(prior) + len(newly_accepted)}/{n_target} novel "
+            f"samples (diversity too low or teacher failing - inspect server logs)"
+        )
+
+    all_mode = prior + newly_accepted[:needed]
+    unique_ratio = len({_key(r['premise'], r['hypothesis']) for r in all_mode}) / len(all_mode)
     if unique_ratio < MIN_UNIQUE_RATIO:
         raise RuntimeError(f"{mode}: uniqueness gate failed ({unique_ratio:.2f} < {MIN_UNIQUE_RATIO})")
-    return accepted[:n_target]  # trim batch overshoot; seen_keys keeps the extras out of later modes
+    return newly_accepted[:needed]

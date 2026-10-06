@@ -1,0 +1,16 @@
+{
+  "model_a": "ckpt/gevva-e2b",
+  "model_b": "ckpt/gevva-e2b-cal2/best",
+  "n": 629,
+  "slices": {
+    "ALL": {
+      "n": 629,
+      "acc_a": 0.8824,
+      "acc_b": 0.9793,
+      "delta_pp": 9.7,
+      "a_right_b_wrong": 0,
+      "a_wrong_b_right": 61,
+      "mcnemar_p": 0.0
+    }
+  }
+}

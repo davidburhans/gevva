@@ -144,7 +144,19 @@ Gevva models are built on Google's multimodal `gemma-4-E2B-it` and `gemma-4-E4B-
 
 ## 📊 Benchmarks & Empirical Accuracy
 
-### 1. Independent Evaluation on Unseen Public Test Sets
+### 1. Gevva 1.1 Distillation & Calibrated Validation Battery
+Evaluated across our primary paired gate evaluation battery (7,015 items spanning Floor, Medium, and Hard adversarial slices) and real-world RAG hallucination benchmark (RAGTruth Served):
+
+| Benchmark & Metric | Gevva 1.1 e2b (5.1B) | Gevva 1.1 e4b (7.9B) | Notes |
+| :--- | :---: | :---: | :--- |
+| **Gate Floor Accuracy** | 86.75% | 86.61% | Standard MNLI / SNLI foundation |
+| **Gate Medium Accuracy** | 83.02% | 82.03% | FEVER / QNLI fact validation |
+| **Gate Hard Accuracy** | **56.95%** (+0.93pp, $p=3\times 10^{-5}$) | **65.07%** | ANLI R1–R3 & ContractNLI |
+| **ANLI Accuracy** | 55.09% | **62.66%** | Adversarial NLI challenge set |
+| **RAGTruth Served F1@0.5** | **0.7150** (+0.0178) | **0.6809** (+0.0398) | Production RAG hallucination detection |
+| **MMLU-Pro (Engine Sample)** | 28.00% | **35.00%** | Multi-discipline reasoning |
+
+### 2. Independent Evaluation on Unseen Public Test Sets
 Evaluated on 250 items per test set against a standard fact-checking baseline (`nli-deberta-v3-base`, ~184M parameters):
 
 | Test Set | Gevva e2b (5.1B) | DeBERTa-v3-base (184M) | Key Observations |
@@ -159,13 +171,21 @@ Evaluated on 250 items per test set against a standard fact-checking baseline (`
 | **Tool / Action Routing (Handwritten)** | **15/18 (83%)** | — | Missed 3 login/auth routing edge cases |
 | **Answer Grading (Handwritten)** | **14/14 (100%)** | — | Evaluates correctness reliably |
 
-### 2. JevBench Public Dataset (231 Items)
+### 3. JevBench Public Dataset (231 Items)
 Evaluated locally against the frozen open public split of JevBench (`jevbench/datasets/public` across 18 task families):
 
-- **Gevva e2b**: **71.43% overall accuracy** (165/231), **47.75% on the Hard tier** (53/111).
-  - JevBench Composite Score: **77.54** (at $T=1.6$).
-- **Gevva e4b**: **76.62% overall accuracy** (177/231), **54.95% on the Hard tier** (61/111).
-  - JevBench Composite Score: **77.28** (at $T=1.6$).
+- **Gevva 1.1 e2b**: **71.43% overall accuracy** (165/231):
+  - **Easy Tier**: **100.0%** (48/48)
+  - **Standard Tier**: **90.28%** (65/72)
+  - **Hard Tier**: **46.85%** (52/111)
+  - **100% Perfect Families**: Extraction, Fact, Intent, Ordinal, Tool selection, Trap, Routing Hard
+  - **P50 Latency**: **29.8 ms** (NVIDIA RTX 5090)
+- **Gevva 1.1 e4b**: **76.62% overall accuracy** (177/231):
+  - **Easy Tier**: **100.0%** (48/48)
+  - **Standard Tier**: **97.22%** (70/72)
+  - **Hard Tier**: **53.15%** (59/111)
+  - **100% Perfect Families**: Adversarial, Extraction, Fact, Intent, Ordinal, Routing, Routing Hard, Tool selection, Trap
+  - **P50 Latency**: **37.8 ms** (NVIDIA RTX 5090)
 
 > **Transparency Note on JevBench**:
 > - These scores were measured locally on the 231-item open public split and have not yet been evaluated by third-party maintainers on the private benchmark suite.

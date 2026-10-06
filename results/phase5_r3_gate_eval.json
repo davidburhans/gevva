@@ -1,0 +1,66 @@
+{
+  "model_path": "ckpt/gevva-e4b-phase5-r3/best",
+  "n": 7015,
+  "by_slice": {
+    "floor": {
+      "acc": 0.8619246861924686,
+      "n": 717
+    },
+    "hard": {
+      "acc": 0.6503496503496503,
+      "n": 5291
+    },
+    "medium": {
+      "acc": 0.8133068520357497,
+      "n": 1007
+    }
+  },
+  "by_source": {
+    "anli_suite_test_r1": {
+      "acc": 0.709,
+      "n": 1000
+    },
+    "anli_suite_test_r2": {
+      "acc": 0.599,
+      "n": 1000
+    },
+    "anli_suite_test_r3": {
+      "acc": 0.5833333333333334,
+      "n": 1200
+    },
+    "contractnli_suite": {
+      "acc": 0.6853180296508847,
+      "n": 2091
+    },
+    "fever_dev": {
+      "acc": 0.7435294117647059,
+      "n": 425
+    },
+    "mnli_validation_matched": {
+      "acc": 0.8442622950819673,
+      "n": 366
+    },
+    "qnli_validation": {
+      "acc": 0.8857868020304569,
+      "n": 394
+    },
+    "scitail_validation": {
+      "acc": 0.8191489361702128,
+      "n": 188
+    },
+    "snli_validation": {
+      "acc": 0.8803418803418803,
+      "n": 351
+    }
+  },
+  "anli": {
+    "n": 3200,
+    "accuracy": 0.6275,
+    "neutral_predictions": 1181,
+    "recall": {
+      "0": 0.532015065913371,
+      "1": 0.6953271028037383,
+      "2": 0.6544943820224719
+    }
+  }
+}

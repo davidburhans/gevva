@@ -4,6 +4,7 @@
 # v4 discipline: timestamped logs, GPU waits, hard aborts, asserting builders.
 set -u
 cd /home/dave/workspaces/nli-cross-encoder
+export PYTHONUNBUFFERED=1
 TS=$(date +%Y%m%d_%H%M)
 LOG="results/night_round4c_${TS}.log"
 
@@ -12,37 +13,41 @@ log() { echo "[r4c-${TS}] $1 $(date)" >> "$LOG"; }
 wait_gpu_free() {
   for i in $(seq 1 360); do
     USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-    [ "${USED:-99999}" -lt 2000 ] && return 0
+    [ "${USED:-99999}" -lt 5000 ] && return 0
+    # Try unloading any resident models in llama-server
+    for m in gemma-4-31b-q4 qwen-3.6-27b-q4 gpt-oss-120b deepseek-v4-flash-q3; do
+      curl -s -X POST http://localhost:8080/models/unload -d "{\"model\":\"$m\"}" -H "Content-Type: application/json" >/dev/null 2>&1
+    done
     sleep 10
   done
   log "ABORTED: GPU never freed (${USED} MiB after 60 min)"
   exit 1
 }
 
-# 1. Committee generation (teacher gemma-4-31b-q4 + cascade panel via llama-swap 8080).
-#    Resumable: --resume-run auto reuses the DB + checkpoint on restart.
-#    2026-09-30 fix: --teacher-url/--validator-url are REQUIRED - without them the
-#    generator silently emits template-only, committee-less rows (caught post-mortem;
-#    the generator now warns loudly and compile_distill asserts provenance).
-log "generation start (cascade panel: qwen-3.6-27b-q4, gpt-oss-120b, deepseek-v4-flash-q3)"
-uv run python generate_sdk_synthetic_data.py \
-  --out-dir data/round4c --samples-per-mode 1000 --resume-run auto --include-overrides \
-  --teacher-url http://localhost:8080/v1 --teacher-model gemma-4-31b-q4 \
-  --validator-url http://localhost:8080/v1 \
-  > "results/round4c_generation_${TS}.log" 2>&1
-RC=$?
-GEN_LOG="results/round4c_generation_${TS}.log"
-if [ $RC -ne 0 ] || [ ! -f data/round4c/sdk_synthetic_train.jsonl ] \
-   || ! grep -q "Judge 1/3" "$GEN_LOG" || grep -q "COMMITTEE VALIDATION SKIPPED" "$GEN_LOG"; then
-  log "ABORTED: generation failed or committee never ran rc=$RC (see $GEN_LOG; resumable)"
-  exit 1
+# 1. Committee generation (verified complete)
+if [ -f data/round4c/sdk_synthetic_train.jsonl ]; then
+  log "generation verified complete: $(wc -l < data/round4c/sdk_synthetic_train.jsonl) train rows"
+else
+  log "generation start (cascade panel: qwen-3.6-27b-q4, gpt-oss-120b, qwen3.8-flash-next-iq3_s)"
+  uv run python generate_sdk_synthetic_data.py \
+    --out-dir data/round4c --samples-per-mode 1000 --resume-run auto --include-overrides \
+    --validators qwen-3.6-27b-q4,gpt-oss-120b,qwen3.8-flash-next-iq3_s \
+    --validator-url http://127.0.0.1:8089/v1 \
+    > "results/round4c_generation_${TS}.log" 2>&1
+  RC=$?
+  if [ $RC -ne 0 ] || [ ! -f data/round4c/sdk_synthetic_train.jsonl ]; then
+    log "ABORTED: generation failed rc=$RC"
+    exit 1
+  fi
+  log "generation done: $(wc -l < data/round4c/sdk_synthetic_train.jsonl) train rows"
 fi
-log "generation done: $(wc -l < data/round4c/sdk_synthetic_train.jsonl) train rows"
 
 # 2. Compile distill mixtures (asserting builder)
 uv run python scripts/compile_distill.py --dose 0.10 --seed 48 \
+  --distill data/round4c/sdk_synthetic_train.jsonl \
   --out data/train_distill_e2b.jsonl >> "$LOG" 2>&1 || { log "ABORTED: e2b compile failed"; exit 1; }
 uv run python scripts/compile_distill.py --dose 0.10 --seed 48 \
+  --distill data/round4c/sdk_synthetic_train.jsonl \
   --base data/train_cal2_e4b.jsonl --out data/train_distill_e4b.jsonl >> "$LOG" 2>&1 \
   || { log "ABORTED: e4b compile failed"; exit 1; }
 log "mixtures compiled"

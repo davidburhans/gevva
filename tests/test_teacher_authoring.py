@@ -99,9 +99,57 @@ class _V:
 def _v(label): return _V(label)
 
 
+def test_robust_parser() -> None:
+    from teacher_authoring import robust_parse_authored_samples
+
+    # 1. Normal JSON object
+    r1 = robust_parse_authored_samples('{"samples": [{"premise": "p1", "hypothesis": "h1", "label": 1}]}')
+    assert len(r1) == 1 and r1[0]["premise"] == "p1"
+
+    # 2. Single-quoted JSON object (the GBNF-unconstrained bug)
+    r2 = robust_parse_authored_samples("{'samples': [{'premise': 'p2', 'hypothesis': 'h2', 'label': 0}]}")
+    assert len(r2) == 1 and r2[0]["premise"] == "p2" and r2[0]["label"] == 0
+
+    # 3. Trailing commas and markdown code blocks
+    r3 = robust_parse_authored_samples("```json\n{'samples': [{'premise': 'p3', 'hypothesis': 'h3', 'label': 2},]}\n```")
+    assert len(r3) == 1 and r3[0]["premise"] == "p3"
+
+    # 4. Direct list format
+    r4 = robust_parse_authored_samples('[{"premise": "p4", "hypothesis": "h4", "label": 1}]')
+    assert len(r4) == 1 and r4[0]["premise"] == "p4"
+
+    # 5. Conversational intro with regex recovery
+    r5 = robust_parse_authored_samples("Sure, here are your requested samples:\n{'samples': [{'premise': 'p5', 'hypothesis': 'h5', 'label': 1}]}")
+    assert len(r5) == 1 and r5[0]["premise"] == "p5"
+
+    print("PASS  test_robust_parser")
+
+
+def test_incremental_authoring() -> None:
+    client = FakeAuthor("sdk_tool_routing", per_call=10)
+    existing = [
+        {"id": "sdk_tool_routing_000000", "premise": "sdk_tool_routing premise 1000",
+         "hypothesis": "sdk_tool_routing hypothesis 1000", "label": 1, "source": "sdk_tool_routing"},
+        {"id": "sdk_tool_routing_000001", "premise": "sdk_tool_routing premise 1001",
+         "hypothesis": "sdk_tool_routing hypothesis 1001", "label": 2, "source": "sdk_tool_routing"},
+    ]
+    # Target 5, already have 2 -> should author 3 more
+    new_rows = author_mode_samples(client, "sdk_tool_routing", 5, existing_samples=existing)
+    assert len(new_rows) == 3, f"Expected 3 new rows, got {len(new_rows)}"
+    assert new_rows[0]["id"] == "sdk_tool_routing_000002"
+
+    # Target 2, already have 2 -> should return empty list
+    skip_rows = author_mode_samples(client, "sdk_tool_routing", 2, existing_samples=existing)
+    assert len(skip_rows) == 0, f"Expected 0 new rows, got {len(skip_rows)}"
+
+    print("PASS  test_incremental_authoring")
+
+
 if __name__ == "__main__":
     test_authoring_produces_novel_samples()
     test_authoring_dedups_against_seen_keys()
     test_authoring_aborts_on_degenerate_diversity()
     test_include_overrides_amendment()
-    print("\n4/4 teacher-authoring tests passed")
+    test_robust_parser()
+    test_incremental_authoring()
+    print("\n6/6 teacher-authoring tests passed")

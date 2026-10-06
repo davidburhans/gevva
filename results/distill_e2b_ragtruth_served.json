@@ -1,0 +1,15 @@
+{
+  "model_path": "ckpt/gevva-e2b-distill/best",
+  "framing": "served (adapter mapping, threshold 0.5, no fitted parameters)",
+  "n": 2700,
+  "f1": 0.715,
+  "precision": 0.7354,
+  "recall": 0.6957,
+  "yes_rate": 0.3304,
+  "base_rate_hallucinated": 0.3493,
+  "baselines": {
+    "random_f1": 0.4113,
+    "e2b_v1_suite": 0.1556,
+    "e4b_v1_suite": 0.3668
+  }
+}

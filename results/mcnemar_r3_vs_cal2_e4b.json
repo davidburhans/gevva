@@ -1,0 +1,43 @@
+{
+  "model_a": "ckpt/gevva-e4b-phase5-r3/best",
+  "model_b": "ckpt/gevva-e4b-cal2/best",
+  "n": 7015,
+  "slices": {
+    "floor": {
+      "n": 717,
+      "acc_a": 0.8619,
+      "acc_b": 0.8605,
+      "delta_pp": -0.14,
+      "a_right_b_wrong": 7,
+      "a_wrong_b_right": 6,
+      "mcnemar_p": 1.0
+    },
+    "hard": {
+      "n": 5291,
+      "acc_a": 0.6503,
+      "acc_b": 0.6511,
+      "delta_pp": 0.08,
+      "a_right_b_wrong": 53,
+      "a_wrong_b_right": 57,
+      "mcnemar_p": 0.775
+    },
+    "medium": {
+      "n": 1007,
+      "acc_a": 0.8133,
+      "acc_b": 0.8153,
+      "delta_pp": 0.2,
+      "a_right_b_wrong": 5,
+      "a_wrong_b_right": 7,
+      "mcnemar_p": 0.77441
+    },
+    "ALL": {
+      "n": 7015,
+      "acc_a": 0.6954,
+      "acc_b": 0.6961,
+      "delta_pp": 0.07,
+      "a_right_b_wrong": 65,
+      "a_wrong_b_right": 70,
+      "mcnemar_p": 0.73079
+    }
+  }
+}

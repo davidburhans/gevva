@@ -1,0 +1,43 @@
+{
+  "model_a": "ckpt/gevva-e4b-cal2/best",
+  "model_b": "ckpt/gevva-e4b-distill/best",
+  "n": 7015,
+  "slices": {
+    "floor": {
+      "n": 717,
+      "acc_a": 0.8605,
+      "acc_b": 0.8661,
+      "delta_pp": 0.56,
+      "a_right_b_wrong": 4,
+      "a_wrong_b_right": 8,
+      "mcnemar_p": 0.3877
+    },
+    "hard": {
+      "n": 5291,
+      "acc_a": 0.6511,
+      "acc_b": 0.6507,
+      "delta_pp": -0.04,
+      "a_right_b_wrong": 53,
+      "a_wrong_b_right": 51,
+      "mcnemar_p": 0.92195
+    },
+    "medium": {
+      "n": 1007,
+      "acc_a": 0.8153,
+      "acc_b": 0.8203,
+      "delta_pp": 0.5,
+      "a_right_b_wrong": 7,
+      "a_wrong_b_right": 12,
+      "mcnemar_p": 0.35928
+    },
+    "ALL": {
+      "n": 7015,
+      "acc_a": 0.6961,
+      "acc_b": 0.6971,
+      "delta_pp": 0.1,
+      "a_right_b_wrong": 64,
+      "a_wrong_b_right": 71,
+      "mcnemar_p": 0.60574
+    }
+  }
+}

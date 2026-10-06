@@ -40,7 +40,7 @@ from gemma4_cross_encoder import (
     apply_quantization_aware_training,
 )
 
-__version__ = "1.0.3"
+__version__ = "1.1.0"
 __all__ = [
     "Gevva",
     "GevvaCrossEncoder",

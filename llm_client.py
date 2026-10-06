@@ -11,6 +11,7 @@ Usage example:
 """
 
 import json
+import os
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional, Sequence, Union
@@ -30,7 +31,13 @@ class LLMEndpointClient:
     (OpenAI usage dict or None) so callers can record throughput metrics.
     """
 
-    def __init__(self, base_url: str = "http://localhost:8080/v1", model: str = "gemma-4-31b-q4", timeout: int = 120):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8080/v1",
+        model: str = "gemma-4-31b-q4",
+        timeout: int = 120,
+        api_key: Optional[str] = None,
+    ):
         parsed = urllib.parse.urlparse(base_url)
         if parsed.scheme not in ("http", "https"):
             raise ValueError(f"Invalid URL scheme '{parsed.scheme}': only http and https are allowed")
@@ -40,6 +47,9 @@ class LLMEndpointClient:
         self.server_root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
         self.model = model
         self.timeout = timeout
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not self.api_key and ":8089" in self.base_url:
+            self.api_key = os.environ.get("STRATA_API_KEY", "strata-2097e24e7c022ecb50d196d12e28ae0872f01389")
         self.last_latency_ms: Optional[float] = None
         self.last_usage: Optional[Dict[str, Any]] = None
 
@@ -49,10 +59,13 @@ class LLMEndpointClient:
         Example: client.unload_model() -> True when the slot was released.
         """
         try:
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
             req = urllib.request.Request(
                 f"{self.server_root}/models/unload",
                 data=json.dumps({"model": self.model}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read(10 * 1024 * 1024).decode("utf-8"))
@@ -116,10 +129,13 @@ class LLMEndpointClient:
             body["chat_template_kwargs"] = chat_template_kwargs
 
         payload = json.dumps(body).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         started = time.monotonic()
         try:

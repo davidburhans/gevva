@@ -1,0 +1,52 @@
+{
+  "model_path": "ckpt/gevva-e2b-phase5-xopt/best",
+  "n": 500,
+  "accuracy": 0.262,
+  "accuracy_by_k": {
+    "3": {
+      "acc": 1.0,
+      "n": 1
+    },
+    "4": {
+      "acc": 0.3333333333333333,
+      "n": 27
+    },
+    "5": {
+      "acc": 0.5,
+      "n": 4
+    },
+    "6": {
+      "acc": 0.3333333333333333,
+      "n": 3
+    },
+    "7": {
+      "acc": 0.625,
+      "n": 8
+    },
+    "8": {
+      "acc": 0.8571428571428571,
+      "n": 7
+    },
+    "9": {
+      "acc": 0.18421052631578946,
+      "n": 38
+    },
+    "10": {
+      "acc": 0.24271844660194175,
+      "n": 412
+    }
+  },
+  "top_predicted_key": [
+    "C",
+    84
+  ],
+  "top_predicted_position": [
+    2,
+    84
+  ],
+  "framing_note": "engine-served parity: premise=state+question, hypothesis='The correct answer is {k}: {desc}...', argmax over ent-minus-contra logit margin (matches adapter choice())",
+  "baselines": {
+    "e2b_v1_raw": 0.2862,
+    "e4b_v1_raw": 0.3641
+  }
+}

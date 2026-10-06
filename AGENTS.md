@@ -99,7 +99,8 @@ Hypothesis: {hypothesis}
 │   ├── JEVBENCH_REMEDIATION_PLAN.md # Remediation plan (completed: #1 JevBench 77.54)
 │   └── jevbench-error-audit.md    # Error audit documentation
 ├── ckpt/
-│   ├── gevva-e2b/                 # Champion e2b checkpoint (JevBench 77.54 at publication)
+│   ├── gevva-e2b/                 # Champion e2b checkpoint (Gevva 1.1 distill -> gevva-e2b-distill/best)
+│   ├── gevva-e4b/                 # Champion e4b checkpoint (Gevva 1.1 distill -> gevva-e4b-distill/best)
 │   └── gemma-4-e2b-nli-w4a16/     # Production standalone W4A16 model (7.04 GB, 14.3ms latency)
 ├── results/                       # Benchmark outputs and comparative JSON logs
 └── research/                      # Reference implementations, adapters, and deep-dive reports

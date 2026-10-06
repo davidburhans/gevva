@@ -1,0 +1,22 @@
+{
+  "model_path": "ckpt/gevva-e4b-phase5-r3/best",
+  "n": 2700,
+  "base_rate_hallucinated": 0.3493,
+  "f1_at_0.5": {
+    "threshold": 0.5,
+    "precision": 0.1559,
+    "recall": 0.0488,
+    "f1": 0.0743
+  },
+  "f1_best_threshold": {
+    "threshold": 0.1,
+    "precision": 0.3332,
+    "recall": 0.8791,
+    "f1": 0.4832
+  },
+  "baselines": {
+    "e2b_v1_raw": 0.1556,
+    "e4b_v1_raw": 0.3668,
+    "random": 0.4113
+  }
+}

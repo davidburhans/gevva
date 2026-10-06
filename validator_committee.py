@@ -20,6 +20,7 @@ Usage example:
 
 import json
 import os
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -30,16 +31,22 @@ from nli_labels import CONTRADICTION, ENTAILMENT, ID2LABEL, LABEL2ID, NEUTRAL
 from validation_metrics_db import RunSpec, ValidationMetricsDB, utc_now  # noqa: F401 (re-export)
 
 BATCH_VERDICT_SCHEMA = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "integer"},
-            "verdict": {"type": "string", "enum": ["entailment", "contradiction", "neutral"]},
-            "rationale": {"type": "string", "maxLength": 240}
-        },
-        "required": ["id", "verdict", "rationale"]
-    }
+    "type": "object",
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "verdict": {"type": "string", "enum": ["entailment", "contradiction", "neutral"]},
+                    "rationale": {"type": "string", "maxLength": 240}
+                },
+                "required": ["id", "verdict", "rationale"]
+            }
+        }
+    },
+    "required": ["verdicts"]
 }
 
 VALIDATOR_SYSTEM_PROMPT = """You are a rigorous, strictly logical NLI Verifier and Judge.
@@ -108,11 +115,12 @@ class AggregateResult:
 #   the correlated Qwen bloc): reasoning channel is harmony-format; cap it at low
 #   effort so it does not crowd the GBNF-constrained JSON budget.
 # - unknown models default to vendor behaviour; the watchdog alerts on failure rates.
-THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4"}
+THINKING_DISABLED_MODELS = {"qwen-3.6-27b-q4", "qwen-3.8-125b-q3", "qwen-3.8-125b-q4", "qwen3.8-flash-next-iq3_s"}
 MODEL_TEMPLATE_KWARGS = {
     "qwen-3.6-27b-q4": {"enable_thinking": False},
     "qwen-3.8-125b-q3": {"enable_thinking": False},
     "qwen-3.8-125b-q4": {"enable_thinking": False},
+    "qwen3.8-flash-next-iq3_s": {"enable_thinking": False},
     "gpt-oss-120b": {"reasoning_effort": "low"},
 }
 
@@ -150,10 +158,16 @@ def validate_batch_consensus(
 
     n_items = len(candidate_batch)
     batch_schema = {
-        "type": "array",
-        "minItems": n_items,
-        "maxItems": n_items,
-        "items": BATCH_VERDICT_SCHEMA["items"],
+        "type": "object",
+        "properties": {
+            "verdicts": {
+                "type": "array",
+                "minItems": n_items,
+                "maxItems": n_items,
+                "items": BATCH_VERDICT_SCHEMA["properties"]["verdicts"]["items"],
+            }
+        },
+        "required": ["verdicts"]
     }
     response_format = {
         "type": "json_schema",
@@ -161,14 +175,14 @@ def validate_batch_consensus(
     }
     user_prompt = (
         f"There are {n_items} candidate pairs to classify (IDs 0 to {n_items - 1}). "
-        f"You MUST evaluate all {n_items} pairs and return a JSON array with exactly {n_items} objects, "
+        f"You MUST evaluate all {n_items} pairs and return a JSON object with a 'verdicts' array of exactly {n_items} objects, "
         f"one for each ID in order.\n\nPairs to classify:\n"
     )
     for idx, c in enumerate(candidate_batch):
         p_esc = _escape_xml(c.get("premise", ""))
         h_esc = _escape_xml(c.get("hypothesis", ""))
         user_prompt += f'<candidate id="{idx}"><premise>{p_esc}</premise><hypothesis>{h_esc}</hypothesis></candidate>\n\n'
-    user_prompt += f"Output a JSON array of {n_items} objects:"
+    user_prompt += f"Output a JSON object with a 'verdicts' array of {n_items} objects:"
 
     t0 = time.monotonic()
     response = client.query_chat(
@@ -188,11 +202,25 @@ def validate_batch_consensus(
     if not response:
         return [JudgeVerdict(None, "validator_offline_or_empty", STATUS_OFFLINE, latency) for _ in candidate_batch]
 
+    clean_resp = response.strip()
+    if clean_resp.startswith("```"):
+        clean_resp = re.sub(r"^```(?:json)?\s*", "", clean_resp)
+        clean_resp = re.sub(r"\s*```$", "", clean_resp)
+        clean_resp = clean_resp.strip()
+
     try:
-        verdicts = json.loads(response)
+        verdicts = json.loads(clean_resp)
         return [_parse_verdict(idx, c, {int(v["id"]): v for v in _as_verdict_list(verdicts)}, latency)
                 for idx, c in enumerate(candidate_batch)]
     except Exception as e:
+        m = re.search(r"(\[.*\]|\{.*\})", clean_resp, re.DOTALL)
+        if m:
+            try:
+                verdicts = json.loads(m.group(0))
+                return [_parse_verdict(idx, c, {int(v["id"]): v for v in _as_verdict_list(verdicts)}, latency)
+                        for idx, c in enumerate(candidate_batch)]
+            except Exception:
+                pass
         return [JudgeVerdict(None, f"parse_error_fallback: {e}", STATUS_PARSE_ERROR, latency)
                 for _ in candidate_batch]
 
@@ -200,7 +228,9 @@ def validate_batch_consensus(
 def _as_verdict_list(parsed: Any) -> List[Any]:
     if isinstance(parsed, list):
         return parsed
-    raise ValueError(f"expected JSON array, got {type(parsed).__name__}")
+    if isinstance(parsed, dict) and "verdicts" in parsed and isinstance(parsed["verdicts"], list):
+        return parsed["verdicts"]
+    raise ValueError(f"expected JSON array or object with 'verdicts', got {type(parsed).__name__}")
 
 
 def _parse_verdict(idx: int, candidate: Dict[str, Any],
@@ -263,7 +293,14 @@ def run_validator_committee(
     Example:
         committee = run_validator_committee(url, judges, samples, db, run_id, batch_size=5)
     """
-    factory = client_factory or (lambda m: LLMEndpointClient(base_url=validator_url, model=m, timeout=timeout))
+    def _default_client_factory(m: str) -> LLMEndpointClient:
+        # Route Strata models directly to port 8089 if requested or matched
+        if "qwen3.8-flash-next" in m or ":8089" in validator_url:
+            url = "http://127.0.0.1:8089/v1" if "qwen3.8-flash-next" in m else validator_url
+            return LLMEndpointClient(base_url=url, model=m, timeout=timeout)
+        return LLMEndpointClient(base_url=validator_url, model=m, timeout=timeout)
+
+    factory = client_factory or _default_client_factory
     ctx = CommitteeContext(samples=samples, committee=[dict() for _ in samples],
                            db=db, run_id=run_id, batch_size=batch_size,
                            checkpoint_path=checkpoint_path)
@@ -307,6 +344,7 @@ PARALLEL_JUDGES = {
     "qwen-3.8-125b-q4": 2,
     "qwen-3.6-27b-q4": 2,
     "gpt-oss-120b": 2,
+    "qwen3.8-flash-next-iq3_s": 2,
 }
 
 

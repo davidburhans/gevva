@@ -1,0 +1,52 @@
+{
+  "model_path": "ckpt/gevva-e4b-cal2/best",
+  "n": 500,
+  "accuracy": 0.344,
+  "accuracy_by_k": {
+    "3": {
+      "acc": 1.0,
+      "n": 1
+    },
+    "4": {
+      "acc": 0.37037037037037035,
+      "n": 27
+    },
+    "5": {
+      "acc": 0.25,
+      "n": 4
+    },
+    "6": {
+      "acc": 0.3333333333333333,
+      "n": 3
+    },
+    "7": {
+      "acc": 0.25,
+      "n": 8
+    },
+    "8": {
+      "acc": 0.8571428571428571,
+      "n": 7
+    },
+    "9": {
+      "acc": 0.4473684210526316,
+      "n": 38
+    },
+    "10": {
+      "acc": 0.32524271844660196,
+      "n": 412
+    }
+  },
+  "top_predicted_key": [
+    "H",
+    111
+  ],
+  "top_predicted_position": [
+    7,
+    111
+  ],
+  "framing_note": "engine-served parity: premise=state+question, hypothesis='The correct answer is {k}: {desc}...', argmax over ent-minus-contra logit margin (matches adapter choice())",
+  "baselines": {
+    "e2b_v1_raw": 0.2862,
+    "e4b_v1_raw": 0.3641
+  }
+}

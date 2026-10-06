@@ -1,0 +1,77 @@
+{
+  "suite_states": 155390,
+  "checked_rows": {
+    "sdk_search_reranking": 858,
+    "typed_decisions_synth_score_grouped": 5586,
+    "helpsteer2_subtle_flaw": 6962,
+    "typed_decisions_synth_choice_grouped": 10164,
+    "typed_decisions_synth_noul_grouped": 5328,
+    "sdk_cloze_reasoning": 616,
+    "ragtruth_served_v2": 7545,
+    "prometheus_feedback": 7240,
+    "sdk_tool_routing": 959,
+    "typed_decisions_synth_noul": 790,
+    "typed_decisions_synth_noul_inverted": 320,
+    "typed_decisions_synth_score_gold": 574,
+    "sdk_rubric_grading": 1358,
+    "typed_decisions_synth_choice_gold": 1029,
+    "sdk_rag_hallucination": 1338,
+    "typed_decisions_synth_score_alt": 333,
+    "typed_decisions_synth_choice_neg": 1107,
+    "sdk_abstention_augmentation": 314,
+    "sdk_counterfactual_inversion": 338
+  },
+  "flagged_ge_0.8": {},
+  "top_10_overlaps": [
+    {
+      "jaccard": 0.347,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.346,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.345,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.345,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.338,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.337,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.336,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.333,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 188 words:\\nAs Saudi forces pounded southern Yemen with a fresh series o"
+    },
+    {
+      "jaccard": 0.33,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 152 words:\\nTwo Delaware boys are in a coma and their father still is un"
+    },
+    {
+      "jaccard": 0.33,
+      "source": "ragtruth_served_v2",
+      "suite_state_head": "{\"prompt\": \"Summarize the following news within 152 words:\\nTwo Delaware boys are in a coma and their father still is un"
+    }
+  ]
+}

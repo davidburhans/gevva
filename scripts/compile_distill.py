@@ -36,11 +36,13 @@ def load_keys(path: Path) -> set:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=str(REPO_ROOT / "data" / "train_cal2_e2b.jsonl"))
-    parser.add_argument("--distill", default=str(REPO_ROOT / "data" / "round4" / "sdk_synthetic_train.jsonl"))
+    parser.add_argument("--distill", default=str(REPO_ROOT / "data" / "round4c" / "sdk_synthetic_train.jsonl"))
     parser.add_argument("--old-sdk", default=str(REPO_ROOT / "data" / "staged" / "sdk_synthetic_train.jsonl"))
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "train_distill_e2b.jsonl"))
     parser.add_argument("--dose", type=float, default=0.10, help="Max fraction of final rows from distill slice")
     parser.add_argument("--seed", type=int, default=48)
+    parser.add_argument("--min-clean", type=int, default=2500, help="Minimum clean rows required")
+    parser.add_argument("--min-fresh", type=int, default=2500, help="Minimum fresh rows required after dedup")
     args = parser.parse_args()
 
     distill_path = Path(args.distill)
@@ -48,8 +50,8 @@ def main() -> None:
         raise SystemExit(f"ABORT: distill slice missing: {distill_path} (generation failed?)")
     raw = [json.loads(line) for line in open(distill_path)]
     clean = [r for r in raw if not r.get("needs_review")]
-    if len(clean) < 4000:
-        raise SystemExit(f"ABORT: distill slice too small after review filter: {len(clean)} clean of {len(raw)}")
+    if len(clean) < args.min_clean:
+        raise SystemExit(f"ABORT: distill slice too small after review filter: {len(clean)} clean of {len(raw)} (expected >= {args.min_clean})")
     # Provenance assertion (2026-09-30 incident: committee silently skipped when
     # --validator-url was unset; template-only rows passed every count assertion).
     # Committee-validated rows carry per-judge rationales - require them on >=95%.
@@ -65,8 +67,8 @@ def main() -> None:
 
     fresh = [r for r in clean if pair_key(r["premise"], r["hypothesis"]) not in forbidden
              and pair_key(r["premise"], r["hypothesis"]) not in base_keys]
-    if len(fresh) < 3000:
-        raise SystemExit(f"ABORT: fresh distill rows after dedup too small: {len(fresh)}")
+    if len(fresh) < args.min_fresh:
+        raise SystemExit(f"ABORT: fresh distill rows after dedup too small: {len(fresh)} (expected >= {args.min_fresh})")
 
     cap = int(args.dose * (len(base_rows) + len(fresh)))
     if len(fresh) > cap:

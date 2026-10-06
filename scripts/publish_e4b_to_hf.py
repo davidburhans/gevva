@@ -159,16 +159,21 @@ print(f"Selected: {tools[best_idx]}")
 
 Gevva e4b was evaluated on standard reasoning batteries on an **NVIDIA GeForce RTX 5090**:
 
-| Benchmark | Gevva e4b Accuracy | Evaluation Type |
+| Benchmark | Gevva 1.1 e4b Accuracy | Evaluation Type |
 | :--- | :---: | :--- |
+| **Gate Hard Accuracy** | **65.07%** | Adversarial NLI (ANLI R1-R3) & ContractNLI |
+| **Gate Medium Accuracy** | **82.03%** | FEVER / QNLI fact validation |
+| **Gate Floor Accuracy** | **86.61%** | Standard MNLI / SNLI |
+| **RAGTruth Served F1@0.5** | **0.6809** | Production RAG hallucination detection (+0.0398 gain) |
+| **MMLU-Pro (Engine Sample)** | **35.00%** | Multi-discipline reasoning |
 | **ARC-Challenge (Reasoning)** | **84.00%** | Multiple-choice 4-way reranking |
 | **ARC-Easy (Knowledge)** | **92.00%** | Multiple-choice 4-way reranking |
 | **WinoGrande (Commonsense)** | **75.00%** | Binary commonsense pair reranking |
 | **MMLU (General Knowledge)** | **59.00%** | 4-way multiple-choice evaluation |
 | **BoolQ (Fact Decisions)** | **91.00%** | Boolean fact-checking |
 | **JevBench Public (Overall)** | **76.62%** | 231 tasks across 18 challenge families |
-| **JevBench Public (Hard Tier)** | **54.95%** | 111 challenging decision tasks |
-| **Forward Latency ($p_{50}$)** | **17.83 ms** | Single-pass forward latency on RTX 5090 |
+| **JevBench Public (Hard Tier)** | **53.15%** | 111 challenging decision tasks |
+| **Forward Latency ($p_{50}$)** | **37.8 ms** | Single-pass forward latency on RTX 5090 |
 
 ---
 
@@ -206,7 +211,7 @@ def main():
         sys.exit(1)
 
     repo_id = "davidburhans/gevva-e4b"
-    checkpoint_dir = Path("ckpt/gevva-e4b-flagship/best")
+    checkpoint_dir = Path("ckpt/gevva-e4b-distill/best")
 
     if not checkpoint_dir.exists():
         print(f"Error: Checkpoint directory not found at {checkpoint_dir}")
@@ -228,7 +233,7 @@ def main():
         repo_id=repo_id,
         repo_type="model",
         token=token,
-        commit_message="Release Gevva e4b Decision Engine",
+        commit_message="Release Gevva 1.1 e4b Distill Decision Engine",
     )
     print(f"Successfully published Gevva e4b: https://huggingface.co/{repo_id}")
 

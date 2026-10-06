@@ -1,12 +1,12 @@
 {
   "composite_local": {
-    "calibration": 57.08,
-    "cost": 56.174430924451784,
-    "intelligence": 73.86472222222224,
-    "jevbench_score_local_3tier": 68.07532676302047,
+    "calibration": 68.97999999999999,
+    "cost": 52.41609402329825,
+    "intelligence": 77.78027777777778,
+    "jevbench_score_local_3tier": 70.68726124616273,
     "note": "local 3-tier footing (no judge tier in public split); not comparable to official 4-tier scores",
-    "speed": 90.6774343686871,
-    "tariff_assumption_usd_per_1000": 0.0289
+    "speed": 88.77839452729876,
+    "tariff_assumption_usd_per_1000": 0.03856
   },
   "families": {
     "adequacy": {
@@ -17,19 +17,19 @@
       ],
       "gold_rank2_on_error": "3/3",
       "n": 12,
-      "p50_ms": 30.1,
-      "p95_ms": 32.3
+      "p50_ms": 45.7,
+      "p95_ms": 56.6
     },
     "adversarial": {
-      "accuracy": 0.8333,
+      "accuracy": 1.0,
       "ci95": [
-        0.4365,
-        0.9699
+        0.6097,
+        1.0
       ],
-      "gold_rank2_on_error": "1/1",
+      "gold_rank2_on_error": "0/0",
       "n": 6,
-      "p50_ms": 32.3,
-      "p95_ms": 34.3
+      "p50_ms": 44.9,
+      "p95_ms": 50.6
     },
     "ambiguous": {
       "accuracy": 0.2857,
@@ -37,10 +37,10 @@
         0.0822,
         0.6411
       ],
-      "gold_rank2_on_error": "4/5",
+      "gold_rank2_on_error": "3/5",
       "n": 7,
-      "p50_ms": 35.2,
-      "p95_ms": 39.2
+      "p50_ms": 54.6,
+      "p95_ms": 65.1
     },
     "extraction": {
       "accuracy": 1.0,
@@ -50,8 +50,8 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 24,
-      "p50_ms": 29.2,
-      "p95_ms": 33.3
+      "p50_ms": 40.2,
+      "p95_ms": 46.4
     },
     "fact": {
       "accuracy": 1.0,
@@ -61,8 +61,8 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 12,
-      "p50_ms": 31.2,
-      "p95_ms": 41.6
+      "p50_ms": 37.4,
+      "p95_ms": 41.5
     },
     "intent": {
       "accuracy": 1.0,
@@ -72,41 +72,41 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 24,
-      "p50_ms": 30.6,
-      "p95_ms": 42.7
+      "p50_ms": 37.6,
+      "p95_ms": 41.6
     },
     "judge_hard": {
-      "accuracy": 0.5882,
+      "accuracy": 0.7059,
       "ci95": [
-        0.3601,
-        0.7839
+        0.4687,
+        0.8672
       ],
-      "gold_rank2_on_error": "7/7",
+      "gold_rank2_on_error": "5/5",
       "n": 17,
-      "p50_ms": 31.5,
-      "p95_ms": 35.7
+      "p50_ms": 45.2,
+      "p95_ms": 49.4
     },
     "long_policy": {
-      "accuracy": 0.1053,
+      "accuracy": 0.4211,
       "ci95": [
-        0.0294,
-        0.3139
+        0.2314,
+        0.6372
       ],
-      "gold_rank2_on_error": "11/17",
+      "gold_rank2_on_error": "9/11",
       "n": 19,
-      "p50_ms": 123.6,
-      "p95_ms": 211.7
+      "p50_ms": 199.4,
+      "p95_ms": 296.6
     },
     "multi_hop": {
-      "accuracy": 0.3333,
+      "accuracy": 0.5556,
       "ci95": [
-        0.1628,
-        0.5625
+        0.3372,
+        0.7544
       ],
-      "gold_rank2_on_error": "5/12",
+      "gold_rank2_on_error": "7/8",
       "n": 18,
-      "p50_ms": 109.2,
-      "p95_ms": 147.8
+      "p50_ms": 189.8,
+      "p95_ms": 249.7
     },
     "ordinal": {
       "accuracy": 1.0,
@@ -116,41 +116,41 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 12,
-      "p50_ms": 31.0,
-      "p95_ms": 41.7
+      "p50_ms": 39.9,
+      "p95_ms": 42.0
     },
     "policy": {
-      "accuracy": 0.9167,
-      "ci95": [
-        0.6461,
-        0.9851
-      ],
-      "gold_rank2_on_error": "1/1",
-      "n": 12,
-      "p50_ms": 31.4,
-      "p95_ms": 33.1
-    },
-    "probability": {
-      "accuracy": 0.6,
-      "ci95": [
-        0.3127,
-        0.8318
-      ],
-      "gold_rank2_on_error": "3/4",
-      "n": 10,
-      "p50_ms": 53.6,
-      "p95_ms": 88.0
-    },
-    "routing": {
       "accuracy": 0.8333,
       "ci95": [
         0.552,
         0.953
       ],
-      "gold_rank2_on_error": "1/2",
+      "gold_rank2_on_error": "2/2",
       "n": 12,
-      "p50_ms": 30.2,
-      "p95_ms": 33.1
+      "p50_ms": 38.5,
+      "p95_ms": 44.2
+    },
+    "probability": {
+      "accuracy": 0.3,
+      "ci95": [
+        0.1078,
+        0.6032
+      ],
+      "gold_rank2_on_error": "7/7",
+      "n": 10,
+      "p50_ms": 82.6,
+      "p95_ms": 141.4
+    },
+    "routing": {
+      "accuracy": 1.0,
+      "ci95": [
+        0.7575,
+        1.0
+      ],
+      "gold_rank2_on_error": "0/0",
+      "n": 12,
+      "p50_ms": 40.6,
+      "p95_ms": 44.8
     },
     "routing_hard": {
       "accuracy": 1.0,
@@ -160,19 +160,19 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 5,
-      "p50_ms": 31.3,
-      "p95_ms": 33.9
+      "p50_ms": 43.8,
+      "p95_ms": 44.9
     },
     "temporal_numeric": {
-      "accuracy": 0.2,
+      "accuracy": 0.1333,
       "ci95": [
-        0.0705,
-        0.4519
+        0.0374,
+        0.3788
       ],
-      "gold_rank2_on_error": "6/12",
+      "gold_rank2_on_error": "6/13",
       "n": 15,
-      "p50_ms": 43.9,
-      "p95_ms": 63.2
+      "p50_ms": 61.6,
+      "p95_ms": 100.2
     },
     "tool_selection": {
       "accuracy": 1.0,
@@ -182,8 +182,8 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 12,
-      "p50_ms": 31.5,
-      "p95_ms": 34.9
+      "p50_ms": 38.8,
+      "p95_ms": 40.2
     },
     "tradeoff": {
       "accuracy": 0.5,
@@ -193,8 +193,8 @@
       ],
       "gold_rank2_on_error": "2/3",
       "n": 6,
-      "p50_ms": 42.7,
-      "p95_ms": 45.7
+      "p50_ms": 68.7,
+      "p95_ms": 73.8
     },
     "trap": {
       "accuracy": 1.0,
@@ -204,31 +204,31 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 8,
-      "p50_ms": 33.0,
-      "p95_ms": 33.8
+      "p50_ms": 45.1,
+      "p95_ms": 51.4
     }
   },
   "overall": {
-    "accuracy": 0.71,
+    "accuracy": 0.7532,
     "ci95": [
-      0.6484,
-      0.7647
+      0.6938,
+      0.8044
     ],
-    "gold_rank2_on_error": "44/67",
+    "gold_rank2_on_error": "44/57",
     "n": 231,
-    "p50_ms": 32.0,
-    "p95_ms": 124.9
+    "p50_ms": 42.7,
+    "p95_ms": 206.4
   },
   "provenance": {
     "device": "cuda",
-    "generated_at": "2026-09-29 19:38:32",
+    "generated_at": "2026-09-29 21:08:18",
     "limit_per_tier": null,
     "mapping": "jevbench docs/cross-encoder-mapping.md (helpers imported from jevbench repo)",
     "max_len": 16384,
-    "model_path": "ckpt/gevva-e2b-phase5/best",
+    "model_path": "ckpt/gevva-e4b-flagship/best",
     "temperature": 1.0
   },
-  "renormalized_ece_hard": 0.2146,
+  "renormalized_ece_hard": 0.1551,
   "tiers": {
     "easy": {
       "accuracy": 1.0,
@@ -238,30 +238,30 @@
       ],
       "gold_rank2_on_error": "0/0",
       "n": 48,
-      "p50_ms": 30.6,
-      "p95_ms": 42.0
+      "p50_ms": 38.5,
+      "p95_ms": 41.5
     },
     "hard": {
-      "accuracy": 0.4505,
+      "accuracy": 0.5315,
       "ci95": [
-        0.3611,
-        0.5431
+        0.4392,
+        0.6217
       ],
-      "gold_rank2_on_error": "39/61",
+      "gold_rank2_on_error": "39/52",
       "n": 111,
-      "p50_ms": 39.2,
-      "p95_ms": 147.8
+      "p50_ms": 60.6,
+      "p95_ms": 249.7
     },
     "standard": {
-      "accuracy": 0.9167,
+      "accuracy": 0.9306,
       "ci95": [
-        0.8299,
-        0.9612
+        0.8475,
+        0.97
       ],
-      "gold_rank2_on_error": "5/6",
+      "gold_rank2_on_error": "5/5",
       "n": 72,
-      "p50_ms": 30.1,
-      "p95_ms": 33.1
+      "p50_ms": 40.2,
+      "p95_ms": 47.5
     }
   }
 }
