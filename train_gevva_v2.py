@@ -356,19 +356,29 @@ def train_gevva_v2(args):
 
     model.to(device)
 
-    # Freeze vision tower and audio tower to keep training focused and fast
-    if hasattr(model, "model") and hasattr(model.model, "vision_tower"):
-        vt = model.model.vision_tower
-        if vt is not None:
-            for p in vt.parameters():
-                p.requires_grad = False
-            print("Frozen SigLIP vision tower.")
-    if hasattr(model, "model") and hasattr(model.model, "audio_tower"):
-        at = model.model.audio_tower
-        if at is not None:
-            for p in at.parameters():
-                p.requires_grad = False
-            print("Frozen audio tower.")
+    # Freeze auxiliary non-trainable components (SigLIP vision tower, audio tower, and massive embedding tables)
+    if hasattr(model, "model") and hasattr(model.model, "vision_tower") and model.model.vision_tower is not None:
+        for p in model.model.vision_tower.parameters():
+            p.requires_grad = False
+        print("Frozen SigLIP vision tower.")
+    if hasattr(model, "model") and hasattr(model.model, "audio_tower") and model.model.audio_tower is not None:
+        for p in model.model.audio_tower.parameters():
+            p.requires_grad = False
+        print("Frozen audio tower.")
+
+    lm = getattr(model, "model", model)
+    if hasattr(lm, "language_model"):
+        lm = lm.language_model
+    if hasattr(lm, "embed_tokens") and hasattr(lm.embed_tokens, "weight"):
+        lm.embed_tokens.weight.requires_grad = False
+        print("Frozen input embedding table (embed_tokens).")
+    if hasattr(lm, "embed_tokens_per_layer") and hasattr(lm.embed_tokens_per_layer, "weight"):
+        lm.embed_tokens_per_layer.weight.requires_grad = False
+        print("Frozen per-layer token embedding table (embed_tokens_per_layer, 2.35B params).")
+
+    trainable_cnt = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_cnt = sum(p.numel() for p in model.parameters())
+    print(f"Trainable parameters: {trainable_cnt:,} / {total_cnt:,} ({trainable_cnt/total_cnt*100:.2f}%) across all 35 transformer layers.")
 
     # 4. Prepare Dataset & Dataloader
     raw_samples: List[Dict[str, Any]] = []
@@ -472,7 +482,10 @@ def train_gevva_v2(args):
                 )
             scaled_loss = loss / args.grad_accum
             scaled_loss.backward()
-            print(f"  Dry-run step {step}: Loss = {loss.item():.4f}, Acc = {acc*100:.1f}%")
+            optimizer.step()
+            optimizer.zero_grad()
+            peak_vram = torch.cuda.max_memory_allocated() / (1024**2)
+            print(f"  Dry-run step {step}: Loss = {loss.item():.4f}, Acc = {acc*100:.1f}%, Peak VRAM = {peak_vram:.1f} MiB")
         print("[DRY-RUN] Verification successful! Exiting dry-run cleanly.")
         return
 
