@@ -442,7 +442,14 @@ def train_gevva_v2(args):
         },
     ]
 
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
+    use_8bit = getattr(args, "use_8bit_adam", False) or (trainable_cnt > 2_500_000_000)
+    if use_8bit:
+        import bitsandbytes as bnb
+        print("Using bitsandbytes PagedAdamW8bit (8-bit paged optimizer) for large model memory efficiency...")
+        optimizer = bnb.optim.PagedAdamW8bit(optimizer_grouped_parameters, lr=args.lr)
+    else:
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
+
     total_steps = (len(train_loader) // args.grad_accum) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -639,6 +646,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4, help="Per-device batch size (default: 4)")
     parser.add_argument("--grad-accum", type=int, default=4, help="Gradient accumulation steps (default: 4)")
     parser.add_argument("--save-interval-steps", type=int, default=1000, help="Save interim checkpoint every N steps (default: 1000)")
+    parser.add_argument("--use-8bit-adam", action="store_true", default=False, help="Use bitsandbytes PagedAdamW8bit (auto-enabled if trainable params > 2.5B)")
     parser.add_argument("--lr", type=float, default=2.0e-5, help="Learning rate")
     parser.add_argument("--max-length", type=int, default=2048, help="Maximum sequence token length")
     parser.add_argument("--brier-weight", type=float, default=0.4, help="Brier soft-probability loss weight")
