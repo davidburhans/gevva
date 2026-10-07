@@ -170,6 +170,33 @@ Where teacher soft probabilities $\mathbf{q}$ exist (`typed-decisions-synth` Dee
 $$\mathcal{L}_{\text{distill}} = \text{KL}(\mathbf{q} \parallel P_{\text{active}}) + \lambda_{\text{brier}} \sum_{j=0}^{K-1} (P_j - q_j)^2$$
 Ensures top-tier calibration without post-hoc temperature scaling distortion.
 
+### 5. Mandatory In-Loop Quantization-Aware Training (QAT) by Default
+
+In Gevva v1.x, a silent regression occurred when an audit flipped `--qat` to opt-in (`default=False`), causing training chains to train in unquantized `bfloat16` without an assertion failure.
+
+**Gevva v2 Architectural Rule: QAT is Non-Negotiable and Active by Default.**
+
+1. **Target Quantization Formats**:
+   - Primary: `Q4_K_M` (k-quants for `llama.cpp`) and `w4a16` (INT4 Group-32 symmetric).
+   - In-loop fake-quantization simulator: MultiQuant Straight-Through Estimator (STE) parameterized over linear layers in `self_attn` and `mlp`.
+2. **Hard Fail-Fast Invariant**:
+   In `train_gevva_v2.py`:
+   ```python
+   # Hard fail-fast: training must never execute in float precision without explicit override
+   if not getattr(args, "qat", True):
+       if not getattr(args, "allow_unquantized_experimental_run", False):
+           raise RuntimeError(
+               "FATAL: Gevva v2 requires Quantization-Aware Training (QAT) by contract. "
+               "To train in float, you must explicitly pass --allow-unquantized-experimental-run."
+           )
+   ```
+3. **Artifact Provenance & Deployment Gate**:
+   - Checkpoint artifact `qat_config.json` must record `"qat_applied": true` and `"target_quant": "q4_k_m"` / `"w4a16"`.
+   - The GGUF exporter (`scripts/export_gevva_v2_gguf.py`) must verify `qat_applied: true` before packing.
+4. **Preserved Components**:
+   - `lm_head` (causal decision projection) is kept in 16-bit to preserve uncorrupted logit calibration on the decision token.
+   - Rotary embeddings (RoPE) and layer norms remain FP32/BF16.
+
 ---
 
 ## 6. GGUF Export & llama.cpp Deployment
@@ -213,7 +240,8 @@ llama-server -m gevva-v2-e2b-Q4_K_M.gguf --mmproj mmproj-gevva-v2-f16.gguf --por
 - [x] **Architecture Verification**: Confirmed `gemma4.decision.type = "lev"` maps to `COMMON_DECISION_TYPE_LEV` in `llama.cpp`.
 - [x] **Vocabulary Coverage**: Probed Gemma 4 tokenizer — 679 clean single-token codes in `A..Z` + `AA..ZZ` range (exceeds 255-option limit).
 - [x] **Debiasing Strategy**: Established dual-level order invariance (serving 2-pass reverse averaging + training permutation loss).
+- [ ] **Mandatory QAT Engine**: `train_gevva_v2.py` with in-loop STE fake-quantization enabled by default (`--qat` default `True`) and hard assertion gates.
 - [ ] **Data Pipeline Script**: `scripts/compile_gevva_v2_mixture.py` (converts v1/1.1 datasets into `lev` format).
-- [ ] **Training Engine**: `train_gevva_v2.py` (Causal LM fine-tuning with active-set loss & permutation augmentation).
+- [ ] **Training Execution**: Run `train_gevva_v2.py` on `gevva-v2-e2b` and `gevva-v2-e4b`.
 - [ ] **GGUF Packaging Tool**: `scripts/export_gevva_v2_gguf.py` (native GGUF metadata writer).
 - [ ] **Verification Harness**: `scripts/test_gevva_v2_systemone.py` (end-to-end HTTP test against `llama-server /v1/systemone`).
