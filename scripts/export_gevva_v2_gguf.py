@@ -91,6 +91,8 @@ def main():
     parser = argparse.ArgumentParser(description="Export Gevva v2 model for native llama.cpp serving.")
     parser.add_argument("--model-dir", type=Path, required=True, help="Input directory containing model.safetensors and config.json")
     parser.add_argument("--out", type=Path, default=None, help="Output .gguf path (optional).")
+    parser.add_argument("--convert", action="store_true", help="Automatically run llama.cpp conversion to GGUF")
+    parser.add_argument("--quant", type=str, default="Q4_K_M", choices=["F16", "BF16", "Q4_K_M", "Q4_0", "Q8_0"], help="Target quantization (default: Q4_K_M)")
     args = parser.parse_args()
 
     model_dir = args.model_dir.resolve()
@@ -98,16 +100,66 @@ def main():
         print(f"Error: model directory not found: {model_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"=== Preparing Gevva v2 Checkpoint for GGUF Export ===")
-    print(f"Target Checkpoint: {model_dir}")
+    # Enforce QAT deployment gate (Principle 7)
+    qat_cfg_path = model_dir / "qat_config.json"
+    if not qat_cfg_path.is_file():
+        raise RuntimeError(f"FATAL: QAT deployment gate check failed. Missing qat_config.json in {model_dir}")
+    with open(qat_cfg_path, "r", encoding="utf-8") as f:
+        qat_cfg = json.load(f)
+    if not qat_cfg.get("qat_applied", False):
+        raise RuntimeError(
+            f"FATAL: Checkpoint at {model_dir} was NOT trained with Quantization-Aware Training (QAT). "
+            f"qat_applied is False in {qat_cfg_path}. Gevva v2 deployment requires QAT."
+        )
+    print(f"Verified QAT deployment gate: format={qat_cfg.get('target_quant')}, bits={qat_cfg.get('qat_bits')}.")
 
     inject_decision_metadata_to_config(model_dir)
 
+    out_path = args.out or (model_dir / f"{model_dir.name}-{args.quant.lower()}.gguf")
+
     print("\nCheckpoint is fully formatted for Gevva v2 / llama.cpp `lev` decision protocol!")
-    print("\nTo generate the final GGUF file using llama.cpp:")
-    print(f"    python convert_hf_to_gguf.py {model_dir} --outtype f16 --outfile {args.out or (model_dir.name + '.gguf')}")
+
+    if args.convert:
+        import subprocess
+        converter_script = Path("/home/dave/workspaces/llama.cpp/convert_hf_to_gguf.py")
+        if not converter_script.is_file():
+            raise FileNotFoundError(f"convert_hf_to_gguf.py not found at {converter_script}")
+
+        f16_gguf = model_dir / f"{model_dir.name}-f16.gguf"
+        print(f"\n[1/2] Converting HuggingFace weights to F16 GGUF: {f16_gguf}...")
+        subprocess.run(
+            [sys.executable, str(converter_script), str(model_dir), "--outtype", "f16", "--outfile", str(f16_gguf)],
+            check=True,
+        )
+
+        if args.quant.upper() in ("F16", "BF16"):
+            if out_path != f16_gguf:
+                f16_gguf.rename(out_path)
+            print(f"Exported F16 GGUF to {out_path}")
+        else:
+            quant_bin = Path("/home/dave/.local/bin/llama-quantize")
+            if not quant_bin.is_file():
+                quant_bin = Path("/home/dave/workspaces/llama.cpp/build/bin/llama-quantize")
+
+            print(f"\n[2/2] Quantizing to {args.quant} via {quant_bin}...")
+            env = os.environ.copy()
+            cuda_lib = "/home/dave/workspaces/agent-pump/.venv/lib/python3.12/site-packages/nvidia/cublas/lib:/home/dave/workspaces/agent-pump/.venv/lib/python3.12/site-packages/nvidia/cuda_runtime/lib"
+            env["LD_LIBRARY_PATH"] = f"{cuda_lib}:{env.get('LD_LIBRARY_PATH', '')}"
+
+            subprocess.run(
+                [str(quant_bin), "--leave-output-tensor", str(f16_gguf), str(out_path), args.quant],
+                env=env,
+                check=True,
+            )
+            print(f"\nSuccessfully exported quantized Gevva v2 GGUF: {out_path}")
+            if f16_gguf.exists() and f16_gguf != out_path:
+                try:
+                    f16_gguf.unlink()
+                except Exception:
+                    pass
+
     print("\nTo serve with unmodified llama-server:")
-    print(f"    llama-server -m {args.out or (model_dir.name + '.gguf')} --port 8080")
+    print(f"    llama-server -m {out_path} --port 8080")
 
 
 if __name__ == "__main__":
